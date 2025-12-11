@@ -1,0 +1,146 @@
+name: Sync direct-js Source
+
+on:
+  # Manual trigger only
+  workflow_dispatch:
+
+jobs:
+  sync-source:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check lisb/direct-js for updates
+        id: check-update
+        run: |
+          # Get the latest commit SHA from lisb/direct-js
+          LATEST_SHA=$(curl -s https://api.github.com/repos/lisb/direct-js/commits/master | jq -r '.sha')
+          echo "latest_sha=$LATEST_SHA" >> $GITHUB_OUTPUT
+
+          # Check if we have a stored SHA
+          if [ -f direct-js-source/.last-sync-sha ]; then
+            STORED_SHA=$(cat direct-js-source/.last-sync-sha)
+            echo "stored_sha=$STORED_SHA" >> $GITHUB_OUTPUT
+
+            if [ "$LATEST_SHA" = "$STORED_SHA" ]; then
+              echo "has_updates=false" >> $GITHUB_OUTPUT
+              echo "No updates found. Latest SHA: $LATEST_SHA"
+            else
+              echo "has_updates=true" >> $GITHUB_OUTPUT
+              echo "Updates found! Stored: $STORED_SHA, Latest: $LATEST_SHA"
+            fi
+          else
+            echo "has_updates=true" >> $GITHUB_OUTPUT
+            echo "First sync - will download source"
+          fi
+
+      - name: Download and deminify direct-js source
+        if: steps.check-update.outputs.has_updates == 'true'
+        run: |
+          # Create directory if it doesn't exist
+          mkdir -p direct-js-source
+
+          # Download the minified source
+          echo "Downloading direct-node.min.js..."
+          curl -sL https://raw.githubusercontent.com/lisb/direct-js/master/lib/direct-node.min.js \
+            -o direct-js-source/direct-node.min.js
+
+          # Deminify with prettier
+          echo "Deminifying with prettier..."
+          pnpx prettier --write direct-js-source/direct-node.min.js
+
+          # Rename to remove .min extension
+          mv direct-js-source/direct-node.min.js direct-js-source/direct-node.js
+
+          # Store the commit SHA
+          echo "${{ steps.check-update.outputs.latest_sha }}" > direct-js-source/.last-sync-sha
+
+          # Show file info
+          ls -lh direct-js-source/
+          echo "Lines in deminified file:"
+          wc -l direct-js-source/direct-node.js
+
+      - name: Create metadata file
+        if: steps.check-update.outputs.has_updates == 'true'
+        run: |
+          cat > direct-js-source/README.md << 'EOF'
+          # direct-js Source Code
+
+          This directory contains the deminified source code from [lisb/direct-js](https://github.com/lisb/direct-js).
+
+          ## File Information
+
+          - **Source**: https://github.com/lisb/direct-js
+          - **File**: lib/direct-node.min.js
+          - **Last synced**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          - **Commit SHA**: ${{ steps.check-update.outputs.latest_sha }}
+
+          ## Processing
+
+          The minified code is automatically:
+          1. Downloaded from the upstream repository
+          2. Formatted using `prettier` for readability
+          3. Committed to this repository
+
+          ## Purpose
+
+          This deminified source is used as a reference for porting functionality to the Go implementation
+          in this repository.
+
+          ## Manual Sync
+
+          Manually trigger this workflow from: Actions → Sync direct-js Source → Run workflow
+          EOF
+
+      - name: Run coverage analysis
+        if: steps.check-update.outputs.has_updates == 'true'
+        run: |
+          echo "Running coverage analysis tool..."
+          cd tools/coverage
+          go run . > ../../COVERAGE.md
+          echo "Coverage report updated"
+
+      - name: Commit changes
+        if: steps.check-update.outputs.has_updates == 'true'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+          git add direct-js-source/
+          git add COVERAGE.md
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: sync direct-js source from upstream
+
+            - Updated from lisb/direct-js@${{ steps.check-update.outputs.latest_sha }}
+            - Deminified with prettier
+            - Updated coverage analysis"
+
+            echo "Changes committed successfully"
+          fi
+
+      - name: Push changes
+        if: steps.check-update.outputs.has_updates == 'true'
+        run: |
+          git push
+
+      - name: Summary
+        run: |
+          if [ "${{ steps.check-update.outputs.has_updates }}" = "true" ]; then
+            echo "✅ Successfully synced direct-js source"
+            echo "📊 Latest commit: ${{ steps.check-update.outputs.latest_sha }}"
+          else
+            echo "ℹ️  No updates found - source is up to date"
+          fi
