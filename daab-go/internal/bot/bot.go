@@ -52,13 +52,15 @@ func (r Response) Send(text string) error {
 
 // SendSelect sends a select action stamp to the same room and returns the created message ID.
 func (r Response) SendSelect(question string, options []string) (string, error) {
-	content := direct.SelectMessage{
-		Question:    question,
-		Options:     options,
-		Listing:     true,
-		ClosingType: 1, // default to "all must answer" per daab spec
+	// Use map format instead of struct to ensure proper msgpack serialization
+	content := map[string]interface{}{
+		"question":     question,
+		"options":      options,
+		"listing":      true,
+		"closing_type": 1, // default to "all must answer" per daab spec
 	}
-	return r.Robot.sendActionMessage(r.Message.TalkID, direct.MsgTypeSelect, content)
+	// Use wire type (502) not internal enum value (15) for action stamps
+	return r.Robot.sendActionMessage(r.Message.TalkID, direct.WireTypeSelect, content)
 }
 
 // Reply sends a reply mentioning the user.

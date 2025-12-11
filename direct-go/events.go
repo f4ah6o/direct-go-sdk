@@ -168,6 +168,8 @@ const (
 )
 
 // Message types from direct API.
+// NOTE: For action stamps (types 13-21), these are INTERNAL enum values.
+// When SENDING to the API, use the WireType constants below instead.
 const (
 	MsgTypeSystem           = 0  // System message
 	MsgTypeText             = 1  // Text message
@@ -182,13 +184,30 @@ const (
 	MsgTypeNoteCreated      = 10 // Note created
 	MsgTypeNoteUpdated      = 11 // Note updated
 	MsgTypeOriginalStamp    = 12 // Original stamp
-	MsgTypeYesNo            = 13 // Yes/No action stamp
-	MsgTypeYesNoReply       = 14 // Yes/No reply
-	MsgTypeSelect           = 15 // Select action stamp
-	MsgTypeSelectReply      = 16 // Select reply
-	MsgTypeTask             = 17 // Task action stamp
-	MsgTypeTaskDone         = 18 // Task done reply
-	MsgTypeYesNoClosed      = 19 // Yes/No closed
-	MsgTypeSelectClosed     = 20 // Select closed
-	MsgTypeTaskClosed       = 21 // Task closed
+	MsgTypeYesNo            = 13 // Yes/No action stamp (internal)
+	MsgTypeYesNoReply       = 14 // Yes/No reply (internal)
+	MsgTypeSelect           = 15 // Select action stamp (internal)
+	MsgTypeSelectReply      = 16 // Select reply (internal)
+	MsgTypeTask             = 17 // Task action stamp (internal)
+	MsgTypeTaskDone         = 18 // Task done reply (internal)
+	MsgTypeYesNoClosed      = 19 // Yes/No closed (internal)
+	MsgTypeSelectClosed     = 20 // Select closed (internal)
+	MsgTypeTaskClosed       = 21 // Task closed (internal)
 )
+
+// Wire message types for action stamps.
+// The API expects wire types for action stamps (internal types 13-21).
+// Formula: wireType = 500 + internalType - 13
+// These are the values that must be used in create_message API calls.
+const (
+	WireTypeYesNo        = 500 // 500 + 13 - 13 = 500
+	WireTypeYesNoReply   = 501 // 500 + 14 - 13 = 501
+	WireTypeSelect       = 502 // 500 + 15 - 13 = 502
+	WireTypeSelectReply  = 503 // 500 + 16 - 13 = 503
+	WireTypeTask         = 504 // 500 + 17 - 13 = 504
+	WireTypeTaskDone     = 505 // 500 + 18 - 13 = 505
+	WireTypeYesNoClosed  = 506 // 500 + 19 - 13 = 506
+	WireTypeSelectClosed = 507 // 500 + 20 - 13 = 507
+	WireTypeTaskClosed   = 508 // 500 + 21 - 13 = 508
+)
+

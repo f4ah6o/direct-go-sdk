@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -387,7 +388,13 @@ func fetchSelectAnswerSummary(robot *bot.Robot, questionID string) ([]selectAnsw
 		return nil, nil
 	}
 
-	result, err := robot.Call("get_action", []interface{}{questionID})
+	// Convert questionID to uint64 as API expects numeric ID
+	qid, err := strconv.ParseUint(questionID, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid question ID: %w", err)
+	}
+
+	result, err := robot.Call("get_action", []interface{}{qid})
 	if err != nil {
 		return nil, err
 	}
