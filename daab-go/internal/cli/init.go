@@ -54,7 +54,7 @@ import (
 	"regexp"
 	"syscall"
 
-	direct "github.com/f4ah6o/direct-go"
+	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
 )
 
 func main() {

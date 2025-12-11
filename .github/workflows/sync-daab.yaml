@@ -1,0 +1,159 @@
+name: Sync daab Source
+
+on:
+  # Manual trigger only
+  workflow_dispatch:
+
+jobs:
+  sync-source:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check lisb/daab for updates
+        id: check-update
+        run: |
+          # Get the latest commit SHA from lisb/daab
+          LATEST_SHA=$(curl -s https://api.github.com/repos/lisb/daab/commits/master | jq -r '.sha')
+          echo "latest_sha=$LATEST_SHA" >> $GITHUB_OUTPUT
+
+          # Check if we have a stored SHA
+          if [ -f daab-go/daab-source/.last-sync-sha ]; then
+            STORED_SHA=$(cat daab-go/daab-source/.last-sync-sha)
+            echo "stored_sha=$STORED_SHA" >> $GITHUB_OUTPUT
+
+            if [ "$LATEST_SHA" = "$STORED_SHA" ]; then
+              echo "has_updates=false" >> $GITHUB_OUTPUT
+              echo "No updates found. Latest SHA: $LATEST_SHA"
+            else
+              echo "has_updates=true" >> $GITHUB_OUTPUT
+              echo "Updates found! Stored: $STORED_SHA, Latest: $LATEST_SHA"
+            fi
+          else
+            echo "has_updates=true" >> $GITHUB_OUTPUT
+            echo "First sync - will download source"
+          fi
+
+      - name: Download daab source files
+        if: steps.check-update.outputs.has_updates == 'true'
+        run: |
+          # Create directory if it doesn't exist
+          mkdir -p daab-go/daab-source/lib
+
+          # List of files to download from lib/ directory
+          FILES=(
+            "auth.js"
+            "daab-init.js"
+            "daab-invites.js"
+            "daab-login.js"
+            "daab-logout.js"
+            "daab-run.js"
+            "daab-start.js"
+            "daab-stop.js"
+            "daab-version.js"
+            "daab.js"
+            "git.js"
+            "template.js"
+          )
+
+          echo "Downloading source files from lisb/daab..."
+          for file in "${FILES[@]}"; do
+            echo "  - Downloading lib/$file"
+            curl -sL "https://raw.githubusercontent.com/lisb/daab/master/lib/$file" \
+              -o "daab-go/daab-source/lib/$file"
+          done
+
+          # Store the commit SHA
+          echo "${{ steps.check-update.outputs.latest_sha }}" > daab-go/daab-source/.last-sync-sha
+
+          # Show file info
+          echo "Downloaded files:"
+          ls -lh daab-go/daab-source/lib/
+          echo "Total lines:"
+          wc -l daab-go/daab-source/lib/*.js | tail -1
+
+      - name: Create metadata file
+        if: steps.check-update.outputs.has_updates == 'true'
+        run: |
+          cat > daab-go/daab-source/README.md << 'EOF'
+          # daab Source Code
+
+          This directory contains the source code from [lisb/daab](https://github.com/lisb/daab).
+
+          ## File Information
+
+          - **Source**: https://github.com/lisb/daab
+          - **Directory**: lib/
+          - **Last synced**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          - **Commit SHA**: ${{ steps.check-update.outputs.latest_sha }}
+
+          ## Processing
+
+          The source files are automatically:
+          1. Downloaded from the upstream repository
+          2. Committed to this repository
+
+          ## Purpose
+
+          This source is used as a reference for porting functionality to the Go implementation
+          in this repository.
+
+          ## Files
+
+          The following files are synced from `lib/`:
+
+          - `auth.js` - Authentication utilities
+          - `daab-init.js` - Bot initialization
+          - `daab-invites.js` - Invite management
+          - `daab-login.js` - Login command
+          - `daab-logout.js` - Logout command
+          - `daab-run.js` - Run command
+          - `daab-start.js` - Start command
+          - `daab-stop.js` - Stop command
+          - `daab-version.js` - Version command
+          - `daab.js` - Main entry point
+          - `git.js` - Git utilities
+          - `template.js` - Template utilities
+
+          ## Manual Sync
+
+          Manually trigger this workflow from: Actions → Sync daab Source → Run workflow
+          EOF
+
+      - name: Commit changes
+        if: steps.check-update.outputs.has_updates == 'true'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+          git add daab-go/daab-source/
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: sync daab source from upstream
+
+            - Updated from lisb/daab@${{ steps.check-update.outputs.latest_sha }}
+            - Downloaded all lib/*.js files"
+
+            echo "Changes committed successfully"
+          fi
+
+      - name: Push changes
+        if: steps.check-update.outputs.has_updates == 'true'
+        run: |
+          git push
+
+      - name: Summary
+        run: |
+          if [ "${{ steps.check-update.outputs.has_updates }}" = "true" ]; then
+            echo "✅ Successfully synced daab source"
+            echo "📊 Latest commit: ${{ steps.check-update.outputs.latest_sha }}"
+          else
+            echo "ℹ️  No updates found - source is up to date"
+          fi

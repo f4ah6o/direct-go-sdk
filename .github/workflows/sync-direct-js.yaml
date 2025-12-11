@@ -18,7 +18,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
 
       - name: Check lisb/direct-js for updates
         id: check-update
@@ -28,8 +28,8 @@ jobs:
           echo "latest_sha=$LATEST_SHA" >> $GITHUB_OUTPUT
 
           # Check if we have a stored SHA
-          if [ -f direct-js-source/.last-sync-sha ]; then
-            STORED_SHA=$(cat direct-js-source/.last-sync-sha)
+          if [ -f direct-go/direct-js-source/.last-sync-sha ]; then
+            STORED_SHA=$(cat direct-go/direct-js-source/.last-sync-sha)
             echo "stored_sha=$STORED_SHA" >> $GITHUB_OUTPUT
 
             if [ "$LATEST_SHA" = "$STORED_SHA" ]; then
@@ -48,32 +48,32 @@ jobs:
         if: steps.check-update.outputs.has_updates == 'true'
         run: |
           # Create directory if it doesn't exist
-          mkdir -p direct-js-source
+          mkdir -p direct-go/direct-js-source
 
           # Download the minified source
           echo "Downloading direct-node.min.js..."
           curl -sL https://raw.githubusercontent.com/lisb/direct-js/master/lib/direct-node.min.js \
-            -o direct-js-source/direct-node.min.js
+            -o direct-go/direct-js-source/direct-node.min.js
 
           # Deminify with prettier
           echo "Deminifying with prettier..."
-          pnpx prettier --write direct-js-source/direct-node.min.js
+          pnpx prettier --write direct-go/direct-js-source/direct-node.min.js
 
           # Rename to remove .min extension
-          mv direct-js-source/direct-node.min.js direct-js-source/direct-node.js
+          mv direct-go/direct-js-source/direct-node.min.js direct-go/direct-js-source/direct-node.js
 
           # Store the commit SHA
-          echo "${{ steps.check-update.outputs.latest_sha }}" > direct-js-source/.last-sync-sha
+          echo "${{ steps.check-update.outputs.latest_sha }}" > direct-go/direct-js-source/.last-sync-sha
 
           # Show file info
-          ls -lh direct-js-source/
+          ls -lh direct-go/direct-js-source/
           echo "Lines in deminified file:"
-          wc -l direct-js-source/direct-node.js
+          wc -l direct-go/direct-js-source/direct-node.js
 
       - name: Create metadata file
         if: steps.check-update.outputs.has_updates == 'true'
         run: |
-          cat > direct-js-source/README.md << 'EOF'
+          cat > direct-go/direct-js-source/README.md << 'EOF'
           # direct-js Source Code
 
           This directory contains the deminified source code from [lisb/direct-js](https://github.com/lisb/direct-js).
@@ -106,7 +106,7 @@ jobs:
         if: steps.check-update.outputs.has_updates == 'true'
         run: |
           echo "Running coverage analysis tool..."
-          cd tools/coverage
+          cd direct-go/tools/coverage
           go run . > ../../COVERAGE.md
           echo "Coverage report updated"
 
@@ -116,8 +116,8 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
 
-          git add direct-js-source/
-          git add COVERAGE.md
+          git add direct-go/direct-js-source/
+          git add direct-go/COVERAGE.md
 
           if git diff --staged --quiet; then
             echo "No changes to commit"
