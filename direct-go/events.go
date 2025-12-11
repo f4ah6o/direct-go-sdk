@@ -58,10 +58,10 @@ const (
 	EventNotifyUpdateTalkStatus = "notify_update_talk_status"
 
 	// Conference notifications
-	EventNotifyCreateConference  = "notify_create_conference"
-	EventNotifyCloseConference   = "notify_close_conference"
-	EventNotifyConferenceJoin    = "notify_conference_participant_join"
-	EventNotifyConferenceReject  = "notify_conference_participant_reject"
+	EventNotifyCreateConference = "notify_create_conference"
+	EventNotifyCloseConference  = "notify_close_conference"
+	EventNotifyConferenceJoin   = "notify_conference_participant_join"
+	EventNotifyConferenceReject = "notify_conference_participant_reject"
 )
 
 // API method names for RPC calls.
@@ -78,18 +78,18 @@ const (
 	MethodAuthorizeDevice       = "authorize_device"
 
 	// Users
-	MethodGetMe             = "get_me"
-	MethodGetUsers          = "get_users"
-	MethodGetProfile        = "get_profile"
-	MethodUpdateUser        = "update_user"
-	MethodUpdateProfile     = "update_profile"
-	MethodGetPresences      = "get_presences"
+	MethodGetMe              = "get_me"
+	MethodGetUsers           = "get_users"
+	MethodGetProfile         = "get_profile"
+	MethodUpdateUser         = "update_user"
+	MethodUpdateProfile      = "update_profile"
+	MethodGetPresences       = "get_presences"
 	MethodGetUserIdentifiers = "get_user_identifiers"
 
 	// Friends
-	MethodAddFriend       = "add_friend"
-	MethodDeleteFriend    = "delete_friend"
-	MethodGetFriends      = "get_friends"
+	MethodAddFriend        = "add_friend"
+	MethodDeleteFriend     = "delete_friend"
+	MethodGetFriends       = "get_friends"
 	MethodGetAcquaintances = "get_acquaintances"
 
 	// Domains
@@ -120,23 +120,22 @@ const (
 	MethodDeleteFavoriteTalk = "delete_favorite_talk"
 
 	// Messages
-	MethodGetMessages                   = "get_messages"
-	MethodCreateMessage                 = "create_message"
-	MethodDeleteMessage                 = "delete_message"
-	MethodScheduleMessage               = "schedule_message"
-	MethodSearchMessages                = "search_messages"
-	MethodSearchMessagesAroundDateTime  = "search_messages_around_datetime"
-	MethodGetFavoriteMessages           = "get_favorite_messages"
-	MethodAddFavoriteMessage            = "add_favorite_message"
-	MethodDeleteFavoriteMessage         = "delete_favorite_message"
-	MethodGetScheduledMessages          = "get_scheduled_messages"
-	MethodDeleteScheduledMessage        = "delete_scheduled_message"
-	MethodRescheduleMessage             = "reschedule_message"
-	MethodGetAvailableMessageReactions  = "get_available_message_reactions"
-	MethodSetMessageReaction            = "set_message_reaction"
-	MethodResetMessageReaction          = "reset_message_reaction"
-	MethodGetMessageReactionUsers       = "get_message_reaction_users"
-
+	MethodGetMessages                  = "get_messages"
+	MethodCreateMessage                = "create_message"
+	MethodDeleteMessage                = "delete_message"
+	MethodScheduleMessage              = "schedule_message"
+	MethodSearchMessages               = "search_messages"
+	MethodSearchMessagesAroundDateTime = "search_messages_around_datetime"
+	MethodGetFavoriteMessages          = "get_favorite_messages"
+	MethodAddFavoriteMessage           = "add_favorite_message"
+	MethodDeleteFavoriteMessage        = "delete_favorite_message"
+	MethodGetScheduledMessages         = "get_scheduled_messages"
+	MethodDeleteScheduledMessage       = "delete_scheduled_message"
+	MethodRescheduleMessage            = "reschedule_message"
+	MethodGetAvailableMessageReactions = "get_available_message_reactions"
+	MethodSetMessageReaction           = "set_message_reaction"
+	MethodResetMessageReaction         = "reset_message_reaction"
+	MethodGetMessageReactionUsers      = "get_message_reaction_users"
 
 	// File & Attachment
 	MethodCreateUploadAuth  = "create_upload_auth"
@@ -154,11 +153,11 @@ const (
 	MethodEnablePushNotification  = "enable_push_notification"
 
 	// Announcements
-	MethodCreateAnnouncement        = "create_announcement"
-	MethodGetAnnouncements          = "get_announcements"
-	MethodGetAnnouncementStatuses   = "get_announcement_statuses"
-	MethodGetAnnouncementStatus     = "get_announcement_status"
-	MethodUpdateAnnouncementStatus  = "update_announcement_status"
+	MethodCreateAnnouncement       = "create_announcement"
+	MethodGetAnnouncements         = "get_announcements"
+	MethodGetAnnouncementStatuses  = "get_announcement_statuses"
+	MethodGetAnnouncementStatus    = "get_announcement_status"
+	MethodUpdateAnnouncementStatus = "update_announcement_status"
 
 	// Conference/Call
 	MethodGetConferences            = "get_conferences"
@@ -173,12 +172,23 @@ const (
 	MsgTypeSystem           = 0  // System message
 	MsgTypeText             = 1  // Text message
 	MsgTypeStamp            = 2  // Stamp
-	MsgTypeYesNo            = 3  // Yes/No action stamp
+	MsgTypeLocation         = 3  // Location (geo)
 	MsgTypeFile             = 4  // Single file
 	MsgTypeTextMultipleFile = 5  // Text with multiple files
-	MsgTypeSelect           = 6  // Select action stamp
-	MsgTypeTask             = 7  // Task action stamp
-	MsgTypeLocation         = 8  // Location
-	MsgTypeNote             = 9  // Note
-	MsgTypeVideoCall        = 10 // Video call
+	MsgTypeUnused           = 6  // Reserved / unused
+	MsgTypeDeleted          = 7  // Deleted message
+	MsgTypeNoteShared       = 8  // Note shared
+	MsgTypeNoteDeleted      = 9  // Note deleted
+	MsgTypeNoteCreated      = 10 // Note created
+	MsgTypeNoteUpdated      = 11 // Note updated
+	MsgTypeOriginalStamp    = 12 // Original stamp
+	MsgTypeYesNo            = 13 // Yes/No action stamp
+	MsgTypeYesNoReply       = 14 // Yes/No reply
+	MsgTypeSelect           = 15 // Select action stamp
+	MsgTypeSelectReply      = 16 // Select reply
+	MsgTypeTask             = 17 // Task action stamp
+	MsgTypeTaskDone         = 18 // Task done reply
+	MsgTypeYesNoClosed      = 19 // Yes/No closed
+	MsgTypeSelectClosed     = 20 // Select closed
+	MsgTypeTaskClosed       = 21 // Task closed
 )
