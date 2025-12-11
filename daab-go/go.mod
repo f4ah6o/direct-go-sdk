@@ -10,7 +10,6 @@ require (
 )
 
 require (
-	github.com/f4ah6o/direct-go v0.0.0-20251210140916-7606f385cda2 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect

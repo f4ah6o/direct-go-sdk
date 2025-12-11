@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/f4ah6o/direct-go/debuglog"
+	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 	"github.com/gorilla/websocket"
 	"github.com/vmihailenco/msgpack/v5"
 )
