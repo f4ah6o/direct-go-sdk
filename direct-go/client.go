@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -251,7 +252,7 @@ func (c *Client) startNotification() {
 					
 					if talkID != nil {
 						dlog("[DEBUG] Sending test message to talk: %v", talkID)
-						c.call("create_message", []interface{}{talkID, 1, "Hello from daabgo!"}, func(result interface{}) {
+						c.call("create_message", []interface{}{}, func(result interface{}) {
 							dlog("[DEBUG] create_message success: %+v", result)
 						}, func(err interface{}) {
 							dlog("[DEBUG] create_message error: %+v", err)
@@ -272,19 +273,27 @@ func (c *Client) startNotification() {
 				c.call("start_notification", []interface{}{}, func(result interface{}) {
 					dlog("[DEBUG] start_notification result: %+v", result)
 					
-					// If false, try reset_notification
+					// If false, try reset_notification and then start_notification again
 					if result == false {
 						dlog("[DEBUG] start_notification returned false, trying reset_notification...")
 						c.call("reset_notification", []interface{}{}, func(result interface{}) {
 							dlog("[DEBUG] reset_notification result: %+v", result)
 							
-							// Call update_last_used_at to mark session as active
-							c.call("update_last_used_at", []interface{}{}, func(result interface{}) {
-								dlog("[DEBUG] update_last_used_at result: %+v", result)
-								c.emit("data_recovered", result)
+							// After reset, call start_notification again
+							c.call("start_notification", []interface{}{}, func(result interface{}) {
+								dlog("[DEBUG] start_notification (after reset) result: %+v", result)
+								
+								// Call update_last_used_at to mark session as active
+								c.call("update_last_used_at", []interface{}{}, func(result interface{}) {
+									dlog("[DEBUG] update_last_used_at result: %+v", result)
+									c.emit("data_recovered", result)
+								}, func(err interface{}) {
+									dlog("[DEBUG] update_last_used_at error: %+v", err)
+									c.emit("data_recovered", nil)
+								})
 							}, func(err interface{}) {
-								dlog("[DEBUG] update_last_used_at error: %+v", err)
-								c.emit("data_recovered", nil)
+								dlog("[DEBUG] start_notification (after reset) error: %+v", err)
+								c.emit("notification_error", err)
 							})
 						}, func(err interface{}) {
 							dlog("[DEBUG] reset_notification error: %+v", err)
@@ -428,7 +437,12 @@ func (c *Client) Send(roomID interface{}, msgType int, content interface{}) erro
 // SendText sends a text message to the specified room.
 func (c *Client) SendText(roomID string, text string) error {
 	// For text messages, type is 1 and content is the text string
-	_, err := c.Call("create_message", []interface{}{roomID, 1, text})
+	// Convert roomID to uint64 for the API
+	var talkID interface{} = roomID
+	if id, err := strconv.ParseUint(roomID, 10, 64); err == nil {
+		talkID = id
+	}
+	_, err := c.Call("create_message", []interface{}{talkID, 1, text})
 	return err
 }
 
@@ -540,13 +554,16 @@ func (c *Client) handleNotification(message []interface{}) {
 		dlog("[DEBUG] Method not a string: %v", message[2])
 		return
 	}
+	
+	dlog("[DEBUG] <<< SERVER NOTIFICATION: method=%s, msgID=%d", method, msgID)
+	
 	params, ok := message[3].([]interface{})
 	if !ok || len(params) == 0 {
 		dlog("[DEBUG] %s: params invalid or empty: %T %v", method, message[3], message[3])
 		return
 	}
 
-	dlog("[DEBUG] Received notification: %s", method)
+	dlog("[DEBUG] Received notification: %s, params count: %d", method, len(params))
 
 	// Emit the notification event
 	c.emit(method, params[0])
@@ -596,7 +613,9 @@ func parseMessage(data interface{}) ReceivedMessage {
 
 	dlog("[DEBUG] parseMessage: keys = %v", getMapKeys(m))
 
-	if id, ok := m["id"]; ok {
+	if id, ok := m["message_id"]; ok {
+		msg.ID = fmt.Sprintf("%v", id)
+	} else if id, ok := m["id"]; ok {
 		msg.ID = fmt.Sprintf("%v", id)
 	}
 	if talkId, ok := m["talk_id"]; ok {
