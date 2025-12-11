@@ -8,17 +8,40 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"time"
+)
+
+// Log levels
+const (
+	LevelOff     = 0 // No debug logging
+	LevelNormal  = 1 // Important debug messages
+	LevelVerbose = 2 // All debug messages including ping/pong
 )
 
 var (
 	debugServerURL string
 	enabled        bool
+	logLevel       int
 	client         = &http.Client{Timeout: 1 * time.Second}
 	mu             sync.Mutex
 	localLogger    = log.New(os.Stdout, "", log.LstdFlags)
 )
+
+func init() {
+	// Check DIRECT_DEBUG environment variable
+	// 0 or unset: no logging
+	// 1: normal logging
+	// 2: verbose logging (includes ping/pong)
+	if v := os.Getenv("DIRECT_DEBUG"); v != "" {
+		if level, err := strconv.Atoi(v); err == nil {
+			logLevel = level
+		} else if v == "true" {
+			logLevel = LevelNormal
+		}
+	}
+}
 
 // SetServer sets the debug server URL and enables remote logging
 func SetServer(url string) {
@@ -35,19 +58,31 @@ func IsEnabled() bool {
 	return enabled
 }
 
-// Printf logs a message both locally and to the debug server
+// Printf logs a message (level 1 = normal)
 func Printf(format string, v ...interface{}) {
-	msg := fmt.Sprintf(format, v...)
+	printfLevel(LevelNormal, format, v...)
+}
 
-	// Always log locally
-	localLogger.Print(msg)
+// Verbose logs a message at verbose level (level 2)
+func Verbose(format string, v ...interface{}) {
+	printfLevel(LevelVerbose, format, v...)
+}
 
-	// Send to debug server if enabled
+func printfLevel(level int, format string, v ...interface{}) {
 	mu.Lock()
+	currentLevel := logLevel
 	url := debugServerURL
 	on := enabled
 	mu.Unlock()
 
+	if currentLevel < level {
+		return // Skip if log level is too low
+	}
+
+	msg := fmt.Sprintf(format, v...)
+	localLogger.Print(msg)
+
+	// Send to debug server if enabled
 	if on && url != "" {
 		go func() {
 			resp, err := client.Post(url+"/log", "text/plain", bytes.NewBufferString(msg))
@@ -58,25 +93,9 @@ func Printf(format string, v ...interface{}) {
 	}
 }
 
-// Println logs a message with newline
+// Println logs a message with newline (level 1 = normal)
 func Println(v ...interface{}) {
-	msg := fmt.Sprintln(v...)
-
-	localLogger.Print(msg)
-
-	mu.Lock()
-	url := debugServerURL
-	on := enabled
-	mu.Unlock()
-
-	if on && url != "" {
-		go func() {
-			resp, err := client.Post(url+"/log", "text/plain", bytes.NewBufferString(msg))
-			if err == nil {
-				resp.Body.Close()
-			}
-		}()
-	}
+	Printf("%s", fmt.Sprintln(v...))
 }
 
 // Writer returns an io.Writer that sends output to both local and debug server
@@ -87,25 +106,7 @@ func Writer() io.Writer {
 type debugWriter struct{}
 
 func (w *debugWriter) Write(p []byte) (n int, err error) {
-	msg := string(p)
-
-	// Local output
-	os.Stdout.Write(p)
-
-	// Remote output
-	mu.Lock()
-	url := debugServerURL
-	on := enabled
-	mu.Unlock()
-
-	if on && url != "" {
-		go func() {
-			resp, err := client.Post(url+"/log", "text/plain", bytes.NewBufferString(msg))
-			if err == nil {
-				resp.Body.Close()
-			}
-		}()
-	}
-
+	Printf("%s", string(p))
 	return len(p), nil
 }
+

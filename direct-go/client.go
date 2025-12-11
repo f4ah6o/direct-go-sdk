@@ -25,9 +25,14 @@ func EnableDebugServer(url string) {
 	debuglog.SetServer(url)
 }
 
-// dlog is a helper for debug logging
+// dlog is a helper for debug logging (level 1 = normal)
 func dlog(format string, v ...interface{}) {
 	debuglog.Printf(format, v...)
+}
+
+// vlog is a helper for verbose debug logging (level 2 = verbose, includes ping/pong)
+func vlog(format string, v ...interface{}) {
+	debuglog.Verbose(format, v...)
 }
 
 // Protocol constants
@@ -143,7 +148,7 @@ func (c *Client) Connect() error {
 
 	// Set up pong handler
 	c.conn.SetPongHandler(func(appData string) error {
-		dlog("[DEBUG] Received pong: %s", appData)
+		vlog("[DEBUG] Received pong: %s", appData)
 		return nil
 	})
 
@@ -178,9 +183,9 @@ func (c *Client) pingLoop() {
 				return
 			}
 
-			dlog("[DEBUG] Sending ping...")
+			vlog("[DEBUG] Sending ping...")
 			if err := conn.WriteMessage(websocket.PingMessage, []byte("PING")); err != nil {
-				dlog("[DEBUG] Ping error: %v", err)
+				vlog("[DEBUG] Ping error: %v", err)
 				return
 			}
 		case <-c.Done:
