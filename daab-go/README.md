@@ -54,7 +54,3 @@ func main() {
     robot.Run()
 }
 ```
-
-## ライセンス
-
-MIT License

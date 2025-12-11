@@ -44,7 +44,3 @@ func main() {
     select {}
 }
 ```
-
-## ライセンス
-
-MIT License
