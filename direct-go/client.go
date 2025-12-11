@@ -222,7 +222,7 @@ func (c *Client) startNotification() {
 		// Then get talks
 		c.call("get_talks", []interface{}{}, func(result interface{}) {
 			dlog("[DEBUG] get_talks success: %d talks", countItems(result))
-			
+
 			// Log talk details and try to send a message
 			if talks, ok := result.([]interface{}); ok && len(talks) > 0 {
 				for i, talk := range talks {
@@ -238,7 +238,7 @@ func (c *Client) startNotification() {
 						dlog("[DEBUG] Talk %d: unexpected type %T: %v", i, talk, talk)
 					}
 				}
-				
+
 				// Try to send a test message to the first talk
 				if firstTalk, ok := talks[0].(map[string]interface{}); ok {
 					// Find the talk ID - might be "id" or encoded differently
@@ -249,7 +249,7 @@ func (c *Client) startNotification() {
 							talkID = v
 						}
 					}
-					
+
 					if talkID != nil {
 						dlog("[DEBUG] Sending test message to talk: %v", talkID)
 						c.call("create_message", []interface{}{}, func(result interface{}) {
@@ -272,17 +272,17 @@ func (c *Client) startNotification() {
 				// Try start_notification first
 				c.call("start_notification", []interface{}{}, func(result interface{}) {
 					dlog("[DEBUG] start_notification result: %+v", result)
-					
+
 					// If false, try reset_notification and then start_notification again
 					if result == false {
 						dlog("[DEBUG] start_notification returned false, trying reset_notification...")
 						c.call("reset_notification", []interface{}{}, func(result interface{}) {
 							dlog("[DEBUG] reset_notification result: %+v", result)
-							
+
 							// After reset, call start_notification again
 							c.call("start_notification", []interface{}{}, func(result interface{}) {
 								dlog("[DEBUG] start_notification (after reset) result: %+v", result)
-								
+
 								// Call update_last_used_at to mark session as active
 								c.call("update_last_used_at", []interface{}{}, func(result interface{}) {
 									dlog("[DEBUG] update_last_used_at result: %+v", result)
@@ -554,9 +554,9 @@ func (c *Client) handleNotification(message []interface{}) {
 		dlog("[DEBUG] Method not a string: %v", message[2])
 		return
 	}
-	
+
 	dlog("[DEBUG] <<< SERVER NOTIFICATION: method=%s, msgID=%d", method, msgID)
-	
+
 	params, ok := message[3].([]interface{})
 	if !ok || len(params) == 0 {
 		dlog("[DEBUG] %s: params invalid or empty: %T %v", method, message[3], message[3])
@@ -627,6 +627,7 @@ func parseMessage(data interface{}) ReceivedMessage {
 	}
 	if content, ok := m["content"]; ok {
 		dlog("[DEBUG] content type=%T value=%v", content, content)
+		msg.Content = content
 		if text, ok := content.(string); ok {
 			msg.Text = text
 		} else if contentMap, ok := content.(map[string]interface{}); ok {

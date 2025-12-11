@@ -27,9 +27,10 @@ type YesNoMessage struct {
 
 // SelectMessage represents a select action stamp.
 type SelectMessage struct {
-	Question string   `json:"question" msgpack:"question"`
-	Options  []string `json:"options" msgpack:"options"`
-	Listing  bool     `json:"listing,omitempty" msgpack:"listing,omitempty"`
+	Question    string   `json:"question" msgpack:"question"`
+	Options     []string `json:"options" msgpack:"options"`
+	Listing     bool     `json:"listing,omitempty" msgpack:"listing,omitempty"`
+	ClosingType int      `json:"closing_type,omitempty" msgpack:"closing_type,omitempty"`
 }
 
 // TaskMessage represents a task action stamp.
@@ -68,14 +69,25 @@ const (
 	MessageTypeSystem MessageType = iota
 	MessageTypeText
 	MessageTypeStamp
-	MessageTypeYesNo
+	MessageTypeLocation
 	MessageTypeFile
 	MessageTypeTextMultipleFile
+	MessageTypeUnused
+	MessageTypeDeleted
+	MessageTypeNoteShared
+	MessageTypeNoteDeleted
+	MessageTypeNoteCreated
+	MessageTypeNoteUpdated
+	MessageTypeOriginalStamp
+	MessageTypeYesNo
+	MessageTypeYesNoReply
 	MessageTypeSelect
+	MessageTypeSelectReply
 	MessageTypeTask
-	MessageTypeLocation
-	MessageTypeNote
-	MessageTypeVideoCall
+	MessageTypeTaskDone
+	MessageTypeYesNoClosed
+	MessageTypeSelectClosed
+	MessageTypeTaskClosed
 )
 
 // Message is the legacy interface for compatibility.
@@ -83,15 +95,15 @@ type Message = ReceivedMessage
 
 // ReceivedMessage is a parsed incoming message with all fields.
 type ReceivedMessage struct {
-	ID        string          `json:"id" msgpack:"id"`
-	TalkID    string          `json:"talk_id" msgpack:"talk_id"`
-	RoomID    string          `json:"room_id" msgpack:"-"`
-	UserID    string          `json:"user_id" msgpack:"user_id"`
-	Text      string          `json:"text,omitempty" msgpack:"-"`
-	Type      MessageType     `json:"type" msgpack:"type"`
-	Timestamp time.Time       `json:"timestamp,omitempty" msgpack:"-"`
-	Created   int64           `json:"created,omitempty" msgpack:"created"`
-	Content   interface{}     `json:"content,omitempty" msgpack:"content"`
+	ID        string      `json:"id" msgpack:"id"`
+	TalkID    string      `json:"talk_id" msgpack:"talk_id"`
+	RoomID    string      `json:"room_id" msgpack:"-"`
+	UserID    string      `json:"user_id" msgpack:"user_id"`
+	Text      string      `json:"text,omitempty" msgpack:"-"`
+	Type      MessageType `json:"type" msgpack:"type"`
+	Timestamp time.Time   `json:"timestamp,omitempty" msgpack:"-"`
+	Created   int64       `json:"created,omitempty" msgpack:"created"`
+	Content   interface{} `json:"content,omitempty" msgpack:"content"`
 
 	// Raw data for custom parsing
 	Raw json.RawMessage `json:"-" msgpack:"-"`
@@ -99,11 +111,11 @@ type ReceivedMessage struct {
 
 // Room represents a talk room.
 type Room struct {
-	ID       interface{} `json:"id" msgpack:"id"`
-	Name     string      `json:"name" msgpack:"name"`
-	Type     RoomType    `json:"type" msgpack:"type"`
+	ID       interface{}   `json:"id" msgpack:"id"`
+	Name     string        `json:"name" msgpack:"name"`
+	Type     RoomType      `json:"type" msgpack:"type"`
 	UserIDs  []interface{} `json:"user_ids" msgpack:"user_ids"`
-	DomainID interface{} `json:"domain_id,omitempty" msgpack:"domain_id,omitempty"`
+	DomainID interface{}   `json:"domain_id,omitempty" msgpack:"domain_id,omitempty"`
 }
 
 // RoomType represents the type of a room.
@@ -156,7 +168,7 @@ type TalkStatus struct {
 
 // SessionResponse represents the response from create_session.
 type SessionResponse struct {
-	UserID             interface{}   `json:"user_id" msgpack:"user_id"`
-	DeviceID           interface{}   `json:"device_id" msgpack:"device_id"`
-	PasswordExpiration interface{}   `json:"password_expiration" msgpack:"password_expiration"`
+	UserID             interface{} `json:"user_id" msgpack:"user_id"`
+	DeviceID           interface{} `json:"device_id" msgpack:"device_id"`
+	PasswordExpiration interface{} `json:"password_expiration" msgpack:"password_expiration"`
 }
