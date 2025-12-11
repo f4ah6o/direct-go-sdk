@@ -22,6 +22,14 @@ direct-go-sdk/
 │   ├── auth.go             # Authentication (.env-based)
 │   ├── messages.go         # Message sending functions
 │   ├── events.go           # Event handling
+│   ├── users.go            # User management API
+│   ├── domains.go          # Domain/organization API
+│   ├── talks.go            # Talk/room management API
+│   ├── message_operations.go  # Message operations (search, favorites, reactions)
+│   ├── files.go            # File upload/download API
+│   ├── departments.go      # Department hierarchy API
+│   ├── announcements.go    # Announcements API
+│   ├── conference.go       # Video/audio conference API
 │   ├── debuglog/           # Debug logging to separate server
 │   ├── tools/coverage/     # Porting coverage analysis tool
 │   ├── direct-js-source/   # Synced JS source for reference
@@ -102,7 +110,7 @@ These workflows are **manually triggered** only via GitHub Actions UI.
 The **coverage tool** (`direct-go/tools/coverage/`) tracks porting progress by comparing RPC method calls:
 
 * JavaScript baseline: 82 RPC methods across 13 categories
-* Current Go implementation: ~10% coverage (8 methods)
+* Current Go implementation: ~88% coverage (72/82 methods)
 * Generates detailed reports in JSON/Markdown/Text formats
 
 Run coverage analysis:
@@ -116,10 +124,55 @@ View `direct-go/COVERAGE.md` for current status and missing methods.
 
 ### Implemented RPC Methods (direct-go)
 
-* Session & Auth: `create_session`, `start_notification`, `reset_notification`, `update_last_used_at`
-* User: `get_me`
-* Domain: `get_domains`, `accept_domain_invite`
-* Talk/Room: `create_talk`, `send_message`
+72 out of 82 methods implemented (~88% coverage):
+
+**Session & Auth (6/7)**
+* `create_session`, `start_notification`, `reset_notification`, `update_last_used_at`
+* `create_access_token`, `create_access_token_by_id`
+* Missing: account control request methods
+
+**User Management (10/11)**
+* `get_me`, `get_users`, `get_profile`, `update_profile`, `update_user`
+* `get_presences`, `get_user_identifiers`
+* `get_friends`, `add_friend`, `delete_friend`, `get_acquaintances`
+
+**Domain Management (7/7)** ✅
+* `get_domains`, `get_domain_invites`, `accept_domain_invite`, `delete_domain_invite`
+* `leave_domain`, `get_domain_users`, `search_domain_users`
+
+**Department Management (3/3)** ✅
+* `get_department_tree`, `get_department_users`, `get_department_user_count`
+
+**Talk/Room Management (8/9)**
+* `get_talks`, `get_talk_statuses`, `create_group_talk`, `create_pair_talk`
+* `update_group_talk`, `add_talkers`, `delete_talker`
+* `add_favorite_talk`, `delete_favorite_talk`
+
+**Message Operations (15/17)**
+* `create_message`, `get_messages`, `delete_message`, `search_messages`, `search_messages_around_datetime`
+* `get_favorite_messages`, `add_favorite_message`, `delete_favorite_message`
+* `get_scheduled_messages`, `schedule_message`, `delete_scheduled_message`, `reschedule_message`
+* `get_available_message_reactions`, `set_message_reaction`, `reset_message_reaction`, `get_message_reaction_users`
+* Missing: `get_read_status`, `update_read_status`
+
+**File & Attachment Management (6/6)** ✅
+* `create_upload_auth`, `get_attachments`, `delete_attachment`, `search_attachments`
+* `create_file_preview`, `get_file_preview`
+
+**Announcement Management (4/4)** ✅
+* `create_announcement`, `get_announcements`
+* `get_announcement_statuses`, `update_announcement_status`
+
+**Push Notification Management (2/2)** ✅
+* `enable_push_notification`, `disable_push_notification`
+
+**Conference/Call Management (5/5)** ✅
+* `get_conferences`, `get_conference_participants`
+* `join_conference`, `leave_conference`, `reject_conference`
+
+**Miscellaneous (2/5)**
+* `authorize_device`
+* Missing: note management (4 methods)
 
 ## Key Architecture Patterns
 
@@ -222,24 +275,27 @@ go fmt ./...
 
 **Do not modify** these directories; they are managed by GitHub Actions.
 
-### Coverage Tool Categories
+### Coverage Status
 
-When implementing new RPC methods, check which category they belong to:
+Current implementation status by category:
 
-1. Session & Auth (7 methods)
-2. User Management (11 methods)
-3. Domain Management (7 methods)
-4. Department Management (3 methods)
-5. Talk/Room Management (9 methods)
-6. Message Operations (17 methods)
-7. File & Attachment Management (6 methods)
-8. Note Management (6 methods)
-9. Announcement Management (4 methods)
-10. Push Notification Management (2 methods)
-11. Conference/Call Management (5 methods)
-12. Miscellaneous (5 methods)
+1. ✅ Domain Management (7/7) - 100%
+2. ✅ Department Management (3/3) - 100%
+3. ✅ File & Attachment Management (6/6) - 100%
+4. ✅ Announcement Management (4/4) - 100%
+5. ✅ Push Notification Management (2/2) - 100%
+6. ✅ Conference/Call Management (5/5) - 100%
+7. 🟡 User Management (10/11) - 91%
+8. 🟡 Talk/Room Management (8/9) - 89%
+9. 🟡 Message Operations (15/17) - 88%
+10. 🟡 Session & Auth (6/7) - 86%
+11. 🔴 Note Management (0/6) - 0%
+12. 🔴 Miscellaneous (1/5) - 20%
 
-Prioritize based on coverage gaps shown in `COVERAGE.md`.
+**Missing Methods (10/82)**:
+* Note management: `create_note`, `get_notes`, `update_note`, `delete_note`, `get_note_comments`, `create_note_comment`
+* Session: account control request methods (3)
+* Message: `get_read_status`, `update_read_status`
 
 ## API Compatibility
 
