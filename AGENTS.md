@@ -19,6 +19,7 @@ Both modules are being ported from upstream JavaScript implementations:
 direct-go-sdk/
 ├── direct-go/              # Direct4B Go SDK
 │   ├── client.go           # WebSocket client with MessagePack RPC
+│   ├── client_test.go      # Unit tests for client
 │   ├── auth.go             # Authentication (.env-based)
 │   ├── messages.go         # Message sending functions
 │   ├── events.go           # Event handling
@@ -31,6 +32,7 @@ direct-go-sdk/
 │   ├── announcements.go    # Announcements API
 │   ├── conference.go       # Video/audio conference API
 │   ├── debuglog/           # Debug logging to separate server
+│   ├── testutil/           # Test utilities and mock server
 │   ├── tools/coverage/     # Porting coverage analysis tool
 │   ├── direct-js-source/   # Synced JS source for reference
 │   └── examples/
@@ -38,6 +40,16 @@ direct-go-sdk/
     ├── cmd/daabgo/         # Main CLI entry point
     ├── cmd/debugserver/    # Debug log server
     ├── internal/cli/       # CLI commands (cobra-based)
+    │   ├── root.go         # Root command
+    │   ├── init.go         # Initialize bot project
+    │   ├── login.go        # Login to Direct4B
+    │   ├── logout.go       # Logout
+    │   ├── run.go          # Run bot (foreground)
+    │   ├── start.go        # Start bot as daemon
+    │   ├── stop.go         # Stop daemon
+    │   ├── invites.go      # Manage domain invites
+    │   ├── daemon.go       # Daemon management utilities
+    │   └── version.go      # Show version
     ├── internal/bot/       # Bot framework (Hubot-like)
     ├── daab-source/        # Synced daab JS source for reference
     └── examples/
@@ -50,8 +62,11 @@ direct-go-sdk/
 ```bash
 cd direct-go
 
-# Run tests (currently no test files)
+# Run tests
 go test ./...
+go test -v              # Verbose output
+go test -cover          # With coverage report
+go test -race           # With race detector
 
 # Run example
 cd examples/simple
@@ -60,6 +75,7 @@ go run main.go
 # Build and run coverage tool
 cd tools/coverage
 go run . -format markdown -output ../../COVERAGE.md
+go run . -use-baseline -format text  # Quick text summary
 ```
 
 ### Working with daab-go
@@ -71,15 +87,20 @@ cd daab-go
 go build -o daabgo cmd/daabgo/main.go
 
 # Run CLI commands
-./daabgo init    # Initialize bot project
-./daabgo login   # Login to Direct4B
-./daabgo run     # Run bot
+./daabgo init      # Initialize bot project
+./daabgo login     # Login to Direct4B
+./daabgo invites   # Show and accept domain invites
+./daabgo run       # Run bot (foreground)
+./daabgo start     # Start bot as daemon
+./daabgo stop      # Stop daemon
+./daabgo logout    # Logout
+./daabgo version   # Show version
 
 # Run example bot
 cd examples/ping
 go run main.go
 
-# Run debug server
+# Run debug server (for development)
 cd cmd/debugserver
 go run main.go
 ```
@@ -186,8 +207,18 @@ Response: [1, msgID, error, result]
 ```
 
 * `client.go`: WebSocket connection, RPC request/response handling
-* `client.Call()`: Low-level RPC method
+* `client.Call()`: Low-level RPC method (blocking)
+* `client.XxxWithContext()`: Context-aware API methods (recommended)
 * Helper methods wrap `Call()` for type safety
+
+**Context Support**: Most API methods have `WithContext` variants that accept `context.Context` for cancellation and timeout control.
+
+Example:
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+defer cancel()
+user, err := client.GetMeWithContext(ctx)
+```
 
 ### Event System
 
@@ -213,7 +244,14 @@ robot.Run()
 
 * `internal/bot/bot.go`: Core framework
 * `internal/cli/`: CLI commands using cobra
+  * Support for foreground (`run`) and daemon mode (`start`/`stop`)
+  * Domain invite management (`invites`)
+  * PID and log file management in `~/.daabgo/`
 * Credentials stored in `.env` file (handled by `direct-go/auth.go`)
+
+**Daemon Mode**: Bot can run as background daemon with PID tracking:
+* PID file: `~/.daabgo/daabgo.pid`
+* Log file: `~/.daabgo/daabgo.log`
 
 ### Debug Logging
 
@@ -240,7 +278,7 @@ go install github.com/f4ah6o/daabgo/cmd/daabgo@latest
 
 ### Testing
 
-Currently no test files exist. When adding tests:
+direct-go has unit tests with mock server support:
 
 ```bash
 # Run all tests in workspace
@@ -248,8 +286,16 @@ go test ./...
 
 # Run tests for specific module
 cd direct-go && go test ./...
+cd direct-go && go test -v -cover  # With coverage
+
+# Run tests with race detector
+cd direct-go && go test -race
+
+# daab-go doesn't have tests yet
 cd daab-go && go test ./...
 ```
+
+**Test utilities**: `direct-go/testutil/` provides a mock WebSocket server for testing RPC calls.
 
 ### Linting
 
@@ -267,6 +313,7 @@ go fmt ./...
 * Published module path: `github.com/f4ah6o/direct-go-sdk/{direct-go,daab-go}`
 * Import direct-go in external code: `import direct "github.com/f4ah6o/direct-go"`
 * Import daab-go bot: `import "github.com/f4ah6o/daabgo/bot"`
+* Test utilities: `import "github.com/f4ah6o/direct-go-sdk/direct-go/testutil"`
 
 ### JavaScript Reference Sources
 
