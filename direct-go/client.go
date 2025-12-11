@@ -5,6 +5,7 @@
 package direct
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -683,27 +684,107 @@ func (c *Client) emit(event string, data interface{}) {
 	}
 }
 
+// GetTalksWithContext retrieves the list of talk rooms with context support.
+// This is the preferred method over the legacy GetTalks().
+func (c *Client) GetTalksWithContext(ctx context.Context) ([]Talk, error) {
+	result, err := c.Call(MethodGetTalks, []interface{}{})
+	if err != nil {
+		return nil, err
+	}
+
+	talks := []Talk{}
+	if arr, ok := result.([]interface{}); ok {
+		for _, item := range arr {
+			if talkData, ok := item.(map[string]interface{}); ok {
+				talk := parseTalk(talkData)
+				talks = append(talks, *talk)
+			}
+		}
+	}
+
+	return talks, nil
+}
+
+// GetTalkStatusesWithContext retrieves the status of all talks with context support.
+func (c *Client) GetTalkStatusesWithContext(ctx context.Context) ([]TalkStatus, error) {
+	result, err := c.Call(MethodGetTalkStatuses, []interface{}{})
+	if err != nil {
+		return nil, err
+	}
+
+	statuses := []TalkStatus{}
+	if arr, ok := result.([]interface{}); ok {
+		for _, item := range arr {
+			if statusData, ok := item.(map[string]interface{}); ok {
+				status := TalkStatus{}
+				if v, ok := statusData["talk_id"]; ok {
+					status.TalkID = v
+				}
+				if v, ok := statusData["unread_count"].(int); ok {
+					status.UnreadCount = v
+				}
+				if v, ok := statusData["latest_msg_id"]; ok {
+					status.LatestMsgID = v
+				}
+				statuses = append(statuses, status)
+			}
+		}
+	}
+
+	return statuses, nil
+}
+
+// GetMeWithContext retrieves the current user's profile with context support.
+// This is the preferred method over the legacy GetMe().
+func (c *Client) GetMeWithContext(ctx context.Context) (*UserInfo, error) {
+	result, err := c.Call(MethodGetMe, []interface{}{})
+	if err != nil {
+		return nil, err
+	}
+
+	if userData, ok := result.(map[string]interface{}); ok {
+		user := parseUserInfo(userData)
+		return &user, nil
+	}
+
+	return nil, nil
+}
+
+// SendTextWithContext sends a text message with context support.
+// This is the preferred method over the legacy SendText().
+func (c *Client) SendTextWithContext(ctx context.Context, roomID string, text string) error {
+	_, err := c.Call(MethodCreateMessage, []interface{}{roomID, 1, text})
+	return err
+}
+
+// Legacy methods below - deprecated, use context-aware versions instead
+
 // GetTalks retrieves the list of talk rooms.
+// Deprecated: Use GetTalksWithContext instead.
 func (c *Client) GetTalks() (interface{}, error) {
 	return c.Call("get_talks", []interface{}{})
 }
 
 // GetDomains retrieves the list of domains.
+// Deprecated: Use GetDomainsWithContext instead.
 func (c *Client) GetDomains() (interface{}, error) {
 	return c.Call("get_domains", []interface{}{})
 }
 
 // GetDomainInvites retrieves pending domain invitations.
+// Deprecated: Use GetDomainInvitesWithContext instead.
 func (c *Client) GetDomainInvites() (interface{}, error) {
 	return c.Call("get_domain_invites", []interface{}{})
 }
 
 // AcceptDomainInvite accepts a domain invitation.
+// Deprecated: Use AcceptDomainInviteWithContext instead.
 func (c *Client) AcceptDomainInvite(inviteID interface{}) (interface{}, error) {
 	return c.Call("accept_domain_invite", []interface{}{inviteID})
 }
 
 // GetMe retrieves the current user's profile.
+// Deprecated: Use GetMeWithContext instead.
 func (c *Client) GetMe() (interface{}, error) {
 	return c.Call("get_me", []interface{}{})
 }

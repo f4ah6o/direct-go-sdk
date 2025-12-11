@@ -120,10 +120,31 @@ const (
 	MethodDeleteFavoriteTalk = "delete_favorite_talk"
 
 	// Messages
-	MethodGetMessages     = "get_messages"
-	MethodCreateMessage   = "create_message"
-	MethodDeleteMessage   = "delete_message"
-	MethodScheduleMessage = "schedule_message"
+	MethodGetMessages                   = "get_messages"
+	MethodCreateMessage                 = "create_message"
+	MethodDeleteMessage                 = "delete_message"
+	MethodScheduleMessage               = "schedule_message"
+	MethodSearchMessages                = "search_messages"
+	MethodSearchMessagesAroundDateTime  = "search_messages_around_datetime"
+	MethodGetFavoriteMessages           = "get_favorite_messages"
+	MethodAddFavoriteMessage            = "add_favorite_message"
+	MethodDeleteFavoriteMessage         = "delete_favorite_message"
+	MethodGetScheduledMessages          = "get_scheduled_messages"
+	MethodDeleteScheduledMessage        = "delete_scheduled_message"
+	MethodRescheduleMessage             = "reschedule_message"
+	MethodGetAvailableMessageReactions  = "get_available_message_reactions"
+	MethodSetMessageReaction            = "set_message_reaction"
+	MethodResetMessageReaction          = "reset_message_reaction"
+	MethodGetMessageReactionUsers       = "get_message_reaction_users"
+
+
+	// File & Attachment
+	MethodCreateUploadAuth  = "create_upload_auth"
+	MethodGetAttachments    = "get_attachments"
+	MethodDeleteAttachment  = "delete_attachment"
+	MethodSearchAttachments = "search_attachments"
+	MethodCreateFilePreview = "create_file_preview"
+	MethodGetFilePreview    = "get_file_preview"
 
 	// Read status
 	MethodGetReadStatus = "get_read_status"
@@ -138,6 +159,13 @@ const (
 	MethodGetAnnouncementStatuses   = "get_announcement_statuses"
 	MethodGetAnnouncementStatus     = "get_announcement_status"
 	MethodUpdateAnnouncementStatus  = "update_announcement_status"
+
+	// Conference/Call
+	MethodGetConferences            = "get_conferences"
+	MethodGetConferenceParticipants = "get_conference_participants"
+	MethodJoinConference            = "join_conference"
+	MethodLeaveConference           = "leave_conference"
+	MethodRejectConference          = "reject_conference"
 )
 
 // Message types from direct API.
