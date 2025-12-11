@@ -1,0 +1,17 @@
+{{/* This is a placeholder template for future use */}}
+package main
+
+import (
+	"github.com/f4ah6o/daabgo/internal/bot"
+)
+
+func main() {
+	robot := bot.New()
+	robot.Name = "{{.Name}}"
+
+	robot.Respond("ping$", func(res bot.Response) {
+		res.Send("PONG")
+	})
+
+	robot.Run()
+}
