@@ -50,7 +50,8 @@ direct-go-sdk/
     │   ├── invites.go      # Manage domain invites
     │   ├── daemon.go       # Daemon management utilities
     │   └── version.go      # Show version
-    ├── internal/bot/       # Bot framework (Hubot-like)
+    ├── bot/                # Public bot framework API (Hubot-like)
+    ├── internal/bot/       # [DEPRECATED] Moved to bot/
     ├── internal/webhook/   # n8n webhook integration
     │   ├── client.go       # HTTP webhook client
     │   ├── types.go        # Webhook payload/response types
@@ -244,16 +245,39 @@ Event types defined in `events.go`.
 
 ### Bot Framework (daab-go)
 
-Hubot-inspired API with pattern matching:
+Hubot-inspired API with pattern matching and context support:
 
 ```go
-robot := bot.New()
-robot.Hear("pattern", handler)      // Match any message
-robot.Respond("pattern", handler)   // Match @bot mentions
-robot.Run()
+import "github.com/f4ah6o/direct-go-sdk/daab-go/bot"
+
+// Create bot with functional options
+robot := bot.New(
+    bot.WithName("mybot"),
+    bot.WithToken("optional-token"),
+)
+
+// Register handlers with context support
+robot.Hear("pattern", func(ctx context.Context, res bot.Response) {
+    // Handle any message matching pattern
+})
+
+robot.Respond("pattern", func(ctx context.Context, res bot.Response) {
+    // Handle @bot mentions matching pattern
+})
+
+// Run with context for graceful shutdown
+ctx := context.Background()
+robot.Run(ctx)
 ```
 
-* `internal/bot/bot.go`: Core framework
+**Key Features**:
+* Context-aware handlers for cancellation and timeout control
+* Functional options pattern for configuration
+* Pattern matching with regex support
+* Response helpers: `Send()`, `Reply()`, `SendSelect()`
+
+**Package Structure**:
+* `bot/bot.go`: Public API (recommended)
 * `internal/cli/`: CLI commands using cobra
   * Support for foreground (`run`) and daemon mode (`start`/`stop`)
   * Domain invite management (`invites`)
@@ -360,9 +384,12 @@ go fmt ./...
 ### Module Paths
 
 * Published module path: `github.com/f4ah6o/direct-go-sdk/{direct-go,daab-go}`
-* Import direct-go in external code: `import direct "github.com/f4ah6o/direct-go"`
-* Import daab-go bot: `import "github.com/f4ah6o/daabgo/bot"`
+* Import direct-go in external code: `import direct "github.com/f4ah6o/direct-go-sdk/direct-go"`
+* Import daab-go bot: `import "github.com/f4ah6o/direct-go-sdk/daab-go/bot"`
+* Import webhook integration: `import "github.com/f4ah6o/direct-go-sdk/daab-go/internal/webhook"`
 * Test utilities: `import "github.com/f4ah6o/direct-go-sdk/direct-go/testutil"`
+
+**Note**: The bot package was moved from `internal/bot` to `bot` to provide a stable public API.
 
 ### JavaScript Reference Sources
 
