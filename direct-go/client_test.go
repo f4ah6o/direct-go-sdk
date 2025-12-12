@@ -206,7 +206,7 @@ func TestSendTextWithContext(t *testing.T) {
 		if len(msg) >= 4 && msg[2] == "create_message" {
 			params := msg[3].([]interface{})
 			t.Logf("create_message params: %v (types: %T, %T, %T)", params, params[0], params[1], params[2])
-			
+
 			if len(params) == 3 {
 				// Params: [roomID, msgType, content]
 				// msgType can be various integer types depending on msgpack encoding
@@ -221,7 +221,7 @@ func TestSendTextWithContext(t *testing.T) {
 				case uint8:
 					msgType = int64(v)
 				}
-				
+
 				if params[0] == "talk456" && msgType == 1 && params[2] == "Hello" {
 					found = true
 					break

@@ -12,11 +12,11 @@ type DepartmentTree struct {
 
 // Department represents a department/organizational unit.
 type Department struct {
-	ID           interface{}
-	Name         string
-	ParentID     interface{}
-	ChildrenIDs  []interface{}
-	UserCount    int
+	ID          interface{}
+	Name        string
+	ParentID    interface{}
+	ChildrenIDs []interface{}
+	UserCount   int
 }
 
 // DepartmentUserCount represents user count statistics for departments.

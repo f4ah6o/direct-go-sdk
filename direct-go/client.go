@@ -633,7 +633,7 @@ func (c *Client) handleMessageNotification(data interface{}) {
 		c.mu.RUnlock()
 	}
 
-	dlog("[DEBUG] handleMessageNotification: parsed msg: ID=%s UserID=%s TalkID=%s DomainID=%s Text=%s", 
+	dlog("[DEBUG] handleMessageNotification: parsed msg: ID=%s UserID=%s TalkID=%s DomainID=%s Text=%s",
 		msg.ID, msg.UserID, msg.TalkID, msg.DomainID, msg.Text)
 	if msg.ID != "" {
 		select {

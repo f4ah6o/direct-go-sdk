@@ -42,35 +42,35 @@ type MessageData struct {
 
 // WebhookResponse is the JSON response from n8n.
 type WebhookResponse struct {
-	Action      string   `json:"action"`
-	RoomID      string   `json:"roomId,omitempty"`
-	Text        string   `json:"text,omitempty"`
-	Question    string   `json:"question,omitempty"`
-	Options     []string `json:"options,omitempty"`
-	Title       string   `json:"title,omitempty"`
-	InReplyTo   string   `json:"inReplyTo,omitempty"`
-	Response    *int     `json:"response,omitempty"` // For select: index
-	ResponseBool *bool   `json:"responseBool,omitempty"` // For yesno
-	Done        *bool    `json:"done,omitempty"` // For task
-	MessageID   string   `json:"messageId,omitempty"`
-	ErrorCode   string   `json:"errorCode,omitempty"`
+	Action       string   `json:"action"`
+	RoomID       string   `json:"roomId,omitempty"`
+	Text         string   `json:"text,omitempty"`
+	Question     string   `json:"question,omitempty"`
+	Options      []string `json:"options,omitempty"`
+	Title        string   `json:"title,omitempty"`
+	InReplyTo    string   `json:"inReplyTo,omitempty"`
+	Response     *int     `json:"response,omitempty"`     // For select: index
+	ResponseBool *bool    `json:"responseBool,omitempty"` // For yesno
+	Done         *bool    `json:"done,omitempty"`         // For task
+	MessageID    string   `json:"messageId,omitempty"`
+	ErrorCode    string   `json:"errorCode,omitempty"`
 }
 
 // ErrorCode represents structured error codes for "Parse, don't validate" pattern.
 type ErrorCode string
 
 const (
-	ErrorCodeOK              ErrorCode = "ok"
-	ErrorCodeInvalidJSON     ErrorCode = "invalid_json"
-	ErrorCodeMissingAction   ErrorCode = "missing_action"
-	ErrorCodeInvalidAction   ErrorCode = "invalid_action"
-	ErrorCodeMissingRoomID   ErrorCode = "missing_room_id"
-	ErrorCodeMissingText     ErrorCode = "missing_text"
-	ErrorCodeMissingQuestion ErrorCode = "missing_question"
-	ErrorCodeMissingOptions  ErrorCode = "missing_options"
+	ErrorCodeOK               ErrorCode = "ok"
+	ErrorCodeInvalidJSON      ErrorCode = "invalid_json"
+	ErrorCodeMissingAction    ErrorCode = "missing_action"
+	ErrorCodeInvalidAction    ErrorCode = "invalid_action"
+	ErrorCodeMissingRoomID    ErrorCode = "missing_room_id"
+	ErrorCodeMissingText      ErrorCode = "missing_text"
+	ErrorCodeMissingQuestion  ErrorCode = "missing_question"
+	ErrorCodeMissingOptions   ErrorCode = "missing_options"
 	ErrorCodeMissingInReplyTo ErrorCode = "missing_in_reply_to"
-	ErrorCodeMissingResponse ErrorCode = "missing_response"
-	ErrorCodeMissingTitle    ErrorCode = "missing_title"
+	ErrorCodeMissingResponse  ErrorCode = "missing_response"
+	ErrorCodeMissingTitle     ErrorCode = "missing_title"
 	ErrorCodeMissingMessageID ErrorCode = "missing_message_id"
 )
 

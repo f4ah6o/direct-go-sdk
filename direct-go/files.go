@@ -28,11 +28,11 @@ type Attachment struct {
 
 // FilePreview represents a preview of a file.
 type FilePreview struct {
-	FileID               interface{}
-	Status               string
-	FilePreviewFileID    interface{}
-	URL                  string
-	Key                  string
+	FileID            interface{}
+	Status            string
+	FilePreviewFileID interface{}
+	URL               string
+	Key               string
 }
 
 // CreateUploadAuth creates upload authentication for a file.

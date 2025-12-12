@@ -22,13 +22,13 @@ type RPCHandler func(params []interface{}) (interface{}, error)
 
 // MockServer is a mock WebSocket server for testing.
 type MockServer struct {
-	server    *httptest.Server
-	upgrader  websocket.Upgrader
-	handlers  map[string]RPCHandler
-	mu        sync.RWMutex
-	conn      *websocket.Conn
-	connMu    sync.Mutex
-	messages  [][]interface{} // Stores received RPC requests for assertions
+	server     *httptest.Server
+	upgrader   websocket.Upgrader
+	handlers   map[string]RPCHandler
+	mu         sync.RWMutex
+	conn       *websocket.Conn
+	connMu     sync.Mutex
+	messages   [][]interface{} // Stores received RPC requests for assertions
 	messagesMu sync.Mutex
 }
 
@@ -225,7 +225,7 @@ func (ms *MockServer) Reset() {
 func (ms *MockServer) GetCallCount(method string) int {
 	ms.messagesMu.Lock()
 	defer ms.messagesMu.Unlock()
-	
+
 	count := 0
 	for _, msg := range ms.messages {
 		if len(msg) >= 3 {
@@ -241,4 +241,3 @@ func (ms *MockServer) GetCallCount(method string) int {
 func (ms *MockServer) OnDynamic(method string, handler RPCHandler) {
 	ms.On(method, handler)
 }
-

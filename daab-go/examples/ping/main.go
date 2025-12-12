@@ -8,8 +8,8 @@ import (
 	"os"
 	"time"
 
-	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
 	"github.com/f4ah6o/direct-go-sdk/daab-go/bot"
+	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
 )
 
 func main() {

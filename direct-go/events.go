@@ -210,4 +210,3 @@ const (
 	WireTypeSelectClosed = 507 // 500 + 20 - 13 = 507
 	WireTypeTaskClosed   = 508 // 500 + 21 - 13 = 508
 )
-

@@ -109,4 +109,3 @@ func (w *debugWriter) Write(p []byte) (n int, err error) {
 	Printf("%s", string(p))
 	return len(p), nil
 }
-

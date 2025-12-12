@@ -7,9 +7,9 @@ import (
 	"log"
 	"os"
 
-	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
 	"github.com/f4ah6o/direct-go-sdk/daab-go/bot"
 	"github.com/f4ah6o/direct-go-sdk/daab-go/internal/webhook"
+	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
 )
 
 func main() {
@@ -26,7 +26,7 @@ func main() {
 	if err := auth.LoadEnv(); err != nil {
 		log.Printf("Warning: could not load .env: %v", err)
 	}
-	
+
 	n8nWebhookURL := os.Getenv("N8N_WEBHOOK_URL")
 	if n8nWebhookURL == "" {
 		log.Fatal("N8N_WEBHOOK_URL environment variable is required")
@@ -49,7 +49,6 @@ func main() {
 		log.Fatalf("Bot error: %v", err)
 	}
 }
-
 
 func handleMessage(ctx context.Context, res bot.Response, client *webhook.Client) {
 	msg := res.Message

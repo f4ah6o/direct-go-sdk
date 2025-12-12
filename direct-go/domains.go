@@ -6,13 +6,13 @@ import (
 
 // DomainInfo represents detailed domain information.
 type DomainInfo struct {
-	ID          interface{}
-	Name        string
-	UpdatedAt   int64
-	Contract    interface{} // Contract details
-	Setting     interface{} // Domain settings
-	Role        interface{} // User's role in domain
-	Closed      bool
+	ID        interface{}
+	Name      string
+	UpdatedAt int64
+	Contract  interface{} // Contract details
+	Setting   interface{} // Domain settings
+	Role      interface{} // User's role in domain
+	Closed    bool
 }
 
 // DomainInviteInfo represents a domain invitation.

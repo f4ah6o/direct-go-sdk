@@ -48,9 +48,9 @@ func TestGetDomainInvitesWithContext(t *testing.T) {
 
 	mockServer.OnSimple("get_domain_invites", []interface{}{
 		map[string]interface{}{
-			"id":          "invite1",
-			"name":        "Test Domain",
-			"updated_at":  int64(1702345678),
+			"id":         "invite1",
+			"name":       "Test Domain",
+			"updated_at": int64(1702345678),
 		},
 	})
 

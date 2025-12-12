@@ -7,10 +7,10 @@ import (
 
 // CoverageReport represents the complete coverage analysis
 type CoverageReport struct {
-	Metadata   ReportMetadata   `json:"metadata"`
-	Summary    CoverageSummary  `json:"summary"`
-	Categories []Category       `json:"categories"`
-	AllMethods MethodList       `json:"all_methods"`
+	Metadata   ReportMetadata  `json:"metadata"`
+	Summary    CoverageSummary `json:"summary"`
+	Categories []Category      `json:"categories"`
+	AllMethods MethodList      `json:"all_methods"`
 }
 
 // ReportMetadata contains report generation information

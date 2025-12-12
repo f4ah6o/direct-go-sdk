@@ -13,8 +13,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
 	"github.com/f4ah6o/direct-go-sdk/daab-go/bot"
+	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
 )
 
 // N8NPayload is the JSON payload sent to n8n webhook
