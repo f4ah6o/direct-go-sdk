@@ -84,6 +84,9 @@ type Client struct {
 	closed           bool
 	connected        bool
 
+	// talkDomains maps talk_id to domain_id for user lookups
+	talkDomains map[string]string
+
 	// Channels for events
 	Messages chan ReceivedMessage
 	Done     chan struct{}
@@ -107,6 +110,7 @@ func NewClient(opts Options) *Client {
 		options:          opts,
 		handlers:         make(map[string][]EventHandler),
 		responseHandlers: make(map[int64]*ResponseHandler),
+		talkDomains:      make(map[string]string),
 		Messages:         make(chan ReceivedMessage, 100),
 		Done:             make(chan struct{}),
 	}
@@ -228,7 +232,7 @@ func (c *Client) startNotification() {
 		c.call("get_talks", []interface{}{}, func(result interface{}) {
 			dlog("[DEBUG] get_talks success: %d talks", countItems(result))
 
-			// Log talk details and try to send a message
+			// Log talk details and cache talk->domain mapping
 			if talks, ok := result.([]interface{}); ok && len(talks) > 0 {
 				for i, talk := range talks {
 					if talkMap, ok := talk.(map[string]interface{}); ok {
@@ -239,6 +243,21 @@ func (c *Client) startNotification() {
 						}
 						dlog("[DEBUG] Talk %d keys: %v", i, keys)
 						dlog("[DEBUG] Talk %d: %+v", i, talkMap)
+
+						// Cache talk_id -> domain_id mapping
+						var talkID, domainID string
+						if id, ok := talkMap["talk_id"]; ok {
+							talkID = fmt.Sprintf("%v", id)
+						}
+						if domID, ok := talkMap["domain_id"]; ok {
+							domainID = fmt.Sprintf("%v", domID)
+						}
+						if talkID != "" && domainID != "" {
+							c.mu.Lock()
+							c.talkDomains[talkID] = domainID
+							c.mu.Unlock()
+							dlog("[DEBUG] Cached talk->domain: %s -> %s", talkID, domainID)
+						}
 					} else {
 						dlog("[DEBUG] Talk %d: unexpected type %T: %v", i, talk, talk)
 					}
@@ -596,7 +615,26 @@ func (c *Client) handleNotification(message []interface{}) {
 func (c *Client) handleMessageNotification(data interface{}) {
 	dlog("[DEBUG] handleMessageNotification: raw data: %+v", data)
 	msg := parseMessage(data)
-	dlog("[DEBUG] handleMessageNotification: parsed msg: ID=%s UserID=%s Text=%s", msg.ID, msg.UserID, msg.Text)
+
+	// If DomainID is not in the message, look it up from cached talks
+	if msg.DomainID == "" && msg.TalkID != "" {
+		c.mu.RLock()
+		dlog("[DEBUG] Looking up domain for talk_id=%s, cached talks count=%d", msg.TalkID, len(c.talkDomains))
+		// Log all cached talk IDs for debugging
+		for tid := range c.talkDomains {
+			dlog("[DEBUG] Cached talk_id: %s", tid)
+		}
+		if domID, ok := c.talkDomains[msg.TalkID]; ok {
+			msg.DomainID = domID
+			dlog("[DEBUG] Resolved DomainID from talkDomains: %s", domID)
+		} else {
+			dlog("[DEBUG] talk_id %s not found in cache", msg.TalkID)
+		}
+		c.mu.RUnlock()
+	}
+
+	dlog("[DEBUG] handleMessageNotification: parsed msg: ID=%s UserID=%s TalkID=%s DomainID=%s Text=%s", 
+		msg.ID, msg.UserID, msg.TalkID, msg.DomainID, msg.Text)
 	if msg.ID != "" {
 		select {
 		case c.Messages <- msg:
@@ -629,6 +667,9 @@ func parseMessage(data interface{}) ReceivedMessage {
 	}
 	if userId, ok := m["user_id"]; ok {
 		msg.UserID = fmt.Sprintf("%v", userId)
+	}
+	if domainId, ok := m["domain_id"]; ok {
+		msg.DomainID = fmt.Sprintf("%v", domainId)
 	}
 	if content, ok := m["content"]; ok {
 		dlog("[DEBUG] content type=%T value=%v", content, content)

@@ -99,6 +99,7 @@ type ReceivedMessage struct {
 	TalkID    string      `json:"talk_id" msgpack:"talk_id"`
 	RoomID    string      `json:"room_id" msgpack:"-"`
 	UserID    string      `json:"user_id" msgpack:"user_id"`
+	DomainID  string      `json:"domain_id,omitempty" msgpack:"domain_id"`
 	Text      string      `json:"text,omitempty" msgpack:"-"`
 	Type      MessageType `json:"type" msgpack:"type"`
 	Timestamp time.Time   `json:"timestamp,omitempty" msgpack:"-"`
