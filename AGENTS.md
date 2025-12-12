@@ -51,8 +51,14 @@ direct-go-sdk/
     │   ├── daemon.go       # Daemon management utilities
     │   └── version.go      # Show version
     ├── internal/bot/       # Bot framework (Hubot-like)
+    ├── internal/webhook/   # n8n webhook integration
+    │   ├── client.go       # HTTP webhook client
+    │   ├── types.go        # Webhook payload/response types
+    │   └── webhook_test.go # Webhook tests
     ├── daab-source/        # Synced daab JS source for reference
     └── examples/
+        ├── ping/           # Simple ping bot
+        └── n8n-proxy/      # n8n webhook proxy bot
 ```
 
 ## Development Workflow
@@ -98,6 +104,11 @@ go build -o daabgo cmd/daabgo/main.go
 
 # Run example bot
 cd examples/ping
+go run main.go
+
+# Run n8n webhook proxy example
+cd examples/n8n-proxy
+# Set up .env with DIRECT_ACCESS_TOKEN and N8N_WEBHOOK_URL
 go run main.go
 
 # Run debug server (for development)
@@ -252,6 +263,44 @@ robot.Run()
 **Daemon Mode**: Bot can run as background daemon with PID tracking:
 * PID file: `~/.daabgo/daabgo.pid`
 * Log file: `~/.daabgo/daabgo.log`
+
+### n8n Webhook Integration (daab-go)
+
+The `internal/webhook` package provides n8n webhook integration for forwarding events to n8n workflows:
+
+```go
+import "github.com/f4ah6o/direct-go-sdk/daab-go/internal/webhook"
+
+// Create webhook client
+client := webhook.NewClient("https://your-n8n.com/webhook/xxx", "botname")
+
+// Create and send payload
+payload := webhook.NewPayload("message_created", "botname", messageData)
+response, err := client.Send(payload)
+
+// Validate and handle response
+if errCode := response.Validate(); errCode != webhook.ErrorCodeOK {
+    // Handle error
+}
+```
+
+**Webhook Actions**:
+* `none`: No action
+* `reply`: Reply to message
+* `send`: Send message to specific room
+* `send_select`, `send_yesno`, `send_task`: Interactive message types
+* `reply_select`, `reply_yesno`, `reply_task`: Reply to interactive messages
+* `close_select`, `close_yesno`: Close interactive messages
+
+See `daab-go/examples/n8n-proxy/` for a complete example.
+
+### Message Domain Resolution (direct-go)
+
+The SDK automatically resolves domain IDs for incoming messages:
+
+* Talk-to-domain mapping is cached during `start_notification`
+* `ReceivedMessage` includes `DomainID` field for domain-scoped operations
+* Enables user lookups with proper domain context
 
 ### Debug Logging
 
