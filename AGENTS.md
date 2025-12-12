@@ -351,7 +351,7 @@ go install github.com/f4ah6o/daabgo/cmd/daabgo@latest
 
 ### Testing
 
-direct-go has unit tests with mock server support:
+direct-go has comprehensive unit tests with mock server support:
 
 ```bash
 # Run all tests in workspace
@@ -364,11 +364,27 @@ cd direct-go && go test -v -cover  # With coverage
 # Run tests with race detector
 cd direct-go && go test -race
 
-# daab-go doesn't have tests yet
-cd daab-go && go test ./...
+# Run CI locally (if act is installed)
+act -j test-direct-go
 ```
 
-**Test utilities**: `direct-go/testutil/` provides a mock WebSocket server for testing RPC calls.
+**Test Coverage**: ~24% (18 tests across 3 test files)
+- `client_test.go`: Core client functionality (5 tests)
+- `users_test.go`: User management APIs (6 tests)  
+- `domains_test.go`: Domain management APIs (7 tests)
+
+**Test utilities**: `direct-go/testutil/` provides:
+- `MockServer`: WebSocket mock server for RPC testing
+- `OnSimple()`: Simple mock responses
+- `OnDynamic()`: Parameter-based dynamic responses
+- `GetCallCount()`: Method call verification
+- `Reset()`: Test isolation
+
+**CI/CD**: GitHub Actions workflow (`.github/workflows/ci.yaml`)
+- Test matrix: Go 1.24, 1.25
+- Coverage reporting
+- Race detection
+- Lint checks (go vet, gofmt)
 
 ### Linting
 

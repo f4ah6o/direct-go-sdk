@@ -213,3 +213,32 @@ func (ms *MockServer) SendNotification(method string, params interface{}) error 
 
 	return conn.WriteMessage(websocket.BinaryMessage, data)
 }
+
+// Reset clears all received messages (useful for test isolation).
+func (ms *MockServer) Reset() {
+	ms.messagesMu.Lock()
+	defer ms.messagesMu.Unlock()
+	ms.messages = make([][]interface{}, 0)
+}
+
+// GetCallCount returns the number of times a specific method was called.
+func (ms *MockServer) GetCallCount(method string) int {
+	ms.messagesMu.Lock()
+	defer ms.messagesMu.Unlock()
+	
+	count := 0
+	for _, msg := range ms.messages {
+		if len(msg) >= 3 {
+			if m, ok := msg[2].(string); ok && m == method {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+// OnDynamic registers a handler that can respond based on parameters.
+func (ms *MockServer) OnDynamic(method string, handler RPCHandler) {
+	ms.On(method, handler)
+}
+
