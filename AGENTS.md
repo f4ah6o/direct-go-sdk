@@ -52,7 +52,7 @@ direct-go-sdk/
     │   └── version.go      # Show version
     ├── bot/                # Public bot framework API (Hubot-like)
     ├── internal/bot/       # [DEPRECATED] Moved to bot/
-    ├── internal/webhook/   # n8n webhook integration
+    ├── webhook/   # n8n webhook integration
     │   ├── client.go       # HTTP webhook client
     │   ├── types.go        # Webhook payload/response types
     │   └── webhook_test.go # Webhook tests
@@ -290,10 +290,10 @@ robot.Run(ctx)
 
 ### n8n Webhook Integration (daab-go)
 
-The `internal/webhook` package provides n8n webhook integration for forwarding events to n8n workflows:
+The `webhook` package provides n8n webhook integration for forwarding events to n8n workflows:
 
 ```go
-import "github.com/f4ah6o/direct-go-sdk/daab-go/internal/webhook"
+import "github.com/f4ah6o/direct-go-sdk/daab-go/webhook"
 
 // Create webhook client
 client := webhook.NewClient("https://your-n8n.com/webhook/xxx", "botname")
@@ -316,7 +316,7 @@ if errCode := response.Validate(); errCode != webhook.ErrorCodeOK {
 * `reply_select`, `reply_yesno`, `reply_task`: Reply to interactive messages
 * `close_select`, `close_yesno`: Close interactive messages
 
-See `daab-go/examples/n8n-proxy/` for a complete example.
+See `daab-go-examples/n8n-proxy/` for a complete example.
 
 ### Message Domain Resolution (direct-go)
 
@@ -402,7 +402,7 @@ go fmt ./...
 * Published module path: `github.com/f4ah6o/direct-go-sdk/{direct-go,daab-go}`
 * Import direct-go in external code: `import direct "github.com/f4ah6o/direct-go-sdk/direct-go"`
 * Import daab-go bot: `import "github.com/f4ah6o/direct-go-sdk/daab-go/bot"`
-* Import webhook integration: `import "github.com/f4ah6o/direct-go-sdk/daab-go/internal/webhook"`
+* Import webhook integration: `import "github.com/f4ah6o/direct-go-sdk/daab-go/webhook"`
 * Test utilities: `import "github.com/f4ah6o/direct-go-sdk/direct-go/testutil"`
 
 **Note**: The bot package was moved from `internal/bot` to `bot` to provide a stable public API.

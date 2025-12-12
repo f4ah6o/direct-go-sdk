@@ -8,7 +8,7 @@ import (
 	"os"
 
 	"github.com/f4ah6o/direct-go-sdk/daab-go/bot"
-	"github.com/f4ah6o/direct-go-sdk/daab-go/internal/webhook"
+	"github.com/f4ah6o/direct-go-sdk/daab-go/webhook"
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
 )
 
