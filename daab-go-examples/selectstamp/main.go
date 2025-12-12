@@ -128,13 +128,28 @@ func main() {
 }
 
 func handleSelectAction(ctx context.Context, res bot.Response, tracker *menuTracker) {
+	// Debug: show message type
+	log.Printf("[SELECT DEBUG] Message type: %d, Text: %q", res.Message.Type, res.Message.Text)
+
 	content, err := extractSelectContent(res.Message)
-	if err != nil || content == nil || content.Response == nil {
+	if err != nil {
+		log.Printf("[SELECT DEBUG] extractSelectContent error: %v", err)
+		return
+	}
+	if content == nil {
+		log.Printf("[SELECT DEBUG] content is nil")
+		return
+	}
+	if content.Response == nil {
+		log.Printf("[SELECT DEBUG] content.Response is nil, Question=%q, Options=%v, InReplyTo=%q", content.Question, content.Options, content.InReplyTo)
 		return
 	}
 
+	log.Printf("[SELECT DEBUG] Got response: idx=%d, Question=%q, Options=%v, InReplyTo=%q", *content.Response, content.Question, content.Options, content.InReplyTo)
+
 	// Ensure this is the menu we sent.
 	if content.Question != menuQuestion && !tracker.matches(content.InReplyTo) {
+		log.Printf("[SELECT DEBUG] Skipping: Question mismatch and tracker doesn't match")
 		return
 	}
 
@@ -158,14 +173,20 @@ func optionAt(options []string, idx int) string {
 }
 
 func extractSelectContent(msg direct.ReceivedMessage) (*selectContent, error) {
-	if msg.Type != direct.MessageTypeSelect {
-		return nil, fmt.Errorf("not a select message")
+	// Wire types: 502 = select stamp, 503 = select reply
+	msgType := int(msg.Type)
+	if msgType != direct.WireTypeSelect && msgType != direct.WireTypeSelectReply {
+		return nil, fmt.Errorf("not a select message (type=%d)", msgType)
 	}
 
 	contentMap, err := pullContentMap(msg)
 	if err != nil || contentMap == nil {
 		return nil, err
 	}
+
+	// Debug: show all keys in contentMap
+	log.Printf("[SELECT DEBUG] contentMap keys: %v", getMapKeys(contentMap))
+	log.Printf("[SELECT DEBUG] contentMap full: %+v", contentMap)
 
 	sc := &selectContent{
 		Question: stringValue(contentMap["question"]),
@@ -180,6 +201,14 @@ func extractSelectContent(msg direct.ReceivedMessage) (*selectContent, error) {
 	}
 
 	return sc, nil
+}
+
+func getMapKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 func pullContentMap(msg direct.ReceivedMessage) (map[string]interface{}, error) {
@@ -226,7 +255,25 @@ func intValue(v interface{}) (int, bool) {
 	switch n := v.(type) {
 	case int:
 		return n, true
+	case int8:
+		return int(n), true
+	case int16:
+		return int(n), true
+	case int32:
+		return int(n), true
 	case int64:
+		return int(n), true
+	case uint:
+		return int(n), true
+	case uint8:
+		return int(n), true
+	case uint16:
+		return int(n), true
+	case uint32:
+		return int(n), true
+	case uint64:
+		return int(n), true
+	case float32:
 		return int(n), true
 	case float64:
 		return int(n), true
