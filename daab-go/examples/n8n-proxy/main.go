@@ -2,12 +2,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
-	"github.com/f4ah6o/direct-go-sdk/daab-go/internal/bot"
+	"github.com/f4ah6o/direct-go-sdk/daab-go/bot"
 	"github.com/f4ah6o/direct-go-sdk/daab-go/internal/webhook"
 )
 
@@ -18,9 +19,6 @@ func main() {
 		debugServer = "http://localhost:9999"
 	}
 	direct.EnableDebugServer(debugServer)
-
-	robot := bot.New()
-	robot.Name = "n8nproxy"
 
 	// Check for N8N_WEBHOOK_URL (will be loaded from .env by robot.Run())
 	// We do an early check here to fail fast with a clear error message
@@ -34,22 +32,26 @@ func main() {
 		log.Fatal("N8N_WEBHOOK_URL environment variable is required")
 	}
 
+	robot := bot.New(
+		bot.WithName("n8nproxy"),
+	)
+
 	// Create webhook client
-	webhookClient := webhook.NewClient(n8nWebhookURL, robot.Name)
+	webhookClient := webhook.NewClient(n8nWebhookURL, "n8nproxy")
 
 	// Listen to all messages and forward to n8n
-	robot.Hear(".*", func(res bot.Response) {
-		handleMessage(res, webhookClient)
+	robot.Hear(".*", func(ctx context.Context, res bot.Response) {
+		handleMessage(ctx, res, webhookClient)
 	})
 
 	// Run the bot
-	if err := robot.Run(); err != nil {
+	if err := robot.Run(context.Background()); err != nil {
 		log.Fatalf("Bot error: %v", err)
 	}
 }
 
 
-func handleMessage(res bot.Response, client *webhook.Client) {
+func handleMessage(ctx context.Context, res bot.Response, client *webhook.Client) {
 	msg := res.Message
 
 	// Convert to webhook payload
@@ -83,12 +85,12 @@ func handleMessage(res bot.Response, client *webhook.Client) {
 	}
 
 	// Execute action from n8n
-	if err := executeAction(res, resp); err != nil {
+	if err := executeAction(ctx, res, resp); err != nil {
 		log.Printf("[N8N PROXY] Error executing action: %v", err)
 	}
 }
 
-func executeAction(res bot.Response, resp *webhook.WebhookResponse) error {
+func executeAction(ctx context.Context, res bot.Response, resp *webhook.WebhookResponse) error {
 	log.Printf("[N8N PROXY] Executing action: %s", resp.Action)
 
 	switch resp.Action {

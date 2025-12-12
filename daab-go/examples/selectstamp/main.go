@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/f4ah6o/direct-go-sdk/daab-go/internal/bot"
+	"github.com/f4ah6o/direct-go-sdk/daab-go/bot"
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
 )
 
@@ -82,12 +82,13 @@ func main() {
 	}
 	direct.EnableDebugServer(debugServer)
 
-	robot := bot.New()
-	robot.Name = "selectbot"
+	robot := bot.New(
+		bot.WithName("selectbot"),
+	)
 	tracker := &menuTracker{}
 
 	// Send the select menu when asked.
-	robot.Respond("(menu|メニュー)$", func(res bot.Response) {
+	robot.Respond("(menu|メニュー)$", func(ctx context.Context, res bot.Response) {
 		id, err := res.SendSelect(menuQuestion, menuOptions)
 		if err != nil {
 			log.Printf("Error sending select stamp: %v", err)
@@ -117,16 +118,16 @@ func main() {
 	})
 
 	// Echo selection results and trigger features.
-	robot.Hear(".*", func(res bot.Response) {
-		handleSelectAction(res, tracker)
+	robot.Hear(".*", func(ctx context.Context, res bot.Response) {
+		handleSelectAction(ctx, res, tracker)
 	})
 
-	if err := robot.Run(); err != nil {
+	if err := robot.Run(context.Background()); err != nil {
 		log.Fatalf("Bot error: %v", err)
 	}
 }
 
-func handleSelectAction(res bot.Response, tracker *menuTracker) {
+func handleSelectAction(ctx context.Context, res bot.Response, tracker *menuTracker) {
 	content, err := extractSelectContent(res.Message)
 	if err != nil || content == nil || content.Response == nil {
 		return
@@ -141,9 +142,9 @@ func handleSelectAction(res bot.Response, tracker *menuTracker) {
 	choice := optionAt(content.Options, idx)
 	switch choice {
 	case menuOptions[0]:
-		handleUUIDFortune(res)
+		handleUUIDFortune(ctx, res)
 	case menuOptions[1]:
-		handleMirasapoCase(res)
+		handleMirasapoCase(ctx, res)
 	default:
 		_ = res.Send(fmt.Sprintf("選択肢 %d を受信しました。", idx))
 	}
@@ -240,7 +241,7 @@ func intValue(v interface{}) (int, bool) {
 	}
 }
 
-func handleUUIDFortune(res bot.Response) {
+func handleUUIDFortune(ctx context.Context, res bot.Response) {
 	uuidBytes, err := newUUIDv4()
 	if err != nil {
 		log.Printf("Failed to generate UUID: %v", err)
@@ -284,8 +285,8 @@ func formatUUID(b []byte) string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
-func handleMirasapoCase(res bot.Response) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func handleMirasapoCase(ctx context.Context, res bot.Response) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	client := &http.Client{Timeout: 10 * time.Second}

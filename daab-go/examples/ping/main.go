@@ -2,13 +2,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"time"
 
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
-	"github.com/f4ah6o/direct-go-sdk/daab-go/internal/bot"
+	"github.com/f4ah6o/direct-go-sdk/daab-go/bot"
 )
 
 func main() {
@@ -19,18 +20,19 @@ func main() {
 	}
 	direct.EnableDebugServer(debugServer)
 
-	robot := bot.New()
-	robot.Name = "pingbot"
+	robot := bot.New(
+		bot.WithName("pingbot"),
+	)
 
 	// Respond to "ping" command
-	robot.Respond("ping$", func(res bot.Response) {
+	robot.Respond("ping$", func(ctx context.Context, res bot.Response) {
 		if err := res.Send("PONG"); err != nil {
 			log.Printf("Error sending PONG: %v", err)
 		}
 	})
 
 	// Respond to "echo <text>" command
-	robot.Respond("echo (.+)$", func(res bot.Response) {
+	robot.Respond("echo (.+)$", func(ctx context.Context, res bot.Response) {
 		if len(res.Match) > 1 {
 			if err := res.Send(res.Match[1]); err != nil {
 				log.Printf("Error sending echo: %v", err)
@@ -39,7 +41,7 @@ func main() {
 	})
 
 	// Respond to "time" command
-	robot.Respond("time$", func(res bot.Response) {
+	robot.Respond("time$", func(ctx context.Context, res bot.Response) {
 		msg := fmt.Sprintf("Server time is: %s", time.Now().Format(time.RFC1123))
 		if err := res.Send(msg); err != nil {
 			log.Printf("Error sending time: %v", err)
@@ -47,7 +49,7 @@ func main() {
 	})
 
 	// Respond to "shout <text>" command
-	robot.Respond("shout (.+)$", func(res bot.Response) {
+	robot.Respond("shout (.+)$", func(ctx context.Context, res bot.Response) {
 		if len(res.Match) > 1 {
 			text := res.Match[1]
 			// Send to the same room where the command was received
@@ -58,12 +60,13 @@ func main() {
 	})
 
 	// Hear all messages (optional logging)
-	robot.Hear(".*", func(res bot.Response) {
+	robot.Hear(".*", func(ctx context.Context, res bot.Response) {
 		fmt.Printf("[%s] %s: %s\n", res.RoomID(), res.UserID(), res.Text())
 	})
 
-	// Run the bot
-	if err := robot.Run(); err != nil {
+	// Run the bot with context
+	ctx := context.Background()
+	if err := robot.Run(ctx); err != nil {
 		log.Fatalf("Bot error: %v", err)
 	}
 }

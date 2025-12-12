@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -13,7 +14,7 @@ import (
 	"syscall"
 
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
-	"github.com/f4ah6o/direct-go-sdk/daab-go/internal/bot"
+	"github.com/f4ah6o/direct-go-sdk/daab-go/bot"
 )
 
 // N8NPayload is the JSON payload sent to n8n webhook
@@ -40,9 +41,6 @@ func main() {
 	}
 	direct.EnableDebugServer(debugServer)
 
-	robot = bot.New()
-	robot.Name = "support"
-
 	n8nWebhookURL := os.Getenv("N8N_WEBHOOK_URL")
 	if n8nWebhookURL == "" {
 		log.Fatal("N8N_WEBHOOK_URL environment variable is required")
@@ -53,11 +51,15 @@ func main() {
 		callbackPort = "8080"
 	}
 
+	robot = bot.New(
+		bot.WithName("support"),
+	)
+
 	// Start HTTP server for receiving replies from n8n
 	go startCallbackServer(callbackPort)
 
 	// Handle all messages in 1:1 pair talks
-	robot.Hear(".*", func(res bot.Response) {
+	robot.Hear(".*", func(ctx context.Context, res bot.Response) {
 		// Only process 1:1 pair talks
 		// In direct, pair talks have exactly 2 members (bot + user)
 		// For now, we process all messages - filtering can be added later
@@ -81,9 +83,12 @@ func main() {
 	})
 
 	// Run the bot in a goroutine
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	errCh := make(chan error, 1)
 	go func() {
-		if err := robot.Run(); err != nil {
+		if err := robot.Run(ctx); err != nil {
 			errCh <- err
 		}
 	}()
@@ -95,6 +100,7 @@ func main() {
 	select {
 	case sig := <-sigCh:
 		log.Printf("Received signal %s, shutting down...", sig)
+		cancel()
 	case err := <-errCh:
 		log.Printf("Bot error: %v", err)
 	}
