@@ -9,7 +9,6 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -67,12 +66,6 @@ type caseStudySearchResult struct {
 	Items []caseStudy `json:"items"`
 }
 
-type selectAnswerSummary struct {
-	Option  string
-	Count   int
-	UserIDs []string
-}
-
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
@@ -87,34 +80,9 @@ func main() {
 	)
 	tracker := &menuTracker{}
 
-	// Send the select menu when asked.
-	robot.Respond("(menu|メニュー)$", func(ctx context.Context, res bot.Response) {
-		id, err := res.SendSelect(menuQuestion, menuOptions)
-		if err != nil {
-			log.Printf("Error sending select stamp: %v", err)
-			_ = res.Send("セレクトスタンプの送信に失敗しました。トークIDや権限を確認してください。")
-			return
-		}
-		tracker.set(id)
-		if err := res.Send("機能メニューを送信しました。選択して動作を試してみてください。"); err != nil {
-			log.Printf("Error sending menu notice: %v", err)
-		}
-
-		// After a short delay, post the current answer summary.
-		go func(roomID, questionID string) {
-			time.Sleep(5 * time.Second)
-			summaries, err := fetchSelectAnswerSummary(res.Robot, questionID)
-			if err != nil {
-				log.Printf("Failed to fetch answer summary: %v", err)
-				return
-			}
-			summaryText := formatSelectSummary(summaries)
-			if summaryText != "" {
-				if err := res.Robot.SendText(roomID, summaryText); err != nil {
-					log.Printf("Error sending summary: %v", err)
-				}
-			}
-		}(res.RoomID(), id)
+	// Send the select menu when asked (no @mention required).
+	robot.Hear("(menu|メニュー)$", func(ctx context.Context, res bot.Response) {
+		sendMenu(res, tracker)
 	})
 
 	// Echo selection results and trigger features.
@@ -125,6 +93,17 @@ func main() {
 	if err := robot.Run(context.Background()); err != nil {
 		log.Fatalf("Bot error: %v", err)
 	}
+}
+
+// sendMenu sends the select menu and updates the tracker.
+func sendMenu(res bot.Response, tracker *menuTracker) {
+	id, err := res.SendSelect(menuQuestion, menuOptions)
+	if err != nil {
+		log.Printf("Error sending select stamp: %v", err)
+		_ = res.Send("セレクトスタンプの送信に失敗しました。トークIDや権限を確認してください。")
+		return
+	}
+	tracker.set(id)
 }
 
 func handleSelectAction(ctx context.Context, res bot.Response, tracker *menuTracker) {
@@ -163,6 +142,9 @@ func handleSelectAction(ctx context.Context, res bot.Response, tracker *menuTrac
 	default:
 		_ = res.Send(fmt.Sprintf("選択肢 %d を受信しました。", idx))
 	}
+
+	// Resend the select menu after handling the response
+	sendMenu(res, tracker)
 }
 
 func optionAt(options []string, idx int) string {
@@ -429,65 +411,4 @@ func trimSummary(s string, limit int) string {
 	}
 	runes := []rune(s)
 	return string(runes[:limit]) + "..."
-}
-
-func fetchSelectAnswerSummary(robot *bot.Robot, questionID string) ([]selectAnswerSummary, error) {
-	if questionID == "" {
-		return nil, nil
-	}
-
-	// Convert questionID to uint64 as API expects numeric ID
-	qid, err := strconv.ParseUint(questionID, 10, 64)
-	if err != nil {
-		return nil, fmt.Errorf("invalid question ID: %w", err)
-	}
-
-	result, err := robot.Call("get_action", []interface{}{qid})
-	if err != nil {
-		return nil, err
-	}
-
-	data, ok := result.(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("unexpected response type: %T", result)
-	}
-
-	rawResponses, ok := data["responses"].([]interface{})
-	if !ok {
-		return nil, nil
-	}
-
-	summaries := make([]selectAnswerSummary, 0, len(rawResponses))
-	for _, r := range rawResponses {
-		respMap, ok := r.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		option := stringValue(respMap["content"])
-		count, _ := intValue(respMap["count"])
-		userIDs := stringSlice(respMap["user_ids"])
-		summaries = append(summaries, selectAnswerSummary{
-			Option:  option,
-			Count:   count,
-			UserIDs: userIDs,
-		})
-	}
-
-	return summaries, nil
-}
-
-func formatSelectSummary(summaries []selectAnswerSummary) string {
-	if len(summaries) == 0 {
-		return "アクションスタンプ回答状況: まだ回答がありません。"
-	}
-
-	lines := []string{"アクションスタンプ回答状況"}
-	for _, s := range summaries {
-		line := fmt.Sprintf("%s: %d件", s.Option, s.Count)
-		if len(s.UserIDs) > 0 {
-			line = fmt.Sprintf("%s (%s)", line, strings.Join(s.UserIDs, ", "))
-		}
-		lines = append(lines, line)
-	}
-	return strings.Join(lines, "\n")
 }
