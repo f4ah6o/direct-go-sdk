@@ -2,6 +2,8 @@
 package bot
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -13,8 +15,29 @@ import (
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
 )
 
+// Errors returned by bot operations.
+var (
+	// ErrNotConnected is returned when calling methods on an unconnected Robot.
+	ErrNotConnected = errors.New("daab: robot not connected")
+
+	// ErrNoToken is returned when no access token is available.
+	ErrNoToken = errors.New("daab: no access token available")
+)
+
+// EventType represents robot lifecycle events.
+type EventType string
+
+const (
+	// EventConnected is emitted when the robot connects to Direct.
+	EventConnected EventType = "connected"
+	// EventDisconnected is emitted when the robot disconnects.
+	EventDisconnected EventType = "disconnected"
+	// EventReady is emitted when the robot is ready to receive messages.
+	EventReady EventType = "ready"
+)
+
 // Handler is a callback for matched messages.
-type Handler func(Response)
+type Handler func(ctx context.Context, res Response)
 
 // Listener represents a registered message listener.
 type Listener struct {
@@ -70,19 +93,69 @@ func (r Response) Reply(text string) error {
 
 // Robot is the main bot instance.
 type Robot struct {
-	Name      string
-	Token     string // Access token (optional, overrides env)
-	client    *direct.Client
-	listeners []*Listener
-	auth      *direct.Auth
+	Name          string
+	Token         string // Access token (optional, overrides env)
+	client        *direct.Client
+	listeners     []*Listener
+	auth          *direct.Auth
+	endpoint      string
+	proxyURL      string
+	eventHandlers map[EventType][]func()
 }
 
-// New creates a new Robot instance.
-func New() *Robot {
-	return &Robot{
-		Name:      "daabgo",
-		listeners: make([]*Listener, 0),
-		auth:      direct.NewAuth(),
+// Option configures Robot behavior.
+type Option func(*Robot)
+
+// WithName sets the bot name.
+func WithName(name string) Option {
+	return func(r *Robot) {
+		r.Name = name
+	}
+}
+
+// WithToken sets the access token directly.
+func WithToken(token string) Option {
+	return func(r *Robot) {
+		r.Token = token
+	}
+}
+
+// WithEndpoint sets custom API endpoint.
+func WithEndpoint(endpoint string) Option {
+	return func(r *Robot) {
+		r.endpoint = endpoint
+	}
+}
+
+// WithProxy sets the proxy URL for connections.
+func WithProxy(proxyURL string) Option {
+	return func(r *Robot) {
+		r.proxyURL = proxyURL
+	}
+}
+
+// New creates a new Robot with the given options.
+func New(opts ...Option) *Robot {
+	r := &Robot{
+		Name:          "daabgo",
+		listeners:     make([]*Listener, 0),
+		auth:          direct.NewAuth(),
+		eventHandlers: make(map[EventType][]func()),
+	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
+}
+
+// On registers a lifecycle event handler.
+func (r *Robot) On(event EventType, handler func()) {
+	r.eventHandlers[event] = append(r.eventHandlers[event], handler)
+}
+
+func (r *Robot) emit(event EventType) {
+	for _, handler := range r.eventHandlers[event] {
+		go handler()
 	}
 }
 
@@ -106,8 +179,8 @@ func (r *Robot) Respond(pattern string, handler Handler) {
 	})
 }
 
-// Run starts the bot and blocks until interrupted.
-func (r *Robot) Run() error {
+// Run starts the bot and blocks until the context is cancelled or interrupted.
+func (r *Robot) Run(ctx context.Context) error {
 	// Load environment
 	if err := r.auth.LoadEnv(); err != nil {
 		log.Printf("Warning: could not load .env: %v", err)
@@ -119,16 +192,22 @@ func (r *Robot) Run() error {
 		token = r.auth.GetToken()
 	}
 	if token == "" {
-		return fmt.Errorf("no access token. Run 'daabgo login' first or set Robot.Token")
+		return ErrNoToken
 	}
 
-	// Get configuration from environment
-	endpoint := os.Getenv("HUBOT_DIRECT_ENDPOINT")
+	// Get configuration from environment (can be overridden by options)
+	endpoint := r.endpoint
+	if endpoint == "" {
+		endpoint = os.Getenv("HUBOT_DIRECT_ENDPOINT")
+	}
 	if endpoint == "" {
 		endpoint = direct.DefaultEndpoint
 	}
 
-	proxyURL := os.Getenv("HUBOT_DIRECT_PROXY_URL")
+	proxyURL := r.proxyURL
+	if proxyURL == "" {
+		proxyURL = os.Getenv("HUBOT_DIRECT_PROXY_URL")
+	}
 	if proxyURL == "" {
 		proxyURL = os.Getenv("HTTPS_PROXY")
 	}
@@ -147,29 +226,38 @@ func (r *Robot) Run() error {
 	// Register event handlers
 	r.client.On(direct.EventSessionCreated, func(data interface{}) {
 		fmt.Printf("%s: Session created\n", r.Name)
+		r.emit(EventConnected)
 	})
 
 	r.client.On(direct.EventDataRecovered, func(data interface{}) {
 		fmt.Printf("%s: Ready to receive messages\n", r.Name)
+		r.emit(EventReady)
 	})
 
 	// Register message handler
-	r.client.OnMessage(r.handleMessage)
+	r.client.OnMessage(func(msg direct.ReceivedMessage) {
+		r.handleMessage(ctx, msg)
+	})
 
 	// Connect
 	fmt.Printf("%s is starting...\n", r.Name)
 	if err := r.client.Connect(); err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
-	defer r.client.Close()
+	defer func() {
+		r.client.Close()
+		r.emit(EventDisconnected)
+	}()
 
 	fmt.Printf("%s is running! Press Ctrl+C to stop.\n", r.Name)
 
-	// Wait for interrupt
+	// Wait for interrupt or context cancellation
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	select {
+	case <-ctx.Done():
+		fmt.Printf("\n%s: context cancelled, shutting down...\n", r.Name)
 	case <-sigCh:
 		fmt.Printf("\n%s is shutting down...\n", r.Name)
 	case <-r.client.Done:
@@ -180,7 +268,7 @@ func (r *Robot) Run() error {
 }
 
 // handleMessage processes incoming messages.
-func (r *Robot) handleMessage(msg direct.ReceivedMessage) {
+func (r *Robot) handleMessage(ctx context.Context, msg direct.ReceivedMessage) {
 	for _, listener := range r.listeners {
 		matches := listener.Pattern.FindStringSubmatch(msg.Text)
 		if matches != nil {
@@ -190,9 +278,7 @@ func (r *Robot) handleMessage(msg direct.ReceivedMessage) {
 				Match:   matches,
 				Robot:   r,
 			}
-			go listener.Handler(response)
-		} else {
-			// log.Printf("[DEBUG] Did not match pattern: %s with text: %s", listener.Pattern.String(), msg.Text)
+			go listener.Handler(ctx, response)
 		}
 	}
 }
@@ -200,7 +286,7 @@ func (r *Robot) handleMessage(msg direct.ReceivedMessage) {
 // SendText sends a text message to a room.
 func (r *Robot) SendText(roomID, text string) error {
 	if r.client == nil {
-		return fmt.Errorf("not connected")
+		return ErrNotConnected
 	}
 	return r.client.SendText(roomID, text)
 }
@@ -208,14 +294,14 @@ func (r *Robot) SendText(roomID, text string) error {
 // Call exposes direct-go Client.Call for advanced use cases such as fetching action stamp answers.
 func (r *Robot) Call(method string, params []interface{}) (interface{}, error) {
 	if r.client == nil {
-		return nil, fmt.Errorf("not connected")
+		return nil, ErrNotConnected
 	}
 	return r.client.Call(method, params)
 }
 
 func (r *Robot) sendActionMessage(roomID string, msgType int, content interface{}) (string, error) {
 	if r.client == nil {
-		return "", fmt.Errorf("not connected")
+		return "", ErrNotConnected
 	}
 
 	talkID := normalizeRoomID(roomID)
