@@ -2,16 +2,18 @@
 package main
 
 import (
-	"github.com/f4ah6o/daabgo/internal/bot"
+	"context"
+	"github.com/f4ah6o/direct-go-sdk/daab-go/bot"
 )
 
 func main() {
-	robot := bot.New()
-	robot.Name = "{{.Name}}"
+	robot := bot.New(
+		bot.WithName("{{.Name}}"),
+	)
 
-	robot.Respond("ping$", func(res bot.Response) {
+	robot.Respond("ping$", func(ctx context.Context, res bot.Response) {
 		res.Send("PONG")
 	})
 
-	robot.Run()
+	robot.Run(context.Background())
 }
