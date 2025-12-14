@@ -22,7 +22,7 @@ direct-go-sdk/
 │   ├── client_test.go      # Unit tests for client
 │   ├── auth.go             # Authentication (.env-based)
 │   ├── messages.go         # Message sending functions
-│   ├── events.go           # Event handling
+│   ├── events.go           # Event handling (with SelectStamp support)
 │   ├── users.go            # User management API
 │   ├── domains.go          # Domain/organization API
 │   ├── talks.go            # Talk/room management API
@@ -31,35 +31,40 @@ direct-go-sdk/
 │   ├── departments.go      # Department hierarchy API
 │   ├── announcements.go    # Announcements API
 │   ├── conference.go       # Video/audio conference API
-│   ├── debuglog/           # Debug logging to separate server
+│   ├── debuglog/           # Debug logging infrastructure
+│   ├── logserver/          # LLM-friendly log server module
 │   ├── testutil/           # Test utilities and mock server
-│   ├── tools/coverage/     # Porting coverage analysis tool
+│   ├── tools/
+│   │   ├── coverage/       # Porting coverage analysis tool
+│   │   └── testcov/        # Runtime code coverage tool
 │   ├── direct-js-source/   # Synced JS source for reference
-│   └── examples/
-└── daab-go/                # Bot framework CLI
-    ├── cmd/daabgo/         # Main CLI entry point
-    ├── cmd/debugserver/    # Debug log server
-    ├── internal/cli/       # CLI commands (cobra-based)
-    │   ├── root.go         # Root command
-    │   ├── init.go         # Initialize bot project
-    │   ├── login.go        # Login to Direct4B
-    │   ├── logout.go       # Logout
-    │   ├── run.go          # Run bot (foreground)
-    │   ├── start.go        # Start bot as daemon
-    │   ├── stop.go         # Stop daemon
-    │   ├── invites.go      # Manage domain invites
-    │   ├── daemon.go       # Daemon management utilities
-    │   └── version.go      # Show version
-    ├── bot/                # Public bot framework API (Hubot-like)
-    ├── internal/bot/       # [DEPRECATED] Moved to bot/
-    ├── webhook/   # n8n webhook integration
-    │   ├── client.go       # HTTP webhook client
-    │   ├── types.go        # Webhook payload/response types
-    │   └── webhook_test.go # Webhook tests
-    ├── daab-source/        # Synced daab JS source for reference
-    └── examples/
-        ├── ping/           # Simple ping bot
-        └── n8n-proxy/      # n8n webhook proxy bot
+│   └── examples/simple/    # Simple example
+├── daab-go/                # Bot framework CLI
+│   ├── cmd/daabgo/         # Main CLI entry point
+│   ├── cmd/logserver/      # LLM-friendly log server with JSON API & SSE
+│   ├── internal/cli/       # CLI commands (cobra-based)
+│   │   ├── root.go         # Root command
+│   │   ├── init.go         # Initialize bot project
+│   │   ├── login.go        # Login to Direct4B
+│   │   ├── logout.go       # Logout
+│   │   ├── run.go          # Run bot (foreground)
+│   │   ├── start.go        # Start bot as daemon
+│   │   ├── stop.go         # Stop daemon
+│   │   ├── invites.go      # Manage domain invites
+│   │   ├── daemon.go       # Daemon management utilities
+│   │   └── version.go      # Show version
+│   ├── bot/                # Public bot framework API (Hubot-like)
+│   ├── internal/bot/       # [DEPRECATED] Moved to bot/
+│   ├── webhook/            # n8n webhook integration (public API)
+│   │   ├── client.go       # HTTP webhook client
+│   │   ├── types.go        # Webhook payload/response types
+│   │   └── webhook_test.go # Webhook tests
+│   └── daab-source/        # Synced daab JS source for reference
+└── daab-go-examples/       # Bot examples (separate module)
+    ├── ping/               # Simple ping bot
+    ├── n8n-proxy/          # n8n webhook proxy bot
+    ├── selectstamp/        # SelectStamp interactive message example
+    └── teams-bridge/       # Teams message bridge bot
 ```
 
 ## Development Workflow
@@ -104,16 +109,20 @@ go build -o daabgo cmd/daabgo/main.go
 ./daabgo version   # Show version
 
 # Run example bot
-cd examples/ping
+cd ../daab-go-examples/ping
 go run main.go
 
 # Run n8n webhook proxy example
-cd examples/n8n-proxy
+cd ../daab-go-examples/n8n-proxy
 # Set up .env with DIRECT_ACCESS_TOKEN and N8N_WEBHOOK_URL
 go run main.go
 
-# Run debug server (for development)
-cd cmd/debugserver
+# Run SelectStamp example
+cd ../daab-go-examples/selectstamp
+go run main.go
+
+# Run log server (for development)
+cd cmd/logserver
 go run main.go
 ```
 
@@ -154,6 +163,21 @@ go run . -format markdown > ../../COVERAGE.md
 ```
 
 View `direct-go/COVERAGE.md` for current status and missing methods.
+
+### Runtime Test Coverage
+
+The **testcov tool** (`direct-go/tools/testcov/`) provides runtime code coverage analysis:
+
+* Separate from porting coverage - analyzes actual test coverage
+* PowerShell script for Windows: `run.ps1`
+* Helps identify untested code paths
+
+Run test coverage analysis:
+
+```bash
+cd direct-go/tools/testcov
+./run.ps1  # Windows PowerShell
+```
 
 ### Implemented RPC Methods (direct-go)
 
@@ -243,6 +267,21 @@ client.On("event_type", func(data interface{}) { ... })
 
 Event types defined in `events.go`.
 
+**Supported Message Types** (`events.go`):
+* Standard messages: Text (1), System (4), File (7), Sticker (11)
+* Interactive messages: YesNo (13), Select (15), Task (17)
+* Reply messages: YesNoReply (14), SelectReply (16), TaskDone (18)
+* Closed states: YesNoClosed (19), SelectClosed (20), TaskClosed (21)
+
+**Wire Types for Interactive Messages**:
+* `WireTypeSelect` (502): Select menu question
+* `WireTypeSelectReply` (503): User's select choice
+* `WireTypeYesNo` (500): Yes/No question
+* `WireTypeYesNoReply` (501): Yes/No response
+* `WireTypeTask` (504): Task assignment
+* `WireTypeTaskDone` (505): Task completion
+* Closed states: 506 (YesNo), 507 (Select), 508 (Task)
+
 ### Bot Framework (daab-go)
 
 Hubot-inspired API with pattern matching and context support:
@@ -275,6 +314,10 @@ robot.Run(ctx)
 * Functional options pattern for configuration
 * Pattern matching with regex support
 * Response helpers: `Send()`, `Reply()`, `SendSelect()`
+* **SelectStamp Support**: Interactive select menus with `SendSelect(question, options)`
+  * Automatically handles user responses with wire types 502/503
+  * Supports both single and multiple option selection
+  * See `daab-go-examples/selectstamp/` for complete implementation
 
 **Package Structure**:
 * `bot/bot.go`: Public API (recommended)
@@ -287,6 +330,27 @@ robot.Run(ctx)
 **Daemon Mode**: Bot can run as background daemon with PID tracking:
 * PID file: `~/.daabgo/daabgo.pid`
 * Log file: `~/.daabgo/daabgo.log`
+
+**SelectStamp Example**:
+```go
+// Interactive select menu
+robot.Hear("menu", func(ctx context.Context, res bot.Response) {
+    options := []string{"Option A", "Option B", "Option C"}
+    res.SendSelect("Please choose:", options)
+})
+
+// Handle select responses automatically
+robot.Respond("", func(ctx context.Context, res bot.Response) {
+    // User's selection is in res.Message.Content
+    res.Reply("You selected: " + res.Message.Content)
+})
+```
+
+See `daab-go-examples/selectstamp/` for a complete working example with:
+* Menu presentation with `SendSelect()`
+* Automatic handling of SelectReply messages (wire type 503)
+* Support for msgpack integer types in responses
+* Clean menu re-presentation after user selection
 
 ### n8n Webhook Integration (daab-go)
 
@@ -316,6 +380,10 @@ if errCode := response.Validate(); errCode != webhook.ErrorCodeOK {
 * `reply_select`, `reply_yesno`, `reply_task`: Reply to interactive messages
 * `close_select`, `close_yesno`: Close interactive messages
 
+**Package Availability**:
+* Public API: `github.com/f4ah6o/direct-go-sdk/daab-go/webhook`
+* Can be used independently in custom bot implementations
+
 See `daab-go-examples/n8n-proxy/` for a complete example.
 
 ### Message Domain Resolution (direct-go)
@@ -326,15 +394,35 @@ The SDK automatically resolves domain IDs for incoming messages:
 * `ReceivedMessage` includes `DomainID` field for domain-scoped operations
 * Enables user lookups with proper domain context
 
-### Debug Logging
+### Log Server (LLM-Friendly Debug Logging)
 
-Both modules support debug logging to a separate HTTP server:
+Both modules support structured debug logging to a separate HTTP server:
 
 ```go
 direct.EnableDebugServer("http://localhost:3939")
 ```
 
-Server implementation: `daab-go/cmd/debugserver/`
+**Log Server Features** (`daab-go/cmd/logserver/`):
+* **JSON API**: Structured log entries with timestamps, levels, and metadata
+* **SSE Streaming**: Real-time log streaming via Server-Sent Events
+* **HTML UI**: Browser-based log viewer for easy debugging
+* **LLM-Friendly**: Designed for analysis by Claude Code and other AI tools
+* **Log Infrastructure**: `direct-go/logserver/` provides reusable server module
+
+**Usage**:
+```bash
+# Start log server on port 3939
+cd daab-go/cmd/logserver
+go run main.go
+
+# In your bot code, enable debug logging
+direct.EnableDebugServer("http://localhost:3939")
+```
+
+**Endpoints**:
+* `GET /` - HTML log viewer UI
+* `GET /logs` - JSON array of all log entries
+* `GET /stream` - SSE stream of real-time logs
 
 ## Common Commands
 
@@ -404,8 +492,27 @@ go fmt ./...
 * Import daab-go bot: `import "github.com/f4ah6o/direct-go-sdk/daab-go/bot"`
 * Import webhook integration: `import "github.com/f4ah6o/direct-go-sdk/daab-go/webhook"`
 * Test utilities: `import "github.com/f4ah6o/direct-go-sdk/direct-go/testutil"`
+* Log server module: `import "github.com/f4ah6o/direct-go-sdk/direct-go/logserver"`
 
 **Note**: The bot package was moved from `internal/bot` to `bot` to provide a stable public API.
+
+### Example Projects
+
+Bot examples are maintained in a separate module at the repository root:
+
+* **Location**: `daab-go-examples/` (root-level directory, separate from daab-go)
+* **Module**: Independent `go.mod` with dependencies on direct-go and daab-go
+* **Examples**:
+  * `ping/`: Simple ping-pong bot demonstrating basic message handling
+  * `n8n-proxy/`: n8n webhook integration for workflow automation
+  * `selectstamp/`: Interactive select menu example (SelectStamp feature)
+  * `teams-bridge/`: Message bridge between Direct4B and Microsoft Teams
+
+**Running examples**:
+```bash
+cd daab-go-examples/ping
+go run main.go
+```
 
 ### JavaScript Reference Sources
 
