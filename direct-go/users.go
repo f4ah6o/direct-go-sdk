@@ -34,7 +34,8 @@ type PresenceInfo struct {
 	Status string // e.g., "online", "offline", "away"
 }
 
-// GetUsers retrieves multiple users by their IDs.
+// GetUsers retrieves detailed information for multiple users by their IDs within a domain.
+// Returns a slice of UserInfo containing user profiles with display names, emails, departments, and permissions.
 func (c *Client) GetUsers(ctx context.Context, domainID interface{}, userIDs []interface{}) ([]UserInfo, error) {
 	params := []interface{}{domainID, userIDs}
 	result, err := c.Call(MethodGetUsers, params)
@@ -55,7 +56,8 @@ func (c *Client) GetUsers(ctx context.Context, domainID interface{}, userIDs []i
 	return users, nil
 }
 
-// GetProfile retrieves detailed profile for a user.
+// GetProfile retrieves the detailed profile for a specific user in a domain.
+// Returns ProfileInfo with display name, phonetic name, and custom profile fields.
 func (c *Client) GetProfile(ctx context.Context, domainID, userID interface{}) (*ProfileInfo, error) {
 	params := []interface{}{domainID, userID}
 	result, err := c.Call(MethodGetProfile, params)
@@ -70,21 +72,24 @@ func (c *Client) GetProfile(ctx context.Context, domainID, userID interface{}) (
 	return nil, nil
 }
 
-// UpdateProfile updates the current user's profile.
+// UpdateProfile updates the current authenticated user's profile within a domain.
+// The updates map should contain profile fields to update (e.g., display_name, phonetic_name, custom fields).
 func (c *Client) UpdateProfile(ctx context.Context, domainID interface{}, updates map[string]interface{}) error {
 	params := []interface{}{domainID, updates}
 	_, err := c.Call(MethodUpdateProfile, params)
 	return err
 }
 
-// UpdateUser updates user information.
+// UpdateUser updates information for a specific user (requires appropriate permissions).
+// The updates map should contain user fields to modify.
 func (c *Client) UpdateUser(ctx context.Context, userID interface{}, updates map[string]interface{}) error {
 	params := []interface{}{userID, updates}
 	_, err := c.Call(MethodUpdateUser, params)
 	return err
 }
 
-// GetPresences retrieves presence status for multiple users.
+// GetPresences retrieves the online/offline status for multiple users.
+// Returns PresenceInfo with status values like "online", "offline", "away", etc.
 func (c *Client) GetPresences(ctx context.Context, userIDs []interface{}) ([]PresenceInfo, error) {
 	params := []interface{}{userIDs}
 	result, err := c.Call(MethodGetPresences, params)
@@ -120,7 +125,8 @@ type UserIdentifier struct {
 	SigninID   string
 }
 
-// GetUserIdentifiers retrieves identifiers for multiple users.
+// GetUserIdentifiers retrieves various identifier information for multiple users.
+// Returns UserIdentifier with email addresses, group aliases, and sign-in IDs.
 func (c *Client) GetUserIdentifiers(ctx context.Context, userIDs []interface{}) ([]UserIdentifier, error) {
 	params := []interface{}{userIDs}
 	result, err := c.Call(MethodGetUserIdentifiers, params)
@@ -156,7 +162,8 @@ func (c *Client) GetUserIdentifiers(ctx context.Context, userIDs []interface{}) 
 	return identifiers, nil
 }
 
-// GetFriends retrieves the current user's friends list.
+// GetFriends retrieves the current authenticated user's friends list.
+// Returns a slice of UserInfo for each friend with their profile information.
 func (c *Client) GetFriends(ctx context.Context) ([]UserInfo, error) {
 	result, err := c.Call(MethodGetFriends, []interface{}{})
 	if err != nil {
@@ -176,21 +183,23 @@ func (c *Client) GetFriends(ctx context.Context) ([]UserInfo, error) {
 	return friends, nil
 }
 
-// AddFriend adds a user as a friend.
+// AddFriend adds the specified user to the current user's friends list.
+// The user must be in the same domain or organization.
 func (c *Client) AddFriend(ctx context.Context, userID interface{}) error {
 	params := []interface{}{userID}
 	_, err := c.Call(MethodAddFriend, params)
 	return err
 }
 
-// DeleteFriend removes a user from friends list.
+// DeleteFriend removes the specified user from the current user's friends list.
 func (c *Client) DeleteFriend(ctx context.Context, userID interface{}) error {
 	params := []interface{}{userID}
 	_, err := c.Call(MethodDeleteFriend, params)
 	return err
 }
 
-// GetAcquaintances retrieves the user's acquaintances list.
+// GetAcquaintances retrieves the current user's acquaintances list.
+// Acquaintances are users the current user has interacted with but are not friends.
 func (c *Client) GetAcquaintances(ctx context.Context) ([]UserInfo, error) {
 	result, err := c.Call(MethodGetAcquaintances, []interface{}{})
 	if err != nil {

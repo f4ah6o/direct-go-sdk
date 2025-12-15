@@ -20,17 +20,20 @@ type Auth struct {
 	envFile string
 }
 
-// NewAuth creates a new Auth with the default .env file.
+// NewAuth creates a new Auth manager using the default .env file.
+// The Auth manager handles token storage and retrieval from environment variables and .env files.
 func NewAuth() *Auth {
 	return &Auth{envFile: EnvFile}
 }
 
-// NewAuthWithFile creates a new Auth with a custom env file path.
+// NewAuthWithFile creates a new Auth manager using a custom env file path.
+// This allows using a different file than the default .env for token storage.
 func NewAuthWithFile(envFile string) *Auth {
 	return &Auth{envFile: envFile}
 }
 
-// HasToken checks if an access token exists.
+// HasToken checks if an access token exists in the environment or .env file.
+// It first checks the HUBOT_DIRECT_TOKEN environment variable, then the .env file.
 func (a *Auth) HasToken() bool {
 	// Check environment variable first
 	if os.Getenv(TokenEnvKey) != "" {
@@ -42,7 +45,9 @@ func (a *Auth) HasToken() bool {
 	return token != ""
 }
 
-// GetToken retrieves the access token.
+// GetToken retrieves the access token from environment or .env file.
+// It first checks the HUBOT_DIRECT_TOKEN environment variable, then the .env file.
+// Returns an empty string if no token is found.
 func (a *Auth) GetToken() string {
 	// Check environment variable first
 	if token := os.Getenv(TokenEnvKey); token != "" {
@@ -55,6 +60,8 @@ func (a *Auth) GetToken() string {
 }
 
 // SetToken stores the access token in the .env file.
+// If the token already exists, it updates the value.
+// If the token parameter is empty, it removes the token entry.
 func (a *Auth) SetToken(token string) error {
 	content, err := a.readEnvFile()
 	if err != nil && !os.IsNotExist(err) {
@@ -85,7 +92,8 @@ func (a *Auth) SetToken(token string) error {
 	return os.WriteFile(a.envFile, []byte(strings.Join(newLines, "\n")+"\n"), 0600)
 }
 
-// ClearToken removes the access token from storage.
+// ClearToken removes the access token from the .env file.
+// This is a convenience method that calls SetToken with an empty string.
 func (a *Auth) ClearToken() error {
 	return a.SetToken("")
 }
@@ -118,7 +126,10 @@ func (a *Auth) readTokenFromFile() (string, error) {
 	return "", nil
 }
 
-// LoadEnv loads environment variables from the .env file.
+// LoadEnv loads environment variables from the .env file into the process environment.
+// It only sets variables that are not already defined in the environment.
+// Lines starting with # are treated as comments and ignored.
+// Returns nil if the .env file doesn't exist.
 func (a *Auth) LoadEnv() error {
 	file, err := os.Open(a.envFile)
 	if err != nil {
@@ -150,7 +161,9 @@ func (a *Auth) LoadEnv() error {
 	return scanner.Err()
 }
 
-// PromptCredentials prompts the user for email and password.
+// PromptCredentials prompts the user for email and password via stdin.
+// This is typically used for interactive login flows.
+// Returns the trimmed email and password strings, or an error if reading fails.
 func PromptCredentials() (email, password string, err error) {
 	reader := bufio.NewReader(os.Stdin)
 

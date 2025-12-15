@@ -28,7 +28,8 @@ type ConferenceJoinInfo struct {
 	SkywayVersion int
 }
 
-// GetConferences retrieves active conferences.
+// GetConferences retrieves all active video/audio conferences the user can see.
+// Returns a slice of Conference objects with participant lists and metadata.
 func (c *Client) GetConferences(ctx context.Context) ([]Conference, error) {
 	result, err := c.Call(MethodGetConferences, []interface{}{})
 	if err != nil {
@@ -48,7 +49,8 @@ func (c *Client) GetConferences(ctx context.Context) ([]Conference, error) {
 	return conferences, nil
 }
 
-// GetConferenceParticipants retrieves participants of a conference.
+// GetConferenceParticipants retrieves the list of users participating in a conference.
+// Returns a slice of participant IDs or user objects.
 func (c *Client) GetConferenceParticipants(ctx context.Context, conferenceID interface{}) ([]interface{}, error) {
 	params := []interface{}{conferenceID}
 	result, err := c.Call(MethodGetConferenceParticipants, params)
@@ -63,7 +65,8 @@ func (c *Client) GetConferenceParticipants(ctx context.Context, conferenceID int
 	return []interface{}{}, nil
 }
 
-// JoinConference joins a conference.
+// JoinConference joins an active conference as a participant.
+// Returns ConferenceJoinInfo with room name, credentials, and connection details.
 func (c *Client) JoinConference(ctx context.Context, conferenceID interface{}) (*ConferenceJoinInfo, error) {
 	params := []interface{}{conferenceID}
 	result, err := c.Call(MethodJoinConference, params)
@@ -78,14 +81,14 @@ func (c *Client) JoinConference(ctx context.Context, conferenceID interface{}) (
 	return nil, nil
 }
 
-// LeaveConference leaves a conference.
+// LeaveConference disconnects the current user from an active conference.
 func (c *Client) LeaveConference(ctx context.Context, conferenceID interface{}) error {
 	params := []interface{}{conferenceID}
 	_, err := c.Call(MethodLeaveConference, params)
 	return err
 }
 
-// RejectConference rejects a conference invitation.
+// RejectConference declines an invitation to join a conference.
 func (c *Client) RejectConference(ctx context.Context, conferenceID interface{}) error {
 	params := []interface{}{conferenceID}
 	_, err := c.Call(MethodRejectConference, params)

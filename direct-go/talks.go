@@ -12,7 +12,9 @@ type GroupTalkSettings struct {
 	Description              string
 }
 
-// CreateGroupTalk creates a new group talk/room.
+// CreateGroupTalk creates a new group conversation/room with multiple participants.
+// If settings is nil, defaults are used (past messages visible, no icon, no description).
+// Returns the created Talk with its ID and metadata.
 func (c *Client) CreateGroupTalk(ctx context.Context, domainID interface{}, name string, userIDs []interface{}, settings *GroupTalkSettings) (*Talk, error) {
 	// Build parameters based on settings
 	var params []interface{}
@@ -48,7 +50,8 @@ func (c *Client) CreateGroupTalk(ctx context.Context, domainID interface{}, name
 	return nil, nil
 }
 
-// CreatePairTalk creates a 1-on-1 talk/room.
+// CreatePairTalk creates a 1-on-1 conversation between the current user and another user.
+// Returns the created Talk with its ID and metadata.
 func (c *Client) CreatePairTalk(ctx context.Context, domainID, userID interface{}) (*Talk, error) {
 	params := []interface{}{domainID, userID}
 	result, err := c.Call(MethodCreatePairTalk, params)
@@ -63,7 +66,9 @@ func (c *Client) CreatePairTalk(ctx context.Context, domainID, userID interface{
 	return nil, nil
 }
 
-// UpdateGroupTalk updates a group talk's settings.
+// UpdateGroupTalk updates a group talk's settings such as name, icon, or description.
+// The updates map should contain fields like "name", "icon_url", "description", etc.
+// Returns the updated Talk.
 func (c *Client) UpdateGroupTalk(ctx context.Context, talkID interface{}, updates map[string]interface{}) (*Talk, error) {
 	params := []interface{}{talkID, updates}
 	result, err := c.Call(MethodUpdateGroupTalk, params)
@@ -78,28 +83,29 @@ func (c *Client) UpdateGroupTalk(ctx context.Context, talkID interface{}, update
 	return nil, nil
 }
 
-// AddTalkers adds users to a talk/room.
+// AddTalkers adds multiple users as participants to an existing talk/room.
+// This is typically used for group conversations.
 func (c *Client) AddTalkers(ctx context.Context, talkID interface{}, userIDs []interface{}) error {
 	params := []interface{}{talkID, userIDs}
 	_, err := c.Call(MethodAddTalkers, params)
 	return err
 }
 
-// DeleteTalker removes a user from a talk/room.
+// DeleteTalker removes a user from a talk/room, ending their participation.
 func (c *Client) DeleteTalker(ctx context.Context, talkID, userID interface{}) error {
 	params := []interface{}{talkID, userID}
 	_, err := c.Call(MethodDeleteTalker, params)
 	return err
 }
 
-// AddFavoriteTalk adds a talk to favorites.
+// AddFavoriteTalk adds a talk to the current user's favorites list for quick access.
 func (c *Client) AddFavoriteTalk(ctx context.Context, talkID interface{}) error {
 	params := []interface{}{talkID}
 	_, err := c.Call(MethodAddFavoriteTalk, params)
 	return err
 }
 
-// DeleteFavoriteTalk removes a talk from favorites.
+// DeleteFavoriteTalk removes a talk from the current user's favorites list.
 func (c *Client) DeleteFavoriteTalk(ctx context.Context, talkID interface{}) error {
 	params := []interface{}{talkID}
 	_, err := c.Call(MethodDeleteFavoriteTalk, params)

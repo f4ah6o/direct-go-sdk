@@ -35,7 +35,9 @@ type FilePreview struct {
 	Key               string
 }
 
-// CreateUploadAuth creates upload authentication for a file.
+// CreateUploadAuth creates authentication credentials for uploading a file.
+// Returns UploadAuth with a file ID and either a POST URL with form data or a PUT URL.
+// The useType parameter specifies how the file will be used (e.g., "message", "profile").
 func (c *Client) CreateUploadAuth(ctx context.Context, filename, contentType string, size int64, useType string) (*UploadAuth, error) {
 	params := []interface{}{filename, contentType, size, 0, useType}
 	result, err := c.Call(MethodCreateUploadAuth, params)
@@ -67,7 +69,8 @@ func (c *Client) CreateUploadAuth(ctx context.Context, filename, contentType str
 	return auth, nil
 }
 
-// GetAttachments retrieves attachments from a talk.
+// GetAttachments retrieves file attachments from a talk/conversation.
+// The limit parameter controls how many attachments to return (most recent first).
 func (c *Client) GetAttachments(ctx context.Context, talkID interface{}, limit int) ([]Attachment, error) {
 	params := []interface{}{talkID, limit}
 	result, err := c.Call(MethodGetAttachments, params)
@@ -88,14 +91,15 @@ func (c *Client) GetAttachments(ctx context.Context, talkID interface{}, limit i
 	return attachments, nil
 }
 
-// DeleteAttachment deletes an attachment.
+// DeleteAttachment removes a file attachment from the system.
 func (c *Client) DeleteAttachment(ctx context.Context, attachmentID interface{}) error {
 	params := []interface{}{attachmentID}
 	_, err := c.Call(MethodDeleteAttachment, params)
 	return err
 }
 
-// SearchAttachments searches for attachments.
+// SearchAttachments searches for file attachments within a talk by filename or content.
+// Returns matching Attachment objects with file metadata and download URLs.
 func (c *Client) SearchAttachments(ctx context.Context, query string, talkID interface{}) ([]Attachment, error) {
 	params := []interface{}{query, talkID}
 	result, err := c.Call(MethodSearchAttachments, params)
@@ -116,7 +120,8 @@ func (c *Client) SearchAttachments(ctx context.Context, query string, talkID int
 	return attachments, nil
 }
 
-// CreateFilePreview creates a preview for a file.
+// CreateFilePreview generates a preview (thumbnail/image) for a file.
+// This is useful for displaying image or document previews in the UI.
 func (c *Client) CreateFilePreview(ctx context.Context, fileID interface{}) (*FilePreview, error) {
 	params := []interface{}{fileID}
 	result, err := c.Call(MethodCreateFilePreview, params)
@@ -131,7 +136,8 @@ func (c *Client) CreateFilePreview(ctx context.Context, fileID interface{}) (*Fi
 	return nil, nil
 }
 
-// GetFilePreview retrieves a file preview.
+// GetFilePreview retrieves an existing file preview if one has been generated.
+// Returns FilePreview with the preview URL and status.
 func (c *Client) GetFilePreview(ctx context.Context, fileID interface{}) (*FilePreview, error) {
 	params := []interface{}{fileID}
 	result, err := c.Call(MethodGetFilePreview, params)

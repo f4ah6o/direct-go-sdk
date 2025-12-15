@@ -1,3 +1,14 @@
+// Package logserver provides an HTTP server for collecting and viewing debug logs.
+//
+// The log server offers multiple endpoints:
+//   - / : Interactive web UI for viewing logs in real-time
+//   - /logs : JSON API endpoint for querying logs with filters
+//   - /stream : Server-Sent Events (SSE) endpoint for real-time log streaming
+//   - /log : POST endpoint for receiving logs from other processes
+//
+// This server integrates with the debuglog package to collect and broadcast
+// logs across multiple processes and provide an LLM-friendly interface for
+// debugging distributed systems.
 package logserver
 
 import (
@@ -10,12 +21,14 @@ import (
 	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 )
 
-// Server represents the log server
+// Server is an HTTP server that collects and serves debug logs.
+// It provides both a web UI and JSON APIs for log access.
 type Server struct {
 	mux *http.ServeMux
 }
 
-// New creates a new log server
+// New creates a new log server with all routes configured.
+// The server is ready to be started with ListenAndServe.
 func New() *Server {
 	s := &Server{
 		mux: http.NewServeMux(),
@@ -63,7 +76,9 @@ func (s *Server) handleLogPost(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// ListenAndServe starts the server
+// ListenAndServe starts the HTTP server on the given address.
+// The address should be in the format "host:port" (e.g., ":8080" or "localhost:3000").
+// This is a blocking call that returns an error if the server fails to start.
 func (s *Server) ListenAndServe(addr string) error {
 	fmt.Printf("Log server listening on %s\n", addr)
 	return http.ListenAndServe(addr, s.mux)

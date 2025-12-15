@@ -26,7 +26,8 @@ type DepartmentUserCount struct {
 	Partial      int
 }
 
-// GetDepartmentTree retrieves the department tree for a domain.
+// GetDepartmentTree retrieves the organizational department hierarchy for a domain.
+// Returns DepartmentTree with nested departments, parent-child relationships, and user counts.
 func (c *Client) GetDepartmentTree(ctx context.Context, domainID interface{}) (*DepartmentTree, error) {
 	params := []interface{}{domainID}
 	result, err := c.Call(MethodGetDepartmentTree, params)
@@ -67,7 +68,8 @@ func (c *Client) GetDepartmentTree(ctx context.Context, domainID interface{}) (*
 	return tree, nil
 }
 
-// GetDepartmentUsers retrieves users in a department.
+// GetDepartmentUsers retrieves all users belonging to a specific department.
+// Returns a slice of UserInfo with user profiles and metadata.
 func (c *Client) GetDepartmentUsers(ctx context.Context, domainID, departmentID interface{}) ([]UserInfo, error) {
 	params := []interface{}{domainID, departmentID}
 	result, err := c.Call(MethodGetDepartmentUsers, params)
@@ -88,7 +90,8 @@ func (c *Client) GetDepartmentUsers(ctx context.Context, domainID, departmentID 
 	return users, nil
 }
 
-// GetDepartmentUserCount retrieves user count statistics for departments.
+// GetDepartmentUserCount retrieves user count statistics for all departments in a domain.
+// Returns DepartmentUserCount with total and partial counts for each department.
 func (c *Client) GetDepartmentUserCount(ctx context.Context, domainID interface{}) ([]DepartmentUserCount, error) {
 	params := []interface{}{domainID}
 	result, err := c.Call(MethodGetDepartmentUserCount, params)
