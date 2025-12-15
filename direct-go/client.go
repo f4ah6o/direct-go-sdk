@@ -96,6 +96,8 @@ type Client struct {
 type EventHandler func(data interface{})
 
 // NewClient creates a new direct client with the given options.
+// If no endpoint is provided, DefaultEndpoint is used.
+// The client must be connected via Connect() before use.
 func NewClient(opts Options) *Client {
 	if opts.Endpoint == "" {
 		opts.Endpoint = DefaultEndpoint
@@ -117,6 +119,9 @@ func NewClient(opts Options) *Client {
 }
 
 // Connect establishes a WebSocket connection to the direct API.
+// It starts the message reader and ping keepalive loops.
+// If an access token is provided in Options, it automatically creates a session.
+// Returns an error if already connected or if the WebSocket connection fails.
 func (c *Client) Connect() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -354,7 +359,8 @@ func min(a, b int) int {
 	return b
 }
 
-// Close closes the WebSocket connection.
+// Close closes the WebSocket connection and stops all background goroutines.
+// It is safe to call Close multiple times.
 func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -370,6 +376,9 @@ func (c *Client) Close() error {
 }
 
 // On registers an event handler for the given event type.
+// Multiple handlers can be registered for the same event.
+// Event types are defined as constants (e.g., EventSessionCreated, EventNotifyCreateMessage).
+// Handlers are called asynchronously in separate goroutines.
 func (c *Client) On(event string, handler EventHandler) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -378,6 +387,8 @@ func (c *Client) On(event string, handler EventHandler) {
 }
 
 // OnMessage registers a callback for incoming messages.
+// The handler is called for each message received from the Messages channel.
+// The handler runs in a separate goroutine.
 func (c *Client) OnMessage(handler func(ReceivedMessage)) {
 	go func() {
 		for msg := range c.Messages {
@@ -431,7 +442,10 @@ func (c *Client) call(method string, params []interface{}, onSuccess func(interf
 	}
 }
 
-// Call sends an RPC request and returns a Promise-like result.
+// Call sends a synchronous RPC request to the direct API server.
+// It blocks until a response is received or the 30-second timeout expires.
+// Method names are defined as constants (e.g., MethodGetTalks, MethodCreateMessage).
+// Returns the result on success, or an error on failure or timeout.
 func (c *Client) Call(method string, params []interface{}) (interface{}, error) {
 	resultCh := make(chan interface{}, 1)
 	errCh := make(chan interface{}, 1)
@@ -452,13 +466,18 @@ func (c *Client) Call(method string, params []interface{}) (interface{}, error) 
 	}
 }
 
-// Send sends a message to the specified room.
+// Send sends a message with custom type and content to the specified room.
+// roomID can be a string or numeric room/talk identifier.
+// msgType should be one of the MessageType constants (e.g., MsgTypeText, MsgTypeStamp).
+// content structure depends on the message type.
 func (c *Client) Send(roomID interface{}, msgType int, content interface{}) error {
 	_, err := c.Call("create_message", []interface{}{roomID, msgType, content})
 	return err
 }
 
 // SendText sends a text message to the specified room.
+// This is a convenience method that wraps Send with msgType=1 (text).
+// Deprecated: Use SendTextWithContext for better context support.
 func (c *Client) SendText(roomID string, text string) error {
 	// For text messages, type is 1 and content is the text string
 	// Convert roomID to uint64 for the API
@@ -750,7 +769,8 @@ func (c *Client) emit(event string, data interface{}) {
 	}
 }
 
-// GetTalksWithContext retrieves the list of talk rooms with context support.
+// GetTalksWithContext retrieves the list of talk rooms (conversations) with context support.
+// Each Talk contains room metadata including participants, type (pair/group), and settings.
 // This is the preferred method over the legacy GetTalks().
 func (c *Client) GetTalksWithContext(ctx context.Context) ([]Talk, error) {
 	result, err := c.Call(MethodGetTalks, []interface{}{})
@@ -772,6 +792,7 @@ func (c *Client) GetTalksWithContext(ctx context.Context) ([]Talk, error) {
 }
 
 // GetTalkStatusesWithContext retrieves the status of all talks with context support.
+// Status includes unread count and latest message ID for each talk.
 func (c *Client) GetTalkStatusesWithContext(ctx context.Context) ([]TalkStatus, error) {
 	result, err := c.Call(MethodGetTalkStatuses, []interface{}{})
 	if err != nil {
@@ -800,7 +821,8 @@ func (c *Client) GetTalkStatusesWithContext(ctx context.Context) ([]TalkStatus, 
 	return statuses, nil
 }
 
-// GetMeWithContext retrieves the current user's profile with context support.
+// GetMeWithContext retrieves the current authenticated user's profile with context support.
+// Returns user information including display name, email, status, and other profile details.
 // This is the preferred method over the legacy GetMe().
 func (c *Client) GetMeWithContext(ctx context.Context) (*UserInfo, error) {
 	result, err := c.Call(MethodGetMe, []interface{}{})
@@ -816,7 +838,8 @@ func (c *Client) GetMeWithContext(ctx context.Context) (*UserInfo, error) {
 	return nil, nil
 }
 
-// SendTextWithContext sends a text message with context support.
+// SendTextWithContext sends a text message to the specified room with context support.
+// roomID is the talk/room identifier, and text is the message content.
 // This is the preferred method over the legacy SendText().
 func (c *Client) SendTextWithContext(ctx context.Context, roomID string, text string) error {
 	_, err := c.Call(MethodCreateMessage, []interface{}{roomID, 1, text})

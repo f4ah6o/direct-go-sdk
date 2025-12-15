@@ -27,7 +27,9 @@ type AnnouncementStatus struct {
 	MaxReadAnnouncementID interface{}
 }
 
-// CreateAnnouncement creates a new announcement.
+// CreateAnnouncement creates a new announcement for specific users in a domain.
+// targetUserIDs specifies which users will receive the announcement.
+// Returns the created Announcement with its ID and metadata.
 func (c *Client) CreateAnnouncement(ctx context.Context, domainID interface{}, title, text string, targetUserIDs []interface{}) (*Announcement, error) {
 	params := []interface{}{domainID, title, text, targetUserIDs}
 	result, err := c.Call(MethodCreateAnnouncement, params)
@@ -42,7 +44,8 @@ func (c *Client) CreateAnnouncement(ctx context.Context, domainID interface{}, t
 	return nil, nil
 }
 
-// GetAnnouncements retrieves announcements for a domain.
+// GetAnnouncements retrieves all announcements for a domain.
+// Returns a slice of Announcement objects with titles, text, and read status.
 func (c *Client) GetAnnouncements(ctx context.Context, domainID interface{}) ([]Announcement, error) {
 	params := []interface{}{domainID}
 	result, err := c.Call(MethodGetAnnouncements, params)
@@ -63,7 +66,8 @@ func (c *Client) GetAnnouncements(ctx context.Context, domainID interface{}) ([]
 	return announcements, nil
 }
 
-// GetAnnouncementStatuses retrieves announcement statuses.
+// GetAnnouncementStatuses retrieves unread announcement counts for all domains.
+// Returns AnnouncementStatus with unread counts and latest announcement IDs per domain.
 func (c *Client) GetAnnouncementStatuses(ctx context.Context) ([]AnnouncementStatus, error) {
 	result, err := c.Call(MethodGetAnnouncementStatuses, []interface{}{})
 	if err != nil {
@@ -95,7 +99,7 @@ func (c *Client) GetAnnouncementStatuses(ctx context.Context) ([]AnnouncementSta
 	return statuses, nil
 }
 
-// UpdateAnnouncementStatus marks an announcement as read.
+// UpdateAnnouncementStatus marks an announcement as read by the current user.
 func (c *Client) UpdateAnnouncementStatus(ctx context.Context, domainID, announcementID interface{}) error {
 	params := []interface{}{domainID, announcementID}
 	_, err := c.Call(MethodUpdateAnnouncementStatus, params)
