@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,9 +51,12 @@ func TestNewWithOptions(t *testing.T) {
 
 func TestHear(t *testing.T) {
 	robot := New()
-	called := false
+	var called bool
+	var mu sync.Mutex
 	robot.Hear("hello", func(ctx context.Context, res Response) {
+		mu.Lock()
 		called = true
+		mu.Unlock()
 	})
 
 	if len(robot.listeners) != 1 {
@@ -75,16 +79,22 @@ func TestHear(t *testing.T) {
 	robot.handleMessage(context.Background(), msg)
 	time.Sleep(10 * time.Millisecond) // Give goroutine time to execute
 
-	if !called {
+	mu.Lock()
+	wasCalled := called
+	mu.Unlock()
+	if !wasCalled {
 		t.Error("Expected handler to be called")
 	}
 }
 
 func TestRespond(t *testing.T) {
 	robot := New(WithName("testbot"))
-	called := false
+	var called bool
+	var mu sync.Mutex
 	robot.Respond("ping", func(ctx context.Context, res Response) {
+		mu.Lock()
 		called = true
+		mu.Unlock()
 	})
 
 	if len(robot.listeners) != 1 {
@@ -118,34 +128,47 @@ func TestRespond(t *testing.T) {
 	robot.handleMessage(context.Background(), msg)
 	time.Sleep(10 * time.Millisecond) // Give goroutine time to execute
 
-	if !called {
+	mu.Lock()
+	wasCalled := called
+	mu.Unlock()
+	if !wasCalled {
 		t.Error("Expected handler to be called")
 	}
 }
 
 func TestOnEvent(t *testing.T) {
 	robot := New()
-	connectedCalled := false
-	readyCalled := false
+	var connectedCalled, readyCalled bool
+	var mu sync.Mutex
 
 	robot.On(EventConnected, func() {
+		mu.Lock()
 		connectedCalled = true
+		mu.Unlock()
 	})
 
 	robot.On(EventReady, func() {
+		mu.Lock()
 		readyCalled = true
+		mu.Unlock()
 	})
 
 	// Emit events
 	robot.emit(EventConnected)
 	time.Sleep(10 * time.Millisecond)
-	if !connectedCalled {
+	mu.Lock()
+	wasConnectedCalled := connectedCalled
+	mu.Unlock()
+	if !wasConnectedCalled {
 		t.Error("Expected connected event handler to be called")
 	}
 
 	robot.emit(EventReady)
 	time.Sleep(10 * time.Millisecond)
-	if !readyCalled {
+	mu.Lock()
+	wasReadyCalled := readyCalled
+	mu.Unlock()
+	if !wasReadyCalled {
 		t.Error("Expected ready event handler to be called")
 	}
 }
