@@ -2,6 +2,36 @@
 //
 // This package implements the MessagePack RPC protocol used by direct-js
 // to communicate with the direct API server over WebSocket.
+//
+// Basic Usage:
+//
+// Create a client with credentials:
+//
+//	client := direct.NewClient(direct.Options{
+//		Endpoint:    direct.DefaultEndpoint,
+//		AccessToken: token,
+//	})
+//	defer client.Close()
+//
+// Connect and register event handlers:
+//
+//	if err := client.Connect(); err != nil {
+//		log.Fatal(err)
+//	}
+//
+//	client.OnMessage(func(msg direct.ReceivedMessage) {
+//		log.Printf("Received message: %s", msg.Text)
+//	})
+//
+// Send messages to a room:
+//
+//	err := client.SendTextWithContext(ctx, "room-id", "Hello!")
+//	if err != nil {
+//		log.Printf("Failed to send message: %v", err)
+//	}
+//
+// The package provides methods for managing users, talks (conversations), domains,
+// messages, files, and other direct API features.
 package direct
 
 import (
@@ -20,7 +50,9 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 )
 
-// EnableDebugServer enables sending logs to a debug server
+// EnableDebugServer enables sending logs to a debug server for remote debugging.
+// The url parameter should be the full address of the debug log server.
+// This is useful for debugging client behavior in production or testing environments.
 func EnableDebugServer(url string) {
 	debuglog.SetServer(url)
 }
@@ -35,45 +67,71 @@ func vlog(format string, v ...interface{}) {
 	debuglog.Verbose(format, v...)
 }
 
-// Protocol constants
+// Protocol constants for MessagePack RPC communication.
 const (
-	// MessagePack RPC message types
-	RpcRequest  = 0
+	// RpcRequest is the message type for RPC requests from client to server.
+	RpcRequest = 0
+
+	// RpcResponse is the message type for RPC responses from server to client.
 	RpcResponse = 1
 
-	// API version
+	// APIVersion specifies the protocol version for the direct API.
 	APIVersion = "1.128"
 
-	// Default endpoint
+	// DefaultEndpoint is the default WebSocket API endpoint for the direct service.
 	DefaultEndpoint = "wss://api.direct4b.com/albero-app-server/api"
 )
 
 // Options configures the direct client.
+//
+// Example:
+//
+//	opts := direct.Options{
+//		Endpoint:    direct.DefaultEndpoint,
+//		AccessToken: "your-auth-token",
+//		ProxyURL:    "http://proxy.example.com:8080",
+//		Name:        "MyBot",
+//	}
 type Options struct {
 	// Endpoint is the WebSocket API endpoint.
+	// If empty, DefaultEndpoint is used.
 	Endpoint string
 
-	// AccessToken is the authentication token.
+	// AccessToken is the authentication token obtained from the direct service.
+	// If provided, the client automatically creates a session upon connection.
 	AccessToken string
 
-	// ProxyURL is an optional HTTP proxy URL.
+	// ProxyURL is an optional HTTP proxy URL for WebSocket connections.
+	// Format: "http://proxy.example.com:8080" or "https://proxy.example.com:8080"
 	ProxyURL string
 
-	// Host is the API host (derived from Endpoint if not set).
+	// Host is the API host extracted from Endpoint.
+	// This is automatically derived from the Endpoint if not set explicitly.
 	Host string
 
-	// Name is the bot name (for logging).
+	// Name is the bot/client name used for logging and identification.
+	// Useful for distinguishing between multiple client instances in logs.
 	Name string
 }
 
-// ResponseHandler handles RPC responses.
+// ResponseHandler handles the success and error callbacks for RPC responses.
+// It is used internally to match responses to their corresponding requests.
 type ResponseHandler struct {
-	Method    string
+	// Method is the RPC method name that was called.
+	Method string
+
+	// OnSuccess is called when the RPC request succeeds.
+	// The result parameter contains the response value.
 	OnSuccess func(result interface{})
-	OnError   func(err interface{})
+
+	// OnError is called when the RPC request fails.
+	// The err parameter contains the error information from the server.
+	OnError func(err interface{})
 }
 
-// Client is a direct API client.
+// Client is a direct API client that communicates with the direct chat service.
+// It manages WebSocket connections, RPC calls, and event handling.
+// Use NewClient to create a new instance.
 type Client struct {
 	options          Options
 	conn             *websocket.Conn
@@ -87,17 +145,35 @@ type Client struct {
 	// talkDomains maps talk_id to domain_id for user lookups
 	talkDomains map[string]string
 
-	// Channels for events
+	// Messages is a channel that receives incoming messages from the server.
+	// Messages are buffered with a capacity of 100.
 	Messages chan ReceivedMessage
-	Done     chan struct{}
+
+	// Done is a channel that is closed when the client shuts down.
+	Done chan struct{}
 }
 
-// EventHandler is a callback for events.
+// EventHandler is a callback function for event listeners.
+// It is called whenever an event is emitted.
+// Data parameter contains event-specific information.
+// Handlers are called asynchronously in separate goroutines.
 type EventHandler func(data interface{})
 
 // NewClient creates a new direct client with the given options.
 // If no endpoint is provided, DefaultEndpoint is used.
+// The Host field is automatically derived from the Endpoint if not set explicitly.
 // The client must be connected via Connect() before use.
+//
+// Example:
+//
+//	client := direct.NewClient(direct.Options{
+//		Endpoint:    direct.DefaultEndpoint,
+//		AccessToken: token,
+//	})
+//	defer client.Close()
+//	if err := client.Connect(); err != nil {
+//		log.Fatal(err)
+//	}
 func NewClient(opts Options) *Client {
 	if opts.Endpoint == "" {
 		opts.Endpoint = DefaultEndpoint
@@ -120,8 +196,21 @@ func NewClient(opts Options) *Client {
 
 // Connect establishes a WebSocket connection to the direct API.
 // It starts the message reader and ping keepalive loops.
-// If an access token is provided in Options, it automatically creates a session.
-// Returns an error if already connected or if the WebSocket connection fails.
+// If an access token is provided in Options, it automatically creates a session
+// and initializes data (talks, domains, etc.).
+//
+// Returns an error if already connected, if the WebSocket connection fails,
+// or if the proxy configuration is invalid.
+//
+// The method is non-blocking and starts background goroutines for communication.
+// Use the EventSessionCreated event or call GetTalksWithContext to verify successful
+// session creation.
+//
+// Example:
+//
+//	if err := client.Connect(); err != nil {
+//		log.Fatalf("Failed to connect: %v", err)
+//	}
 func (c *Client) Connect() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -360,7 +449,12 @@ func min(a, b int) int {
 }
 
 // Close closes the WebSocket connection and stops all background goroutines.
-// It is safe to call Close multiple times.
+// It is safe to call Close multiple times; subsequent calls are no-ops.
+// After Close is called, the client cannot be reconnected; create a new client instead.
+//
+// Example:
+//
+//	defer client.Close()
 func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -376,9 +470,24 @@ func (c *Client) Close() error {
 }
 
 // On registers an event handler for the given event type.
-// Multiple handlers can be registered for the same event.
+// Multiple handlers can be registered for the same event, and they are called
+// in the order they were registered.
+//
 // Event types are defined as constants (e.g., EventSessionCreated, EventNotifyCreateMessage).
+// See events.go for the complete list of event constants.
 // Handlers are called asynchronously in separate goroutines.
+//
+// Common events:
+// - EventSessionCreated: Fired when the session is successfully created
+// - EventNotifyCreateMessage: Fired when a new message is received
+// - EventDataRecovered: Fired when initial data has been synced
+// - EventError: Fired when a connection or protocol error occurs
+//
+// Example:
+//
+//	client.On(direct.EventSessionCreated, func(data interface{}) {
+//		log.Println("Session created!")
+//	})
 func (c *Client) On(event string, handler EventHandler) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -388,7 +497,19 @@ func (c *Client) On(event string, handler EventHandler) {
 
 // OnMessage registers a callback for incoming messages.
 // The handler is called for each message received from the Messages channel.
-// The handler runs in a separate goroutine.
+// The handler runs in a separate goroutine and receives ReceivedMessage objects
+// with fields like Text, UserID, RoomID, and Type.
+//
+// Message objects may contain different content types based on the Message.Type:
+// - MessageType.Text: Message.Text contains the message text
+// - MessageType.Stamp: Message.Content contains stamp/emoji data
+// - MessageType.File: Message.Content contains file attachment info
+//
+// Example:
+//
+//	client.OnMessage(func(msg direct.ReceivedMessage) {
+//		log.Printf("Message from %s: %s", msg.UserID, msg.Text)
+//	})
 func (c *Client) OnMessage(handler func(ReceivedMessage)) {
 	go func() {
 		for msg := range c.Messages {
@@ -445,7 +566,24 @@ func (c *Client) call(method string, params []interface{}, onSuccess func(interf
 // Call sends a synchronous RPC request to the direct API server.
 // It blocks until a response is received or the 30-second timeout expires.
 // Method names are defined as constants (e.g., MethodGetTalks, MethodCreateMessage).
-// Returns the result on success, or an error on failure or timeout.
+// See events.go for the complete list of method constants.
+//
+// Parameters:
+// - method: The RPC method name to call
+// - params: An array of parameters to pass to the method
+//
+// Returns:
+// - On success: The result value from the server and nil error
+// - On server error: nil result and an error with "RPC error:" prefix
+// - On timeout: nil result and an "RPC timeout" error
+//
+// Example:
+//
+//	talks, err := client.Call(direct.MethodGetTalks, []interface{}{})
+//	if err != nil {
+//		log.Printf("Failed to get talks: %v", err)
+//		return
+//	}
 func (c *Client) Call(method string, params []interface{}) (interface{}, error) {
 	resultCh := make(chan interface{}, 1)
 	errCh := make(chan interface{}, 1)
@@ -467,9 +605,26 @@ func (c *Client) Call(method string, params []interface{}) (interface{}, error) 
 }
 
 // Send sends a message with custom type and content to the specified room.
-// roomID can be a string or numeric room/talk identifier.
-// msgType should be one of the MessageType constants (e.g., MsgTypeText, MsgTypeStamp).
-// content structure depends on the message type.
+//
+// Parameters:
+// - roomID: The talk/room identifier (can be a string or numeric value)
+// - msgType: One of the MessageType constants (MsgTypeText, MsgTypeStamp, etc.)
+// - content: The message content, structure depends on msgType:
+//   - MsgTypeText: string containing the message text
+//   - MsgTypeStamp: map containing stamp/emoji data
+//   - MsgTypeFile: map containing file attachment info
+//   - MsgTypeSelect: map containing action stamp options
+//
+// Returns an error if the RPC call fails or times out.
+//
+// For most use cases, consider using SendTextWithContext instead.
+//
+// Example:
+//
+//	err := client.Send("123456", direct.MsgTypeText, "Hello World")
+//	if err != nil {
+//		log.Printf("Failed to send message: %v", err)
+//	}
 func (c *Client) Send(roomID interface{}, msgType int, content interface{}) error {
 	_, err := c.Call("create_message", []interface{}{roomID, msgType, content})
 	return err
@@ -477,7 +632,15 @@ func (c *Client) Send(roomID interface{}, msgType int, content interface{}) erro
 
 // SendText sends a text message to the specified room.
 // This is a convenience method that wraps Send with msgType=1 (text).
-// Deprecated: Use SendTextWithContext for better context support.
+//
+// Parameters:
+// - roomID: The talk/room identifier as a string
+// - text: The message text content
+//
+// Returns an error if the RPC call fails or times out.
+//
+// Deprecated: Use SendTextWithContext for better context support and control.
+// SendText always uses message type 1 and internally converts roomID to the appropriate type.
 func (c *Client) SendText(roomID string, text string) error {
 	// For text messages, type is 1 and content is the text string
 	// Convert roomID to uint64 for the API
@@ -839,41 +1002,59 @@ func (c *Client) GetMeWithContext(ctx context.Context) (*UserInfo, error) {
 }
 
 // SendTextWithContext sends a text message to the specified room with context support.
-// roomID is the talk/room identifier, and text is the message content.
-// This is the preferred method over the legacy SendText().
+//
+// Parameters:
+// - ctx: Context for cancellation and timeouts
+// - roomID: The talk/room identifier as a string
+// - text: The message text content
+//
+// Returns an error if the RPC call fails or times out.
+//
+// This is the preferred method for sending text messages. It supports context
+// for timeout control and graceful cancellation.
+//
+// Example:
+//
+//	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+//	defer cancel()
+//	err := client.SendTextWithContext(ctx, "room-123", "Hello!")
 func (c *Client) SendTextWithContext(ctx context.Context, roomID string, text string) error {
 	_, err := c.Call(MethodCreateMessage, []interface{}{roomID, 1, text})
 	return err
 }
 
-// Legacy methods below - deprecated, use context-aware versions instead
+// Legacy methods below - deprecated, use context-aware versions instead.
+// These methods are maintained for backwards compatibility but should not be used
+// in new code.
 
 // GetTalks retrieves the list of talk rooms.
-// Deprecated: Use GetTalksWithContext instead.
+// Deprecated: Use GetTalksWithContext instead for better context support and type safety.
 func (c *Client) GetTalks() (interface{}, error) {
 	return c.Call("get_talks", []interface{}{})
 }
 
-// GetDomains retrieves the list of domains.
-// Deprecated: Use GetDomainsWithContext instead.
+// GetDomains retrieves the list of domains (organizations).
+// Deprecated: Use GetDomainsWithContext instead for better context support and type safety.
 func (c *Client) GetDomains() (interface{}, error) {
 	return c.Call("get_domains", []interface{}{})
 }
 
-// GetDomainInvites retrieves pending domain invitations.
-// Deprecated: Use GetDomainInvitesWithContext instead.
+// GetDomainInvites retrieves pending domain invitations for the current user.
+// Deprecated: Use GetDomainInvitesWithContext instead for better context support and type safety.
 func (c *Client) GetDomainInvites() (interface{}, error) {
 	return c.Call("get_domain_invites", []interface{}{})
 }
 
-// AcceptDomainInvite accepts a domain invitation.
-// Deprecated: Use AcceptDomainInviteWithContext instead.
+// AcceptDomainInvite accepts a pending domain invitation.
+// Parameters:
+// - inviteID: The ID of the domain invitation to accept
+// Deprecated: Use AcceptDomainInviteWithContext instead for better context support and type safety.
 func (c *Client) AcceptDomainInvite(inviteID interface{}) (interface{}, error) {
 	return c.Call("accept_domain_invite", []interface{}{inviteID})
 }
 
-// GetMe retrieves the current user's profile.
-// Deprecated: Use GetMeWithContext instead.
+// GetMe retrieves the profile information of the current authenticated user.
+// Deprecated: Use GetMeWithContext instead for better context support and type safety.
 func (c *Client) GetMe() (interface{}, error) {
 	return c.Call("get_me", []interface{}{})
 }

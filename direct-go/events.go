@@ -1,212 +1,481 @@
+// events.go defines event names, RPC method names, and message type constants
+// used by the direct API.
 package direct
 
-// Event names from direct-js handleNotification.
-// These are server-to-client notifications prefixed with "notify_".
+// Server-to-client event names that can be received via Client.On().
+// These events are emitted when notifications arrive from the direct service.
 const (
-	// Connection events
-	EventSessionCreated     = "session_created"
-	EventSessionError       = "session_error"
-	EventDataRecovered      = "data_recovered"
-	EventNotificationError  = "notification_error"
-	EventError              = "error"
-	EventDecodeError        = "decode_error"
+	// Connection and session events
+	// EventSessionCreated is emitted when the session is successfully created after connect.
+	EventSessionCreated = "session_created"
+
+	// EventSessionError is emitted when session creation fails (authentication error).
+	EventSessionError = "session_error"
+
+	// EventDataRecovered is emitted when initial data sync is complete and the bot is ready.
+	EventDataRecovered = "data_recovered"
+
+	// EventNotificationError is emitted when a notification system error occurs.
+	EventNotificationError = "notification_error"
+
+	// EventError is emitted for general connection or protocol errors.
+	EventError = "error"
+
+	// EventDecodeError is emitted when a message cannot be decoded.
+	EventDecodeError = "decode_error"
+
+	// EventAccessTokenChanged is emitted when the access token changes.
 	EventAccessTokenChanged = "access_token_changed"
 
-	// Message notifications
+	// Message notifications - emitted when messages are sent/deleted
+	// EventNotifyCreateMessage is emitted when a new message is received.
 	EventNotifyCreateMessage = "notify_create_message"
+
+	// EventNotifyDeleteMessage is emitted when a message is deleted.
 	EventNotifyDeleteMessage = "notify_delete_message"
 
-	// Talk/Room notifications
+	// Talk/Room notifications - emitted for room/conversation changes
+	// EventNotifyCreateGroupTalk is emitted when a new group talk is created.
 	EventNotifyCreateGroupTalk = "notify_create_group_talk"
-	EventNotifyCreatePairTalk  = "notify_create_pair_talk"
-	EventNotifyAddTalkers      = "notify_add_talkers"
-	EventNotifyDeleteTalker    = "notify_delete_talker"
-	EventNotifyUpdateTalk      = "notify_update_talk"
+
+	// EventNotifyCreatePairTalk is emitted when a new pair (1:1) talk is created.
+	EventNotifyCreatePairTalk = "notify_create_pair_talk"
+
+	// EventNotifyAddTalkers is emitted when users are added to a group talk.
+	EventNotifyAddTalkers = "notify_add_talkers"
+
+	// EventNotifyDeleteTalker is emitted when a user is removed from a talk.
+	EventNotifyDeleteTalker = "notify_delete_talker"
+
+	// EventNotifyUpdateTalk is emitted when a talk is updated (name, settings, etc.).
+	EventNotifyUpdateTalk = "notify_update_talk"
 
 	// User/Friend notifications
-	EventNotifyAddFriend        = "notify_add_friend"
-	EventNotifyDeleteFriend     = "notify_delete_friend"
-	EventNotifyAddAcquaintance  = "notify_add_acquaintance"
-	EventNotifyAddAcquaintances = "notify_add_acquaintances"
-	EventNotifyUpdateUser       = "notify_update_user"
+	// EventNotifyAddFriend is emitted when a new friend is added.
+	EventNotifyAddFriend = "notify_add_friend"
 
-	// Domain notifications
-	EventNotifyJoinDomain         = "notify_join_domain"
-	EventNotifyLeaveDomain        = "notify_leave_domain"
-	EventNotifyAddDomainInvite    = "notify_add_domain_invite"
+	// EventNotifyDeleteFriend is emitted when a friend is removed.
+	EventNotifyDeleteFriend = "notify_delete_friend"
+
+	// EventNotifyAddAcquaintance is emitted when an acquaintance is added.
+	EventNotifyAddAcquaintance = "notify_add_acquaintance"
+
+	// EventNotifyAddAcquaintances is emitted when multiple acquaintances are added.
+	EventNotifyAddAcquaintances = "notify_add_acquaintances"
+
+	// EventNotifyUpdateUser is emitted when user information is updated.
+	EventNotifyUpdateUser = "notify_update_user"
+
+	// Domain/Organization notifications
+	// EventNotifyJoinDomain is emitted when the user joins a domain.
+	EventNotifyJoinDomain = "notify_join_domain"
+
+	// EventNotifyLeaveDomain is emitted when the user leaves a domain.
+	EventNotifyLeaveDomain = "notify_leave_domain"
+
+	// EventNotifyAddDomainInvite is emitted when a domain invitation is received.
+	EventNotifyAddDomainInvite = "notify_add_domain_invite"
+
+	// EventNotifyDeleteDomainInvite is emitted when a domain invitation is removed.
 	EventNotifyDeleteDomainInvite = "notify_delete_domain_invite"
 
 	// Attachment notifications
+	// EventNotifyCreateAttachment is emitted when a file attachment is created.
 	EventNotifyCreateAttachment = "notify_create_attachment"
+
+	// EventNotifyDeleteAttachment is emitted when a file attachment is deleted.
 	EventNotifyDeleteAttachment = "notify_delete_attachment"
 
 	// Note notifications
+	// EventNotifyCreateNote is emitted when a note is created.
 	EventNotifyCreateNote = "notify_create_note"
+
+	// EventNotifyUpdateNote is emitted when a note is updated.
 	EventNotifyUpdateNote = "notify_update_note"
+
+	// EventNotifyDeleteNote is emitted when a note is deleted.
 	EventNotifyDeleteNote = "notify_delete_note"
 
 	// Favorite notifications
-	EventNotifyAddFavoriteTalk    = "notify_add_favorite_talk"
+	// EventNotifyAddFavoriteTalk is emitted when a talk is added to favorites.
+	EventNotifyAddFavoriteTalk = "notify_add_favorite_talk"
+
+	// EventNotifyDeleteFavoriteTalk is emitted when a talk is removed from favorites.
 	EventNotifyDeleteFavoriteTalk = "notify_delete_favorite_talk"
 
 	// Announcement notifications
+	// EventNotifyCreateAnnouncement is emitted when a new announcement is created.
 	EventNotifyCreateAnnouncement = "notify_create_announcement"
+
+	// EventNotifyDeleteAnnouncement is emitted when an announcement is deleted.
 	EventNotifyDeleteAnnouncement = "notify_delete_announcement"
 
 	// Read status notifications
+	// EventNotifyUpdateReadStatus is emitted when message read status changes.
 	EventNotifyUpdateReadStatus = "notify_update_read_status"
+
+	// EventNotifyUpdateTalkStatus is emitted when talk status changes (unread count, etc.).
 	EventNotifyUpdateTalkStatus = "notify_update_talk_status"
 
-	// Conference notifications
+	// Conference/Call notifications
+	// EventNotifyCreateConference is emitted when a new conference/call is started.
 	EventNotifyCreateConference = "notify_create_conference"
-	EventNotifyCloseConference  = "notify_close_conference"
-	EventNotifyConferenceJoin   = "notify_conference_participant_join"
+
+	// EventNotifyCloseConference is emitted when a conference/call ends.
+	EventNotifyCloseConference = "notify_close_conference"
+
+	// EventNotifyConferenceJoin is emitted when a participant joins a conference.
+	EventNotifyConferenceJoin = "notify_conference_participant_join"
+
+	// EventNotifyConferenceReject is emitted when a participant rejects a conference invitation.
 	EventNotifyConferenceReject = "notify_conference_participant_reject"
 )
 
-// API method names for RPC calls.
+// RPC method names used with Client.Call() to invoke direct API operations.
+// Use these constants when calling Client.Call() to ensure correct method names.
 const (
-	// Session
-	MethodCreateSession     = "create_session"
+	// Session management methods
+	// MethodCreateSession authenticates with the direct service using an access token.
+	MethodCreateSession = "create_session"
+
+	// MethodStartNotification enables receiving server notifications.
 	MethodStartNotification = "start_notification"
+
+	// MethodResetNotification resets the notification state.
 	MethodResetNotification = "reset_notification"
-	MethodUpdateLastUsedAt  = "update_last_used_at"
 
-	// Authentication
-	MethodCreateAccessToken     = "create_access_token"
+	// MethodUpdateLastUsedAt updates the session's last-used timestamp.
+	MethodUpdateLastUsedAt = "update_last_used_at"
+
+	// Authentication methods
+	// MethodCreateAccessToken creates a new access token.
+	MethodCreateAccessToken = "create_access_token"
+
+	// MethodCreateAccessTokenByID creates a new access token using a user ID.
 	MethodCreateAccessTokenByID = "create_access_token_by_id"
-	MethodAuthorizeDevice       = "authorize_device"
 
-	// Users
-	MethodGetMe              = "get_me"
-	MethodGetUsers           = "get_users"
-	MethodGetProfile         = "get_profile"
-	MethodUpdateUser         = "update_user"
-	MethodUpdateProfile      = "update_profile"
-	MethodGetPresences       = "get_presences"
+	// MethodAuthorizeDevice authorizes a device for the current session.
+	MethodAuthorizeDevice = "authorize_device"
+
+	// User management methods
+	// MethodGetMe retrieves the current authenticated user's information.
+	MethodGetMe = "get_me"
+
+	// MethodGetUsers retrieves information about specific users.
+	MethodGetUsers = "get_users"
+
+	// MethodGetProfile retrieves detailed profile information for a user.
+	MethodGetProfile = "get_profile"
+
+	// MethodUpdateUser updates user information.
+	MethodUpdateUser = "update_user"
+
+	// MethodUpdateProfile updates the current user's profile.
+	MethodUpdateProfile = "update_profile"
+
+	// MethodGetPresences retrieves online/offline status for users.
+	MethodGetPresences = "get_presences"
+
+	// MethodGetUserIdentifiers retrieves user identity information (email, alias).
 	MethodGetUserIdentifiers = "get_user_identifiers"
 
-	// Friends
-	MethodAddFriend        = "add_friend"
-	MethodDeleteFriend     = "delete_friend"
-	MethodGetFriends       = "get_friends"
+	// Friend management methods
+	// MethodAddFriend adds a user to the current user's friends list.
+	MethodAddFriend = "add_friend"
+
+	// MethodDeleteFriend removes a user from the friends list.
+	MethodDeleteFriend = "delete_friend"
+
+	// MethodGetFriends retrieves the current user's friends list.
+	MethodGetFriends = "get_friends"
+
+	// MethodGetAcquaintances retrieves the current user's acquaintances.
 	MethodGetAcquaintances = "get_acquaintances"
 
-	// Domains
-	MethodGetDomains         = "get_domains"
-	MethodLeaveDomain        = "leave_domain"
-	MethodGetDomainInvites   = "get_domain_invites"
-	MethodAcceptDomainInvite = "accept_domain_invite"
-	MethodDeleteDomainInvite = "delete_domain_invite"
-	MethodGetDomainUsers     = "get_domain_users"
-	MethodSearchDomainUsers  = "search_domain_users"
+	// Domain/Organization methods
+	// MethodGetDomains retrieves the list of organizations the user belongs to.
+	MethodGetDomains = "get_domains"
 
-	// Departments
-	MethodGetDepartmentTree      = "get_department_tree"
-	MethodGetDepartmentUsers     = "get_department_users"
+	// MethodLeaveDomain removes the current user from an organization.
+	MethodLeaveDomain = "leave_domain"
+
+	// MethodGetDomainInvites retrieves pending organization invitations.
+	MethodGetDomainInvites = "get_domain_invites"
+
+	// MethodAcceptDomainInvite accepts an organization invitation.
+	MethodAcceptDomainInvite = "accept_domain_invite"
+
+	// MethodDeleteDomainInvite deletes an organization invitation.
+	MethodDeleteDomainInvite = "delete_domain_invite"
+
+	// MethodGetDomainUsers retrieves users in an organization.
+	MethodGetDomainUsers = "get_domain_users"
+
+	// MethodSearchDomainUsers searches for users in an organization.
+	MethodSearchDomainUsers = "search_domain_users"
+
+	// Department methods
+	// MethodGetDepartmentTree retrieves the organization's department hierarchy.
+	MethodGetDepartmentTree = "get_department_tree"
+
+	// MethodGetDepartmentUsers retrieves users in a specific department.
+	MethodGetDepartmentUsers = "get_department_users"
+
+	// MethodGetDepartmentUserCount retrieves the user count for a department.
 	MethodGetDepartmentUserCount = "get_department_user_count"
 
-	// Talks
-	MethodGetTalks        = "get_talks"
-	MethodGetTalkStatuses = "get_talk_statuses"
-	MethodCreateGroupTalk = "create_group_talk"
-	MethodCreatePairTalk  = "create_pair_talk"
-	MethodUpdateGroupTalk = "update_group_talk"
-	MethodAddTalkers      = "add_talkers"
-	MethodDeleteTalker    = "delete_talker"
+	// Talk/Conversation methods
+	// MethodGetTalks retrieves the list of conversation rooms.
+	MethodGetTalks = "get_talks"
 
-	// Favorites
-	MethodAddFavoriteTalk    = "add_favorite_talk"
+	// MethodGetTalkStatuses retrieves status information for all talks (unread counts, etc.).
+	MethodGetTalkStatuses = "get_talk_statuses"
+
+	// MethodCreateGroupTalk creates a new group conversation.
+	MethodCreateGroupTalk = "create_group_talk"
+
+	// MethodCreatePairTalk creates a new 1:1 conversation.
+	MethodCreatePairTalk = "create_pair_talk"
+
+	// MethodUpdateGroupTalk updates a group conversation's properties.
+	MethodUpdateGroupTalk = "update_group_talk"
+
+	// MethodAddTalkers adds users to a group conversation.
+	MethodAddTalkers = "add_talkers"
+
+	// MethodDeleteTalker removes a user from a conversation.
+	MethodDeleteTalker = "delete_talker"
+
+	// Favorite methods
+	// MethodAddFavoriteTalk adds a conversation to favorites.
+	MethodAddFavoriteTalk = "add_favorite_talk"
+
+	// MethodDeleteFavoriteTalk removes a conversation from favorites.
 	MethodDeleteFavoriteTalk = "delete_favorite_talk"
 
-	// Messages
-	MethodGetMessages                  = "get_messages"
-	MethodCreateMessage                = "create_message"
-	MethodDeleteMessage                = "delete_message"
-	MethodScheduleMessage              = "schedule_message"
-	MethodSearchMessages               = "search_messages"
+	// Message methods
+	// MethodGetMessages retrieves messages from a conversation.
+	MethodGetMessages = "get_messages"
+
+	// MethodCreateMessage sends a message to a conversation.
+	MethodCreateMessage = "create_message"
+
+	// MethodDeleteMessage deletes a message.
+	MethodDeleteMessage = "delete_message"
+
+	// MethodScheduleMessage schedules a message to be sent at a future time.
+	MethodScheduleMessage = "schedule_message"
+
+	// MethodSearchMessages searches for messages across conversations.
+	MethodSearchMessages = "search_messages"
+
+	// MethodSearchMessagesAroundDateTime searches for messages around a specific time.
 	MethodSearchMessagesAroundDateTime = "search_messages_around_datetime"
-	MethodGetFavoriteMessages          = "get_favorite_messages"
-	MethodAddFavoriteMessage           = "add_favorite_message"
-	MethodDeleteFavoriteMessage        = "delete_favorite_message"
-	MethodGetScheduledMessages         = "get_scheduled_messages"
-	MethodDeleteScheduledMessage       = "delete_scheduled_message"
-	MethodRescheduleMessage            = "reschedule_message"
+
+	// MethodGetFavoriteMessages retrieves the user's favorite messages.
+	MethodGetFavoriteMessages = "get_favorite_messages"
+
+	// MethodAddFavoriteMessage adds a message to favorites.
+	MethodAddFavoriteMessage = "add_favorite_message"
+
+	// MethodDeleteFavoriteMessage removes a message from favorites.
+	MethodDeleteFavoriteMessage = "delete_favorite_message"
+
+	// MethodGetScheduledMessages retrieves scheduled messages.
+	MethodGetScheduledMessages = "get_scheduled_messages"
+
+	// MethodDeleteScheduledMessage cancels a scheduled message.
+	MethodDeleteScheduledMessage = "delete_scheduled_message"
+
+	// MethodRescheduleMessage reschedules a previously scheduled message.
+	MethodRescheduleMessage = "reschedule_message"
+
+	// MethodGetAvailableMessageReactions retrieves the list of available reactions for messages.
 	MethodGetAvailableMessageReactions = "get_available_message_reactions"
-	MethodSetMessageReaction           = "set_message_reaction"
-	MethodResetMessageReaction         = "reset_message_reaction"
-	MethodGetMessageReactionUsers      = "get_message_reaction_users"
 
-	// File & Attachment
-	MethodCreateUploadAuth  = "create_upload_auth"
-	MethodGetAttachments    = "get_attachments"
-	MethodDeleteAttachment  = "delete_attachment"
+	// MethodSetMessageReaction adds a reaction to a message.
+	MethodSetMessageReaction = "set_message_reaction"
+
+	// MethodResetMessageReaction removes a reaction from a message.
+	MethodResetMessageReaction = "reset_message_reaction"
+
+	// MethodGetMessageReactionUsers retrieves users who reacted to a message.
+	MethodGetMessageReactionUsers = "get_message_reaction_users"
+
+	// File and attachment methods
+	// MethodCreateUploadAuth creates credentials for uploading a file.
+	MethodCreateUploadAuth = "create_upload_auth"
+
+	// MethodGetAttachments retrieves attachments from a conversation.
+	MethodGetAttachments = "get_attachments"
+
+	// MethodDeleteAttachment deletes a file attachment.
+	MethodDeleteAttachment = "delete_attachment"
+
+	// MethodSearchAttachments searches for file attachments.
 	MethodSearchAttachments = "search_attachments"
-	MethodCreateFilePreview = "create_file_preview"
-	MethodGetFilePreview    = "get_file_preview"
 
-	// Read status
+	// MethodCreateFilePreview creates a preview (thumbnail) for a file.
+	MethodCreateFilePreview = "create_file_preview"
+
+	// MethodGetFilePreview retrieves a file preview/thumbnail.
+	MethodGetFilePreview = "get_file_preview"
+
+	// Read status methods
+	// MethodGetReadStatus retrieves read status for messages.
 	MethodGetReadStatus = "get_read_status"
 
-	// Push notifications
+	// Push notification methods
+	// MethodDisablePushNotification disables push notifications.
 	MethodDisablePushNotification = "disable_push_notification"
-	MethodEnablePushNotification  = "enable_push_notification"
 
-	// Announcements
-	MethodCreateAnnouncement       = "create_announcement"
-	MethodGetAnnouncements         = "get_announcements"
-	MethodGetAnnouncementStatuses  = "get_announcement_statuses"
-	MethodGetAnnouncementStatus    = "get_announcement_status"
+	// MethodEnablePushNotification enables push notifications.
+	MethodEnablePushNotification = "enable_push_notification"
+
+	// Announcement methods
+	// MethodCreateAnnouncement creates a new announcement.
+	MethodCreateAnnouncement = "create_announcement"
+
+	// MethodGetAnnouncements retrieves announcements.
+	MethodGetAnnouncements = "get_announcements"
+
+	// MethodGetAnnouncementStatuses retrieves read status for announcements.
+	MethodGetAnnouncementStatuses = "get_announcement_statuses"
+
+	// MethodGetAnnouncementStatus retrieves the read status for a specific announcement.
+	MethodGetAnnouncementStatus = "get_announcement_status"
+
+	// MethodUpdateAnnouncementStatus updates the read status of an announcement.
 	MethodUpdateAnnouncementStatus = "update_announcement_status"
 
-	// Conference/Call
-	MethodGetConferences            = "get_conferences"
+	// Conference/Call methods
+	// MethodGetConferences retrieves active conferences/calls.
+	MethodGetConferences = "get_conferences"
+
+	// MethodGetConferenceParticipants retrieves participants in a conference.
 	MethodGetConferenceParticipants = "get_conference_participants"
-	MethodJoinConference            = "join_conference"
-	MethodLeaveConference           = "leave_conference"
-	MethodRejectConference          = "reject_conference"
+
+	// MethodJoinConference joins a conference/call.
+	MethodJoinConference = "join_conference"
+
+	// MethodLeaveConference leaves a conference/call.
+	MethodLeaveConference = "leave_conference"
+
+	// MethodRejectConference rejects a conference invitation.
+	MethodRejectConference = "reject_conference"
 )
 
-// Message types from direct API.
-// NOTE: For action stamps (types 13-21), these are INTERNAL enum values.
-// When SENDING to the API, use the WireType constants below instead.
+// Message type constants for received messages.
+// These are used in ReceivedMessage.Type to identify the message content type.
+// IMPORTANT: For action stamps (types 13-21), these are INTERNAL enum values used
+// when receiving messages from the server. When SENDING action stamps via Client.Send,
+// use the WireType constants below instead.
 const (
-	MsgTypeSystem           = 0  // System message
-	MsgTypeText             = 1  // Text message
-	MsgTypeStamp            = 2  // Stamp
-	MsgTypeLocation         = 3  // Location (geo)
-	MsgTypeFile             = 4  // Single file
-	MsgTypeTextMultipleFile = 5  // Text with multiple files
-	MsgTypeUnused           = 6  // Reserved / unused
-	MsgTypeDeleted          = 7  // Deleted message
-	MsgTypeNoteShared       = 8  // Note shared
-	MsgTypeNoteDeleted      = 9  // Note deleted
-	MsgTypeNoteCreated      = 10 // Note created
-	MsgTypeNoteUpdated      = 11 // Note updated
-	MsgTypeOriginalStamp    = 12 // Original stamp
-	MsgTypeYesNo            = 13 // Yes/No action stamp (internal)
-	MsgTypeYesNoReply       = 14 // Yes/No reply (internal)
-	MsgTypeSelect           = 15 // Select action stamp (internal)
-	MsgTypeSelectReply      = 16 // Select reply (internal)
-	MsgTypeTask             = 17 // Task action stamp (internal)
-	MsgTypeTaskDone         = 18 // Task done reply (internal)
-	MsgTypeYesNoClosed      = 19 // Yes/No closed (internal)
-	MsgTypeSelectClosed     = 20 // Select closed (internal)
-	MsgTypeTaskClosed       = 21 // Task closed (internal)
+	// MsgTypeSystem is a system-generated message.
+	MsgTypeSystem = 0
+
+	// MsgTypeText is a plain text message.
+	MsgTypeText = 1
+
+	// MsgTypeStamp is an emoji/stamp reaction.
+	MsgTypeStamp = 2
+
+	// MsgTypeLocation is a location/map share.
+	MsgTypeLocation = 3
+
+	// MsgTypeFile is a single file attachment.
+	MsgTypeFile = 4
+
+	// MsgTypeTextMultipleFile is text with multiple file attachments.
+	MsgTypeTextMultipleFile = 5
+
+	// MsgTypeUnused is reserved for future use.
+	MsgTypeUnused = 6
+
+	// MsgTypeDeleted indicates the original message was deleted.
+	MsgTypeDeleted = 7
+
+	// MsgTypeNoteShared indicates a note was shared in the conversation.
+	MsgTypeNoteShared = 8
+
+	// MsgTypeNoteDeleted indicates a previously shared note was deleted.
+	MsgTypeNoteDeleted = 9
+
+	// MsgTypeNoteCreated indicates a new note was created and shared.
+	MsgTypeNoteCreated = 10
+
+	// MsgTypeNoteUpdated indicates a shared note was updated.
+	MsgTypeNoteUpdated = 11
+
+	// MsgTypeOriginalStamp is a legacy stamp type.
+	MsgTypeOriginalStamp = 12
+
+	// MsgTypeYesNo is a yes/no poll question (INTERNAL, for receiving only).
+	MsgTypeYesNo = 13
+
+	// MsgTypeYesNoReply is a response to a yes/no poll (INTERNAL, for receiving only).
+	MsgTypeYesNoReply = 14
+
+	// MsgTypeSelect is a multiple-choice poll (INTERNAL, for receiving only).
+	MsgTypeSelect = 15
+
+	// MsgTypeSelectReply is a response to a multiple-choice poll (INTERNAL, for receiving only).
+	MsgTypeSelectReply = 16
+
+	// MsgTypeTask is a task assignment poll (INTERNAL, for receiving only).
+	MsgTypeTask = 17
+
+	// MsgTypeTaskDone is a task completion response (INTERNAL, for receiving only).
+	MsgTypeTaskDone = 18
+
+	// MsgTypeYesNoClosed indicates a yes/no poll was closed (INTERNAL, for receiving only).
+	MsgTypeYesNoClosed = 19
+
+	// MsgTypeSelectClosed indicates a multiple-choice poll was closed (INTERNAL, for receiving only).
+	MsgTypeSelectClosed = 20
+
+	// MsgTypeTaskClosed indicates a task poll was closed (INTERNAL, for receiving only).
+	MsgTypeTaskClosed = 21
 )
 
-// Wire message types for action stamps.
-// The API expects wire types for action stamps (internal types 13-21).
-// Formula: wireType = 500 + internalType - 13
-// These are the values that must be used in create_message API calls.
+// Wire message types for action stamps (polls/interactive messages).
+// These constants are used when SENDING action stamps via Client.Send().
+// Do NOT use the MsgType constants for sending - use these WireType constants instead.
+// The API internally converts wire types to internal enum values.
+// Formula: wireType = 500 + (internalType - 13)
+//
+// Example:
+//
+//	content := map[string]interface{}{
+//		"question": "What do you think?",
+//		"options": []string{"Good", "Bad", "Neutral"},
+//	}
+//	err := client.Send(roomID, direct.WireTypeSelect, content)
 const (
-	WireTypeYesNo        = 500 // 500 + 13 - 13 = 500
-	WireTypeYesNoReply   = 501 // 500 + 14 - 13 = 501
-	WireTypeSelect       = 502 // 500 + 15 - 13 = 502
-	WireTypeSelectReply  = 503 // 500 + 16 - 13 = 503
-	WireTypeTask         = 504 // 500 + 17 - 13 = 504
-	WireTypeTaskDone     = 505 // 500 + 18 - 13 = 505
-	WireTypeYesNoClosed  = 506 // 500 + 19 - 13 = 506
-	WireTypeSelectClosed = 507 // 500 + 20 - 13 = 507
-	WireTypeTaskClosed   = 508 // 500 + 21 - 13 = 508
+	// WireTypeYesNo sends a yes/no poll (500 + 13 - 13 = 500).
+	WireTypeYesNo = 500
+
+	// WireTypeYesNoReply sends a yes/no poll response.
+	WireTypeYesNoReply = 501
+
+	// WireTypeSelect sends a multiple-choice poll (500 + 15 - 13 = 502).
+	WireTypeSelect = 502
+
+	// WireTypeSelectReply sends a multiple-choice poll response.
+	WireTypeSelectReply = 503
+
+	// WireTypeTask sends a task assignment (500 + 17 - 13 = 504).
+	WireTypeTask = 504
+
+	// WireTypeTaskDone sends a task completion response.
+	WireTypeTaskDone = 505
+
+	// WireTypeYesNoClosed closes a yes/no poll.
+	WireTypeYesNoClosed = 506
+
+	// WireTypeSelectClosed closes a multiple-choice poll.
+	WireTypeSelectClosed = 507
+
+	// WireTypeTaskClosed closes a task poll.
+	WireTypeTaskClosed = 508
 )
