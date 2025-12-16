@@ -44,17 +44,16 @@ direct-go-sdk/
 │   ├── cmd/logserver/      # LLM-friendly log server with JSON API & SSE
 │   ├── internal/cli/       # CLI commands (cobra-based)
 │   │   ├── root.go         # Root command
-│   │   ├── init.go         # Initialize bot project
+│   │   ├── init.go         # Initialize bot project (generates high-level bot framework code)
 │   │   ├── login.go        # Login to Direct4B
 │   │   ├── logout.go       # Logout
-│   │   ├── run.go          # Run bot (foreground)
+│   │   ├── run.go          # Run bot (foreground, uses high-level framework)
 │   │   ├── start.go        # Start bot as daemon
 │   │   ├── stop.go         # Stop daemon
 │   │   ├── invites.go      # Manage domain invites
 │   │   ├── daemon.go       # Daemon management utilities
 │   │   └── version.go      # Show version
 │   ├── bot/                # Public bot framework API (Hubot-like)
-│   ├── internal/bot/       # [DEPRECATED] Moved to bot/
 │   ├── webhook/            # n8n webhook integration (public API)
 │   │   ├── client.go       # HTTP webhook client
 │   │   ├── types.go        # Webhook payload/response types
@@ -314,14 +313,25 @@ robot.Run(ctx)
 * Functional options pattern for configuration
 * Pattern matching with regex support
 * Response helpers: `Send()`, `Reply()`, `SendSelect()`
+* **Advanced API Methods**:
+  * `Robot.SendText(roomID, text)`: Send text message to any room
+  * `Robot.Call(method, params)`: Low-level RPC access for advanced operations
+  * `Robot.On(event, handler)`: Lifecycle event handling
+* **Event System**: Register handlers for robot lifecycle events
+  * `EventConnected`: Emitted when robot connects to Direct
+  * `EventReady`: Emitted when robot is ready to receive messages
+  * `EventDisconnected`: Emitted when robot disconnects
 * **SelectStamp Support**: Interactive select menus with `SendSelect(question, options)`
   * Automatically handles user responses with wire types 502/503
+  * Returns message ID for tracking
   * Supports both single and multiple option selection
   * See `daab-go-examples/selectstamp/` for complete implementation
 
 **Package Structure**:
 * `bot/bot.go`: Public API (recommended)
 * `internal/cli/`: CLI commands using cobra
+  * `init.go`: Generates projects using high-level bot framework
+  * `run.go`: Runs bot with high-level framework (not low-level client)
   * Support for foreground (`run`) and daemon mode (`start`/`stop`)
   * Domain invite management (`invites`)
   * PID and log file management in `~/.daabgo/`
@@ -331,26 +341,59 @@ robot.Run(ctx)
 * PID file: `~/.daabgo/daabgo.pid`
 * Log file: `~/.daabgo/daabgo.log`
 
+**Event System Example**:
+```go
+robot := bot.New(bot.WithName("mybot"))
+
+// Register lifecycle event handlers
+robot.On(bot.EventConnected, func() {
+    log.Println("Bot connected!")
+})
+
+robot.On(bot.EventReady, func() {
+    log.Println("Bot is ready to receive messages")
+})
+
+robot.On(bot.EventDisconnected, func() {
+    log.Println("Bot disconnected")
+})
+```
+
+**Advanced RPC Example**:
+```go
+// Use Call() for advanced operations not exposed by helper methods
+result, err := robot.Call("get_messages", []interface{}{talkID, 0, 100})
+if err != nil {
+    log.Printf("RPC call failed: %v", err)
+}
+```
+
 **SelectStamp Example**:
 ```go
 // Interactive select menu
 robot.Hear("menu", func(ctx context.Context, res bot.Response) {
     options := []string{"Option A", "Option B", "Option C"}
-    res.SendSelect("Please choose:", options)
+    messageID, err := res.SendSelect("Please choose:", options)
+    if err != nil {
+        log.Printf("Failed to send select: %v", err)
+        return
+    }
+    log.Printf("Sent select menu with message ID: %s", messageID)
 })
 
-// Handle select responses automatically
-robot.Respond("", func(ctx context.Context, res bot.Response) {
-    // User's selection is in res.Message.Content
-    res.Reply("You selected: " + res.Message.Content)
+// Handle select responses (wire type 503) and other messages
+robot.Hear(".*", func(ctx context.Context, res bot.Response) {
+    // Check if this is a select response or regular message
+    log.Printf("Received: %s", res.Text())
 })
 ```
 
 See `daab-go-examples/selectstamp/` for a complete working example with:
-* Menu presentation with `SendSelect()`
+* Menu presentation with `SendSelect()` returning message ID
 * Automatic handling of SelectReply messages (wire type 503)
 * Support for msgpack integer types in responses
-* Clean menu re-presentation after user selection
+* UUID fortune telling and Mirasapo API integration
+* Menu tracking to detect user responses
 
 ### n8n Webhook Integration (daab-go)
 
@@ -493,8 +536,6 @@ go fmt ./...
 * Import webhook integration: `import "github.com/f4ah6o/direct-go-sdk/daab-go/webhook"`
 * Test utilities: `import "github.com/f4ah6o/direct-go-sdk/direct-go/testutil"`
 * Log server module: `import "github.com/f4ah6o/direct-go-sdk/direct-go/logserver"`
-
-**Note**: The bot package was moved from `internal/bot` to `bot` to provide a stable public API.
 
 ### Example Projects
 
