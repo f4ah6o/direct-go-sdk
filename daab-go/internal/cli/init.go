@@ -47,60 +47,34 @@ func runInit() error {
 	mainContent := `package main
 
 import (
-	"fmt"
+	"context"
 	"log"
-	"os"
-	"os/signal"
-	"regexp"
-	"syscall"
 
-	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
+	"github.com/f4ah6o/direct-go-sdk/daab-go/bot"
 )
 
 func main() {
-	// Load environment
-	auth := direct.NewAuth()
-	if err := auth.LoadEnv(); err != nil {
-		log.Printf("Warning: could not load .env: %v", err)
-	}
+	// Create a new bot instance
+	robot := bot.New(
+		bot.WithName("mybot"),
+	)
 
-	token := auth.GetToken()
-	if token == "" {
-		log.Fatal("No access token. Run 'daabgo login' first.")
-	}
-
-	// Create client
-	client := direct.NewClient(direct.Options{
-		AccessToken: token,
-	})
-
-	// Register handlers
-	pingPattern := regexp.MustCompile("(?i)ping$")
-	echoPattern := regexp.MustCompile("(?i)echo (.+)$")
-
-	client.OnMessage(func(msg direct.Message) {
-		if pingPattern.MatchString(msg.Text) {
-			client.SendText(msg.RoomID, "PONG")
-		} else if matches := echoPattern.FindStringSubmatch(msg.Text); len(matches) > 1 {
-			client.SendText(msg.RoomID, matches[1])
+	// Register a handler that responds when the bot is directly mentioned
+	robot.Respond("ping", func(ctx context.Context, res bot.Response) {
+		if err := res.Send("PONG"); err != nil {
+			log.Printf("Failed to send response: %v", err)
 		}
 	})
 
-	// Connect
-	fmt.Println("Connecting to direct...")
-	if err := client.Connect(); err != nil {
-		log.Fatalf("Failed to connect: %v", err)
+	// Register a handler that listens to all messages
+	robot.Hear(".*", func(ctx context.Context, res bot.Response) {
+		log.Printf("[%s] %s: %s", res.RoomID(), res.UserID(), res.Text())
+	})
+
+	// Run the bot
+	if err := robot.Run(context.Background()); err != nil {
+		log.Fatalf("Failed to run bot: %v", err)
 	}
-	defer client.Close()
-
-	fmt.Println("Bot is running! Press Ctrl+C to stop.")
-
-	// Wait for interrupt
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
-
-	fmt.Println("\nShutting down...")
 }
 `
 
@@ -113,7 +87,7 @@ func main() {
 
 go 1.21
 
-require github.com/f4ah6o/direct-go v0.0.0
+require github.com/f4ah6o/direct-go-sdk/daab-go v0.0.0
 `, projectName)
 
 	if err := os.WriteFile("go.mod", []byte(goModContent), 0644); err != nil {
@@ -136,7 +110,11 @@ require github.com/f4ah6o/direct-go v0.0.0
 	fmt.Println("")
 	fmt.Println("Next steps:")
 	fmt.Println("  1. Run 'daabgo login' to authenticate with direct")
-	fmt.Println("  2. Run 'daabgo run' to start the bot")
+	fmt.Println("  2. Run 'go get github.com/f4ah6o/direct-go-sdk/daab-go' to fetch dependencies")
+	fmt.Println("  3. Run 'go run .' to start the bot")
+	fmt.Println("")
+	fmt.Println("The generated bot uses the high-level daab-go/bot framework.")
+	fmt.Println("Customize main.go to add your bot logic (Respond, Hear handlers).")
 	fmt.Println("")
 
 	return nil

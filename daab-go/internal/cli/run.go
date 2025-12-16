@@ -1,12 +1,12 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
-	"syscall"
 
+	"github.com/f4ah6o/direct-go-sdk/daab-go/bot"
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
 	"github.com/spf13/cobra"
 )
@@ -14,7 +14,7 @@ import (
 var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run the daabgo bot",
-	Long:  `Run the bot defined in the current directory. Press Ctrl+C to stop.`,
+	Long:  `Run the bot using the high-level daab-go framework. Press Ctrl+C to stop.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runBot()
 	},
@@ -34,67 +34,26 @@ func runBot() error {
 		return nil
 	}
 
-	token := auth.GetToken()
+	// Create a new bot instance
+	robot := bot.New(
+		bot.WithName("daabgo"),
+	)
 
-	endpoint := os.Getenv("HUBOT_DIRECT_ENDPOINT")
-	if endpoint == "" {
-		endpoint = direct.DefaultEndpoint
-	}
-
-	proxyURL := os.Getenv("HUBOT_DIRECT_PROXY_URL")
-	if proxyURL == "" {
-		proxyURL = os.Getenv("HTTPS_PROXY")
-	}
-	if proxyURL == "" {
-		proxyURL = os.Getenv("HTTP_PROXY")
-	}
-
-	client := direct.NewClient(direct.Options{
-		Endpoint:    endpoint,
-		AccessToken: token,
-		ProxyURL:    proxyURL,
-	})
-
-	// Register event handlers
-	client.On(direct.EventSessionCreated, func(data interface{}) {
-		fmt.Println("Session created successfully!")
-	})
-
-	client.On(direct.EventDataRecovered, func(data interface{}) {
-		fmt.Println("Ready to receive messages.")
-	})
-
-	client.On(direct.EventError, func(data interface{}) {
-		fmt.Printf("Error: %v\n", data)
-	})
-
-	// Simple echo handler
-	client.OnMessage(func(msg direct.ReceivedMessage) {
-		fmt.Printf("[%s] Message: %s\n", msg.TalkID, msg.Text)
-
-		// Echo back
-		if msg.Text != "" {
-			client.SendText(msg.TalkID, "Echo: "+msg.Text)
+	// Register a handler that responds when the bot is directly mentioned with "ping"
+	robot.Respond("ping", func(ctx context.Context, res bot.Response) {
+		if err := res.Send("PONG"); err != nil {
+			log.Printf("Failed to send response: %v", err)
 		}
 	})
 
-	fmt.Println("Connecting to direct...")
-	if err := client.Connect(); err != nil {
-		return fmt.Errorf("failed to connect: %w", err)
-	}
-	defer client.Close()
+	// Register a handler that logs all messages
+	robot.Hear(".*", func(ctx context.Context, res bot.Response) {
+		log.Printf("[%s] %s: %s", res.RoomID(), res.UserID(), res.Text())
+	})
 
-	fmt.Println("Bot is running! Press Ctrl+C to stop.")
-
-	// Wait for interrupt
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-	select {
-	case <-sigCh:
-		fmt.Println("\nShutting down...")
-	case <-client.Done:
-		fmt.Println("\nConnection closed.")
+	// Run the bot
+	if err := robot.Run(context.Background()); err != nil {
+		return fmt.Errorf("failed to run bot: %v", err)
 	}
 
 	return nil
