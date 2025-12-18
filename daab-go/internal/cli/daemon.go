@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -149,17 +148,9 @@ func RedirectOutputToLog() error {
 		return err
 	}
 
-	// Redirect stdout and stderr
+	// Redirect stdout and stderr to the log file
 	os.Stdout = log
 	os.Stderr = log
-
-	// Also create a MultiWriter to write to both log and null
-	// This prevents closing the log file prematurely
-	null, _ := os.Open(os.DevNull)
-	multiWriter := io.MultiWriter(log, null)
-	os.Stdout = os.NewFile(uintptr(syscall.Stdout), "/dev/stdout")
-	os.Stderr = os.NewFile(uintptr(syscall.Stderr), "/dev/stderr")
-	_, _ = multiWriter, null // Avoid unused variable error
 
 	return nil
 }
