@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"regexp"
 	"strconv"
+	"sync"
 	"syscall"
 
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
@@ -101,6 +102,10 @@ type Robot struct {
 	endpoint      string
 	proxyURL      string
 	eventHandlers map[EventType][]func()
+
+	// Goroutine management
+	wg       sync.WaitGroup
+	shutdown chan struct{}
 }
 
 // Option configures Robot behavior.
@@ -141,6 +146,7 @@ func New(opts ...Option) *Robot {
 		listeners:     make([]*Listener, 0),
 		auth:          direct.NewAuth(),
 		eventHandlers: make(map[EventType][]func()),
+		shutdown:      make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -155,7 +161,21 @@ func (r *Robot) On(event EventType, handler func()) {
 
 func (r *Robot) emit(event EventType) {
 	for _, handler := range r.eventHandlers[event] {
-		go handler()
+		r.wg.Add(1)
+		go func(h func()) {
+			defer r.wg.Done()
+			defer func() {
+				if p := recover(); p != nil {
+					log.Printf("[PANIC] Event handler recovered: %v", p)
+				}
+			}()
+			select {
+			case <-r.shutdown:
+				return
+			default:
+				h()
+			}
+		}(handler)
 	}
 }
 
@@ -245,8 +265,11 @@ func (r *Robot) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
 	defer func() {
+		// Signal shutdown to all goroutines
+		close(r.shutdown)
+		// Wait for all goroutines to finish
+		r.wg.Wait()
 		r.client.Close()
-		r.emit(EventDisconnected)
 	}()
 
 	fmt.Printf("%s is running! Press Ctrl+C to stop.\n", r.Name)
@@ -258,10 +281,13 @@ func (r *Robot) Run(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		fmt.Printf("\n%s: context cancelled, shutting down...\n", r.Name)
+		r.emit(EventDisconnected)
 	case <-sigCh:
 		fmt.Printf("\n%s is shutting down...\n", r.Name)
+		r.emit(EventDisconnected)
 	case <-r.client.Done:
 		fmt.Printf("\n%s: connection closed.\n", r.Name)
+		r.emit(EventDisconnected)
 	}
 
 	return nil
@@ -278,7 +304,23 @@ func (r *Robot) handleMessage(ctx context.Context, msg direct.ReceivedMessage) {
 				Match:   matches,
 				Robot:   r,
 			}
-			go listener.Handler(ctx, response)
+			r.wg.Add(1)
+			go func(h Handler, ctx context.Context, res Response) {
+				defer r.wg.Done()
+				defer func() {
+					if p := recover(); p != nil {
+						log.Printf("[PANIC] Message handler recovered: %v", p)
+					}
+				}()
+				select {
+				case <-r.shutdown:
+					return
+				case <-ctx.Done():
+					return
+				default:
+					h(ctx, res)
+				}
+			}(listener.Handler, ctx, response)
 		}
 	}
 }
