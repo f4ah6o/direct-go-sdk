@@ -83,6 +83,7 @@ type Client struct {
 	msgID            int64
 	closed           bool
 	connected        bool
+	closeOnce        sync.Once
 
 	// talkDomains maps talk_id to domain_id for user lookups
 	talkDomains map[string]string
@@ -196,6 +197,8 @@ func (c *Client) pingLoop() {
 			vlog("[DEBUG] Sending ping...")
 			if err := conn.WriteMessage(websocket.PingMessage, []byte("PING")); err != nil {
 				vlog("[DEBUG] Ping error: %v", err)
+				// Close connection to trigger proper cleanup
+				c.Close()
 				return
 			}
 		case <-c.Done:
@@ -364,16 +367,21 @@ func min(a, b int) int {
 // It is safe to call Close multiple times.
 func (c *Client) Close() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	conn := c.conn
+	wasClosed := c.closed
+	c.closed = true
+	c.mu.Unlock()
 
-	if c.conn == nil || c.closed {
+	if conn == nil || wasClosed {
 		return nil
 	}
 
-	c.closed = true
-	close(c.Done)
+	// Close Done channel without holding the lock to avoid deadlock
+	c.closeOnce.Do(func() {
+		close(c.Done)
+	})
 
-	return c.conn.Close()
+	return conn.Close()
 }
 
 // On registers an event handler for the given event type.
@@ -508,6 +516,8 @@ func (c *Client) readLoop() {
 			if !c.closed {
 				dlog("[DEBUG] ReadMessage error: %v", err)
 				c.emit("error", map[string]string{"error": err.Error()})
+				// Close connection to trigger proper cleanup
+				c.Close()
 			}
 			return
 		}
