@@ -3,6 +3,7 @@ package bot
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -106,14 +107,17 @@ func TestRecoveryMiddleware(t *testing.T) {
 
 // TestLoggingMiddleware tests the logging middleware.
 func TestLoggingMiddleware(t *testing.T) {
-	var buf bytes.Buffer
-	logger := log.New(&buf, "", 0)
+	// Use thread-safe buffer wrapper
+	tw := &testWriter{}
+	logger := log.New(tw, "", 0)
 
 	robot := New()
 	robot.Use(LoggingMiddleware(logger))
 
+	done := make(chan struct{})
 	robot.Hear("test", func(ctx context.Context, res Response) {
 		// Handler does nothing
+		close(done)
 	})
 
 	msg := direct.ReceivedMessage{
@@ -122,21 +126,42 @@ func TestLoggingMiddleware(t *testing.T) {
 		TalkID: "room456",
 	}
 	robot.handleMessage(context.Background(), msg)
-	time.Sleep(50 * time.Millisecond)
 
-	logOutput := buf.String()
-	if !strings.Contains(logOutput, "[START]") {
-		t.Errorf("Expected [START] in log, got: %s", logOutput)
+	// Wait for handler to complete
+	<-done
+
+	logStr := tw.String()
+
+	if !strings.Contains(logStr, "[START]") {
+		t.Errorf("Expected [START] in log, got: %s", logStr)
 	}
-	if !strings.Contains(logOutput, "[END]") {
-		t.Errorf("Expected [END] in log, got: %s", logOutput)
+	if !strings.Contains(logStr, "[END]") {
+		t.Errorf("Expected [END] in log, got: %s", logStr)
 	}
-	if !strings.Contains(logOutput, "test message") {
-		t.Errorf("Expected message text in log, got: %s", logOutput)
+	if !strings.Contains(logStr, "test message") {
+		t.Errorf("Expected message text in log, got: %s", logStr)
 	}
-	if !strings.Contains(logOutput, "user123") {
-		t.Errorf("Expected user ID in log, got: %s", logOutput)
+	if !strings.Contains(logStr, "user123") {
+		t.Errorf("Expected user ID in log, got: %s", logStr)
 	}
+}
+
+// testWriter is an io.Writer that stores output in an atomic.Value.
+type testWriter struct {
+	mu     sync.Mutex
+	output strings.Builder
+}
+
+func (w *testWriter) Write(p []byte) (n int, err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.output.Write(p)
+}
+
+func (w *testWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.output.String()
 }
 
 // TestFilterMiddleware tests the filter middleware.
@@ -149,8 +174,13 @@ func TestFilterMiddleware(t *testing.T) {
 	}))
 
 	var handlerCalled bool
+	var handlerMu sync.Mutex
+	done := make(chan struct{})
 	robot.Hear("test", func(ctx context.Context, res Response) {
+		handlerMu.Lock()
 		handlerCalled = true
+		handlerMu.Unlock()
+		close(done)
 	})
 
 	// Test with allowed user
@@ -159,22 +189,40 @@ func TestFilterMiddleware(t *testing.T) {
 		UserID: "allowed_user",
 	}
 	robot.handleMessage(context.Background(), msg1)
-	time.Sleep(50 * time.Millisecond)
+	<-done
+	time.Sleep(10 * time.Millisecond)
 
-	if !handlerCalled {
+	handlerMu.Lock()
+	called := handlerCalled
+	handlerMu.Unlock()
+	if !called {
 		t.Error("Handler should be called for allowed user")
 	}
 
 	// Test with blocked user
 	handlerCalled = false
+	done = make(chan struct{})
+	robot.Hear("test2", func(ctx context.Context, res Response) {
+		handlerMu.Lock()
+		handlerCalled = true
+		handlerMu.Unlock()
+		close(done)
+	})
+
 	msg2 := direct.ReceivedMessage{
 		Text:   "test",
 		UserID: "blocked_user",
 	}
 	robot.handleMessage(context.Background(), msg2)
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-done:
+	case <-time.After(50 * time.Millisecond):
+	}
 
-	if handlerCalled {
+	handlerMu.Lock()
+	called = handlerCalled
+	handlerMu.Unlock()
+	if called {
 		t.Error("Handler should not be called for blocked user")
 	}
 }
@@ -242,13 +290,15 @@ func TestContextMiddleware(t *testing.T) {
 	robot.Use(ContextMiddleware("key1", "value1", "key2", 42))
 
 	var capturedValue interface{}
+	done := make(chan struct{})
 	robot.Hear("test", func(ctx context.Context, res Response) {
 		capturedValue = GetContextValue(ctx, "key1")
+		close(done)
 	})
 
 	msg := direct.ReceivedMessage{Text: "test"}
 	robot.handleMessage(context.Background(), msg)
-	time.Sleep(50 * time.Millisecond)
+	<-done
 
 	if capturedValue != "value1" {
 		t.Errorf("Expected 'value1', got %v", capturedValue)
@@ -582,6 +632,9 @@ func TestFilterMiddleware_SelectiveExecution(t *testing.T) {
 // TestContextMiddleware_ValuesAreSet verifies context middleware sets values correctly.
 func TestContextMiddleware_ValuesAreSet(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
+		// Use unique pattern for each iteration to avoid listener accumulation
+		pattern := fmt.Sprintf("test_rapid_%d", rapid.Int64().Draw(t, "seed"))
+
 		robot := New()
 
 		// Generate random key-value pairs
@@ -604,17 +657,24 @@ func TestContextMiddleware_ValuesAreSet(t *testing.T) {
 
 		// Check that values are retrievable
 		capturedValues := make(map[string]interface{})
-		robot.Hear("test", func(ctx context.Context, res Response) {
+		var capturedValuesMu sync.Mutex
+		done := make(chan struct{})
+		robot.Hear(pattern, func(ctx context.Context, res Response) {
+			capturedValuesMu.Lock()
+			defer capturedValuesMu.Unlock()
 			for _, key := range keys {
 				capturedValues[key] = GetContextValue(ctx, key)
 			}
+			close(done)
 		})
 
-		msg := direct.ReceivedMessage{Text: "test"}
+		msg := direct.ReceivedMessage{Text: pattern}
 		robot.handleMessage(context.Background(), msg)
-		time.Sleep(50 * time.Millisecond)
+		<-done // Wait for handler to complete
 
 		// Verify all values were set correctly
+		capturedValuesMu.Lock()
+		defer capturedValuesMu.Unlock()
 		for i, key := range keys {
 			if capturedValues[key] != values[i] {
 				t.Fatalf("Context key %s: expected %v, got %v", key, values[i], capturedValues[key])
