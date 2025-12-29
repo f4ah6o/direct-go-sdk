@@ -1,8 +1,6 @@
 module github.com/f4ah6o/direct-go-sdk/daab-go
 
-go 1.22
-
-toolchain go1.22.5
+go 1.24
 
 require (
 	github.com/f4ah6o/direct-go-sdk/direct-go v0.0.0-20251215153455-bd7b7d48fdd6
