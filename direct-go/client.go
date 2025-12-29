@@ -109,6 +109,9 @@ type Client struct {
 	// Channels for events
 	Messages chan ReceivedMessage
 	Done     chan struct{}
+
+	// Metrics records observability metrics. Use SetMetrics to set a custom implementation.
+	metrics Metrics
 }
 
 // EventHandler is a callback for events.
@@ -145,6 +148,7 @@ func NewClient(opts Options) *Client {
 		talkDomains:      make(map[string]string),
 		Messages:         make(chan ReceivedMessage, DefaultMessageChannelSize),
 		Done:             make(chan struct{}),
+		metrics:          &NoopMetrics{},
 	}
 }
 
@@ -186,6 +190,9 @@ func (c *Client) Connect() error {
 
 	c.conn = conn
 	c.closed = false
+
+	// Record connection
+	c.metrics.RecordConnectionState("connected")
 
 	// Set up pong handler
 	c.conn.SetPongHandler(func(appData string) error {
@@ -413,12 +420,49 @@ func (c *Client) Close() error {
 	c.talkDomains = make(map[string]string)
 	c.mu.Unlock()
 
+	// Record disconnection
+	c.metrics.RecordConnectionState("disconnected")
+
 	// Close Done channel without holding the lock to avoid deadlock
 	c.closeOnce.Do(func() {
 		close(c.Done)
 	})
 
 	return conn.Close()
+}
+
+// SetMetrics sets the metrics implementation for this client.
+// Pass a custom Metrics implementation to record observability metrics.
+// To disable metrics, pass &NoopMetrics{}.
+func (c *Client) SetMetrics(m Metrics) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.metrics = m
+}
+
+// Health checks the health status of the client connection.
+// Returns nil if the client is connected and healthy, an error otherwise.
+//
+// The returned HealthStatus contains detailed information about the client state:
+//   - Connected: true if WebSocket is active
+//   - Authenticated: true if a session has been created
+//   - Endpoint: the API endpoint being used
+//   - Error: any error that caused the unhealthy status
+func (c *Client) Health() *HealthStatus {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	status := &HealthStatus{
+		Connected:     c.conn != nil && !c.closed,
+		Authenticated: c.connected,
+		Endpoint:      c.options.Endpoint,
+	}
+
+	if !status.Connected {
+		status.Error = "not connected"
+	}
+
+	return status
 }
 
 // On registers an event handler for the given event type.
@@ -503,6 +547,7 @@ func (c *Client) call(method string, params []interface{}, onSuccess func(interf
 // Returns ErrNotConnected if the client is not connected.
 // Returns ErrTimeout if the request times out.
 func (c *Client) Call(method string, params []interface{}) (interface{}, error) {
+	start := time.Now()
 	resultCh := make(chan interface{}, DefaultResultChannelSize)
 	errCh := make(chan interface{}, DefaultResultChannelSize)
 
@@ -514,8 +559,10 @@ func (c *Client) Call(method string, params []interface{}) (interface{}, error) 
 
 	select {
 	case result := <-resultCh:
+		c.metrics.RecordRequest(method, time.Since(start))
 		return result, nil
 	case err := <-errCh:
+		c.metrics.RecordError(method, fmt.Errorf("RPC error: %v", err))
 		return nil, fmt.Errorf("RPC error: %v", err)
 	case <-time.After(DefaultRequestTimeout):
 		// Clean up the handler on timeout
@@ -524,6 +571,7 @@ func (c *Client) Call(method string, params []interface{}) (interface{}, error) 
 			delete(c.responseHandlers, msgID)
 			c.mu.Unlock()
 		}
+		c.metrics.RecordError(method, ErrTimeout)
 		return nil, fmt.Errorf("RPC error: %w", ErrTimeout)
 	}
 }
