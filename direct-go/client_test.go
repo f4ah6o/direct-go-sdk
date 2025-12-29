@@ -2,6 +2,8 @@ package direct
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -446,5 +448,292 @@ func TestToInt64_Nil(t *testing.T) {
 	_, ok := toInt64(nil)
 	if ok {
 		t.Fatal("toInt64(nil) should return false")
+	}
+}
+
+// Property-Based Tests for parseMessage using Rapid
+
+// TestParseMessage_NonMap returns empty message for non-map input
+func TestParseMessage_NonMap(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Generate non-map values - test each type separately
+		kind := rapid.IntRange(0, 3).Draw(t, "kind")
+		var val interface{}
+		switch kind {
+		case 0:
+			val = rapid.String().Draw(t, "str")
+		case 1:
+			val = rapid.Int().Draw(t, "int")
+		case 2:
+			val = rapid.Bool().Draw(t, "bool")
+		default:
+			val = rapid.SliceOf(rapid.Int()).Draw(t, "slice")
+		}
+
+		result := parseMessage(val)
+
+		// Non-map input should return empty message
+		if result.ID != "" {
+			t.Fatalf("parseMessage(%v) should have empty ID, got %q", val, result.ID)
+		}
+		if result.TalkID != "" {
+			t.Fatalf("parseMessage(%v) should have empty TalkID, got %q", val, result.TalkID)
+		}
+	})
+}
+
+// TestParseMessage_WithMessageID extracts message_id field
+func TestParseMessage_WithMessageID(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		id := rapid.StringMatching(`[a-zA-Z0-9_-]+`).Draw(t, "id")
+		data := map[string]interface{}{
+			"message_id": id,
+		}
+
+		result := parseMessage(data)
+
+		expectedID := fmt.Sprintf("%v", id)
+		if result.ID != expectedID {
+			t.Fatalf("parseMessage() ID = %q, want %q", result.ID, expectedID)
+		}
+	})
+}
+
+// TestParseMessage_WithID extracts id field when message_id is absent
+func TestParseMessage_WithID(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		id := rapid.StringMatching(`[a-zA-Z0-9_-]+`).Draw(t, "id")
+		data := map[string]interface{}{
+			"id": id,
+		}
+
+		result := parseMessage(data)
+
+		expectedID := fmt.Sprintf("%v", id)
+		if result.ID != expectedID {
+			t.Fatalf("parseMessage() ID = %q, want %q", result.ID, expectedID)
+		}
+	})
+}
+
+// TestParseMessage_MessageIDTakesPrecedence message_id takes precedence over id
+func TestParseMessage_MessageIDTakesPrecedence(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		messageID := rapid.StringMatching(`[a-zA-Z0-9_-]+`).Draw(t, "messageID")
+		regularID := rapid.StringMatching(`[a-zA-Z0-9_-]+`).Draw(t, "regularID")
+		data := map[string]interface{}{
+			"message_id": messageID,
+			"id":         regularID,
+		}
+
+		result := parseMessage(data)
+
+		expectedID := fmt.Sprintf("%v", messageID)
+		if result.ID != expectedID {
+			t.Fatalf("parseMessage() ID = %q, want message_id %q", result.ID, expectedID)
+		}
+	})
+}
+
+// TestParseMessage_WithTalkID extracts talk_id field
+func TestParseMessage_WithTalkID(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		talkID := rapid.StringMatching(`[0-9]+`).Draw(t, "talkID")
+		data := map[string]interface{}{
+			"talk_id": talkID,
+		}
+
+		result := parseMessage(data)
+
+		expectedTalkID := fmt.Sprintf("%v", talkID)
+		if result.TalkID != expectedTalkID {
+			t.Fatalf("parseMessage() TalkID = %q, want %q", result.TalkID, expectedTalkID)
+		}
+		if result.RoomID != expectedTalkID {
+			t.Fatalf("parseMessage() RoomID = %q, want %q", result.RoomID, expectedTalkID)
+		}
+	})
+}
+
+// TestParseMessage_WithUserID extracts user_id field
+func TestParseMessage_WithUserID(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		userID := rapid.StringMatching(`[a-zA-Z0-9_-]+`).Draw(t, "userID")
+		data := map[string]interface{}{
+			"user_id": userID,
+		}
+
+		result := parseMessage(data)
+
+		expectedUserID := fmt.Sprintf("%v", userID)
+		if result.UserID != expectedUserID {
+			t.Fatalf("parseMessage() UserID = %q, want %q", result.UserID, expectedUserID)
+		}
+	})
+}
+
+// TestParseMessage_WithDomainID extracts domain_id field
+func TestParseMessage_WithDomainID(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		domainID := rapid.StringMatching(`[a-zA-Z0-9_-]+`).Draw(t, "domainID")
+		data := map[string]interface{}{
+			"domain_id": domainID,
+		}
+
+		result := parseMessage(data)
+
+		expectedDomainID := fmt.Sprintf("%v", domainID)
+		if result.DomainID != expectedDomainID {
+			t.Fatalf("parseMessage() DomainID = %q, want %q", result.DomainID, expectedDomainID)
+		}
+	})
+}
+
+// TestParseMessage_WithContentString extracts text from string content
+func TestParseMessage_WithContentString(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		text := rapid.StringMatching(`[a-zA-Z0-9\s,.!?]+`).Draw(t, "text")
+		data := map[string]interface{}{
+			"content": text,
+		}
+
+		result := parseMessage(data)
+
+		if result.Text != text {
+			t.Fatalf("parseMessage() Text = %q, want %q", result.Text, text)
+		}
+		if result.Content == nil {
+			t.Fatal("parseMessage() Content should not be nil")
+		}
+	})
+}
+
+// TestParseMessage_WithContentMap extracts text from map content
+func TestParseMessage_WithContentMap(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		text := rapid.StringMatching(`[a-zA-Z0-9\s]+`).Draw(t, "text")
+		data := map[string]interface{}{
+			"content": map[string]interface{}{
+				"text": text,
+			},
+		}
+
+		result := parseMessage(data)
+
+		if result.Text != text {
+			t.Fatalf("parseMessage() Text = %q, want %q", result.Text, text)
+		}
+	})
+}
+
+// TestParseMessage_WithType extracts and converts type field
+func TestParseMessage_WithType(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		msgType := rapid.IntRange(0, 25).Draw(t, "msgType")
+		data := map[string]interface{}{
+			"type": msgType,
+		}
+
+		result := parseMessage(data)
+
+		expectedType := MessageType(msgType)
+		if result.Type != expectedType {
+			t.Fatalf("parseMessage() Type = %d, want %d", result.Type, expectedType)
+		}
+	})
+}
+
+// TestParseMessage_CompleteMessage parses all fields correctly
+func TestParseMessage_CompleteMessage(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		messageID := rapid.StringMatching(`[a-zA-Z0-9_-]+`).Draw(t, "messageID")
+		talkID := rapid.StringMatching(`[0-9]+`).Draw(t, "talkID")
+		userID := rapid.StringMatching(`[a-zA-Z0-9_-]+`).Draw(t, "userID")
+		domainID := rapid.StringMatching(`[a-zA-Z0-9_-]+`).Draw(t, "domainID")
+		text := rapid.StringMatching(`[a-zA-Z0-9\s]+`).Draw(t, "text")
+		msgType := rapid.IntRange(0, 25).Draw(t, "msgType")
+
+		data := map[string]interface{}{
+			"message_id": messageID,
+			"talk_id":    talkID,
+			"user_id":    userID,
+			"domain_id":  domainID,
+			"content":    text,
+			"type":       msgType,
+		}
+
+		result := parseMessage(data)
+
+		if result.ID != fmt.Sprintf("%v", messageID) {
+			t.Fatalf("ID mismatch: got %q, want %q", result.ID, messageID)
+		}
+		if result.TalkID != fmt.Sprintf("%v", talkID) {
+			t.Fatalf("TalkID mismatch: got %q, want %q", result.TalkID, talkID)
+		}
+		if result.RoomID != fmt.Sprintf("%v", talkID) {
+			t.Fatalf("RoomID should equal TalkID")
+		}
+		if result.UserID != fmt.Sprintf("%v", userID) {
+			t.Fatalf("UserID mismatch: got %q, want %q", result.UserID, userID)
+		}
+		if result.DomainID != fmt.Sprintf("%v", domainID) {
+			t.Fatalf("DomainID mismatch: got %q, want %q", result.DomainID, domainID)
+		}
+		if result.Text != text {
+			t.Fatalf("Text mismatch: got %q, want %q", result.Text, text)
+		}
+		if result.Type != MessageType(msgType) {
+			t.Fatalf("Type mismatch: got %d, want %d", result.Type, msgType)
+		}
+	})
+}
+
+// TestParseMessage_RawIsSet verifies Raw field is populated with JSON
+func TestParseMessage_RawIsSet(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		messageID := rapid.StringMatching(`[a-zA-Z0-9_-]+`).Draw(t, "messageID")
+		text := rapid.StringMatching(`[a-zA-Z0-9]+`).Draw(t, "text")
+
+		data := map[string]interface{}{
+			"message_id": messageID,
+			"text":       text,
+		}
+
+		result := parseMessage(data)
+
+		if len(result.Raw) == 0 {
+			t.Fatal("parseMessage() Raw should be populated with JSON")
+		}
+		// Verify it's valid JSON
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(result.Raw, &parsed); err != nil {
+			t.Fatalf("parseMessage() Raw should be valid JSON: %v", err)
+		}
+	})
+}
+
+// TestParseMessage_EmptyMap returns empty message
+func TestParseMessage_EmptyMap(t *testing.T) {
+	data := map[string]interface{}{}
+
+	result := parseMessage(data)
+
+	if result.ID != "" {
+		t.Fatalf("parseMessage(empty) ID should be empty, got %q", result.ID)
+	}
+	if result.TalkID != "" {
+		t.Fatalf("parseMessage(empty) TalkID should be empty, got %q", result.TalkID)
+	}
+	if result.UserID != "" {
+		t.Fatalf("parseMessage(empty) UserID should be empty, got %q", result.UserID)
+	}
+}
+
+// TestParseMessage_NilInput returns empty message
+func TestParseMessage_NilInput(t *testing.T) {
+	result := parseMessage(nil)
+
+	if result.ID != "" {
+		t.Fatalf("parseMessage(nil) ID should be empty, got %q", result.ID)
 	}
 }
