@@ -22,6 +22,12 @@ const (
 	LevelVerbose = 2 // All debug messages including ping/pong
 )
 
+// Debug log buffer and channel sizes
+const (
+	defaultLogBufferSize   = 5000 // Number of log entries to keep in memory
+	defaultLogChannelSize  = 100  // Buffer size for log subscriber channels
+)
+
 // LogEntry represents a structured log message
 type LogEntry struct {
 	Time    time.Time `json:"time"`
@@ -105,7 +111,7 @@ func (rb *RingBuffer) Query(q LogQuery) []LogEntry {
 
 var (
 	// buffer holds the latest logs
-	buffer = NewRingBuffer(5000)
+	buffer = NewRingBuffer(defaultLogBufferSize)
 
 	// subscribers for real-time streaming
 	subscribers = make(map[chan LogEntry]struct{})
@@ -134,7 +140,7 @@ func init() {
 
 // Subscribe adds a channel to receive real-time logs
 func Subscribe() chan LogEntry {
-	ch := make(chan LogEntry, 100)
+	ch := make(chan LogEntry, defaultLogChannelSize)
 	subMu.Lock()
 	subscribers[ch] = struct{}{}
 	subMu.Unlock()

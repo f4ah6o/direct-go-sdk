@@ -114,7 +114,7 @@ func NewClient(opts Options) *Client {
 		handlers:         make(map[string][]EventHandler),
 		responseHandlers: make(map[int64]*ResponseHandler),
 		talkDomains:      make(map[string]string),
-		Messages:         make(chan ReceivedMessage, 100),
+		Messages:         make(chan ReceivedMessage, DefaultMessageChannelSize),
 		Done:             make(chan struct{}),
 	}
 }
@@ -132,7 +132,7 @@ func (c *Client) Connect() error {
 	}
 
 	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
+		HandshakeTimeout: DefaultHandshakeTimeout,
 	}
 
 	// Set up proxy if configured
@@ -179,7 +179,7 @@ func (c *Client) Connect() error {
 
 // pingLoop sends periodic pings to keep the connection alive
 func (c *Client) pingLoop() {
-	ticker := time.NewTicker(45 * time.Second)
+	ticker := time.NewTicker(DefaultPingInterval)
 	defer ticker.Stop()
 
 	for {
@@ -456,8 +456,8 @@ func (c *Client) call(method string, params []interface{}, onSuccess func(interf
 // Method names are defined as constants (e.g., MethodGetTalks, MethodCreateMessage).
 // Returns the result on success, or an error on failure or timeout.
 func (c *Client) Call(method string, params []interface{}) (interface{}, error) {
-	resultCh := make(chan interface{}, 1)
-	errCh := make(chan interface{}, 1)
+	resultCh := make(chan interface{}, DefaultResultChannelSize)
+	errCh := make(chan interface{}, DefaultResultChannelSize)
 
 	c.call(method, params, func(result interface{}) {
 		resultCh <- result
@@ -470,7 +470,7 @@ func (c *Client) Call(method string, params []interface{}) (interface{}, error) 
 		return result, nil
 	case err := <-errCh:
 		return nil, fmt.Errorf("RPC error: %v", err)
-	case <-time.After(30 * time.Second):
+	case <-time.After(DefaultRequestTimeout):
 		return nil, fmt.Errorf("RPC timeout")
 	}
 }
