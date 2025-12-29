@@ -182,7 +182,7 @@ func parseAttachment(data map[string]interface{}) Attachment {
 		attachment.URL = v
 	}
 	if v, ok := data["created_at"].(int64); ok {
-		attachment.CreatedAt = time.Unix(v, 0)
+		attachment.CreatedAt = UnixTime(v)
 	}
 
 	return attachment

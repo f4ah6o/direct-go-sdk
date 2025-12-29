@@ -127,10 +127,10 @@ func parseAnnouncement(data map[string]interface{}) *Announcement {
 		announcement.CreatedBy = v
 	}
 	if v, ok := data["created_at"].(int64); ok {
-		announcement.CreatedAt = time.Unix(v, 0)
+		announcement.CreatedAt = UnixTime(v)
 	}
 	if v, ok := data["updated_at"].(int64); ok {
-		announcement.UpdatedAt = time.Unix(v, 0)
+		announcement.UpdatedAt = UnixTime(v)
 	}
 	if v, ok := data["target_user_ids"].([]interface{}); ok {
 		announcement.TargetUserIDs = v

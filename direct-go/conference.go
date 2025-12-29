@@ -119,10 +119,10 @@ func parseConference(data map[string]interface{}) *Conference {
 		conf.MessageID = v
 	}
 	if v, ok := data["created_at"].(int64); ok {
-		conf.CreatedAt = time.Unix(v, 0)
+		conf.CreatedAt = UnixTime(v)
 	}
 	if v, ok := data["expired_at"].(int64); ok {
-		conf.ExpiredAt = time.Unix(v, 0)
+		conf.ExpiredAt = UnixTime(v)
 	}
 	if v, ok := data["participants"].([]interface{}); ok {
 		conf.Participants = v

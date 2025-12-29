@@ -225,10 +225,10 @@ func (c *Client) GetScheduledMessages(ctx context.Context) ([]ScheduledMessage, 
 					msg.Content = v
 				}
 				if v, ok := msgData["scheduled_at"].(int64); ok {
-					msg.ScheduledAt = time.Unix(v, 0)
+					msg.ScheduledAt = UnixTime(v)
 				}
 				if v, ok := msgData["created_at"].(int64); ok {
-					msg.CreatedAt = time.Unix(v, 0)
+					msg.CreatedAt = UnixTime(v)
 				}
 				messages = append(messages, msg)
 			}
@@ -264,10 +264,10 @@ func (c *Client) ScheduleMessage(ctx context.Context, talkID interface{}, msgTyp
 			msg.Content = v
 		}
 		if v, ok := msgData["scheduled_at"].(int64); ok {
-			msg.ScheduledAt = time.Unix(v, 0)
+			msg.ScheduledAt = UnixTime(v)
 		}
 		if v, ok := msgData["created_at"].(int64); ok {
-			msg.CreatedAt = time.Unix(v, 0)
+			msg.CreatedAt = UnixTime(v)
 		}
 	}
 
@@ -365,7 +365,7 @@ func (c *Client) GetMessageReactionUsers(ctx context.Context, messageID interfac
 					user.ReactionID = v
 				}
 				if v, ok := data["created_at"].(int64); ok {
-					user.CreatedAt = time.Unix(v, 0)
+					user.CreatedAt = UnixTime(v)
 				}
 				users = append(users, user)
 			}
