@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Run tests
+        run: |
+          cd direct-go && go test ./...
+          cd ../daab-go && go test ./...
+
+      - name: Build daabgo
+        run: |
+          cd daab-go
+          go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o bin/daabgo-linux-amd64 cmd/daabgo/main.go
+
+      - name: Create checksums
+        run: |
+          cd daab-go/bin
+          sha256sum daabgo-linux-amd64 > checksums.txt
+
+      - name: Extract changelog
+        id: changelog
+        run: |
+          # Get commits since last tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -z "$PREV_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"- %s" HEAD)
+          else
+            COMMITS=$(git log ${PREV_TAG}..HEAD --pretty=format:"- %s")
+          fi
+
+          # Save to file
+          echo "# Changes since ${PREV_TAG:-beginning}" > changelog.md
+          echo "" >> changelog.md
+          echo "$COMMITS" >> changelog.md
+
+          # Set output for GitHub Release
+          {
+            echo 'notes<<EOF'
+            cat changelog.md
+            echo EOF
+          } >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          body: ${{ steps.changelog.outputs.notes }}
+          files: |
+            daab-go/bin/daabgo-linux-amd64
+            daab-go/bin/checksums.txt
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

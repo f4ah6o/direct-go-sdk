@@ -1,0 +1,50 @@
+# Git
+.git
+.gitignore
+.github
+
+# Documentation
+*.md
+!README.md
+LICENSE
+
+# Issues and archives
+issues/
+
+# CI/CD
+.cvsignore
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Direct JS source (managed separately)
+direct-go/direct-js-source/
+daab-go/daab-source/
+
+# Test and coverage files
+*.test
+*.out
+coverage.txt
+coverage.html
+coverage.html.js
+
+# Build artifacts
+bin/
+dist/
+*.exe
+
+# Environment
+.env
+.env.local
+
+# Debug logs
+debug.log
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db

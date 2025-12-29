@@ -9,10 +9,15 @@ on:
 jobs:
   test-direct-go:
     name: Test direct-go
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        os: [ubuntu-latest]
         go: ["1.24", "1.25"]
+        include:
+          # Test on macOS with latest Go only
+          - os: macos-latest
+            go: "1.25"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
