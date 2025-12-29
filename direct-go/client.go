@@ -122,13 +122,14 @@ func NewClient(opts Options) *Client {
 // Connect establishes a WebSocket connection to the direct API.
 // It starts the message reader and ping keepalive loops.
 // If an access token is provided in Options, it automatically creates a session.
-// Returns an error if already connected or if the WebSocket connection fails.
+// Returns ErrAlreadyConnected if the client is already connected.
+// Returns a ConnectionError if the WebSocket connection fails.
 func (c *Client) Connect() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.conn != nil {
-		return fmt.Errorf("already connected")
+		return ErrAlreadyConnected
 	}
 
 	dialer := websocket.Dialer{
@@ -151,7 +152,7 @@ func (c *Client) Connect() error {
 	// HTTP response from dialer is not needed after connection is established
 	conn, _ /* *http.Response */, err := dialer.Dial(c.options.Endpoint, header)
 	if err != nil {
-		return fmt.Errorf("websocket dial failed: %w", err)
+		return NewConnectionError(err)
 	}
 
 	c.conn = conn
@@ -470,6 +471,8 @@ func (c *Client) call(method string, params []interface{}, onSuccess func(interf
 // It blocks until a response is received or the 30-second timeout expires.
 // Method names are defined as constants (e.g., MethodGetTalks, MethodCreateMessage).
 // Returns the result on success, or an error on failure or timeout.
+// Returns ErrNotConnected if the client is not connected.
+// Returns ErrTimeout if the request times out.
 func (c *Client) Call(method string, params []interface{}) (interface{}, error) {
 	resultCh := make(chan interface{}, DefaultResultChannelSize)
 	errCh := make(chan interface{}, DefaultResultChannelSize)
@@ -492,7 +495,7 @@ func (c *Client) Call(method string, params []interface{}) (interface{}, error) 
 			delete(c.responseHandlers, msgID)
 			c.mu.Unlock()
 		}
-		return nil, fmt.Errorf("RPC timeout")
+		return nil, fmt.Errorf("RPC error: %w", ErrTimeout)
 	}
 }
 
