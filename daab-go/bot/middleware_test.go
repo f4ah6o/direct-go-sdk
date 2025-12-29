@@ -1,7 +1,6 @@
 package bot
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -75,28 +74,44 @@ func TestMiddleware(t *testing.T) {
 
 // TestRecoveryMiddleware tests that recovery middleware catches panics.
 func TestRecoveryMiddleware(t *testing.T) {
-	var buf bytes.Buffer
-	logger := log.New(&buf, "", 0)
+	tw := &testWriter{}
+	logger := log.New(tw, "", 0)
 
 	robot := New()
-	robot.Use(RecoveryMiddleware(logger))
 
 	var handlerCalled bool
+	var handlerMu sync.Mutex
+	done := make(chan struct{})
+	// Add wrapper to signal completion after everything (including panic recovery)
+	// This must be added BEFORE RecoveryMiddleware so RecoveryMiddleware's defer runs first
+	robot.Use(func(next Handler) Handler {
+		return func(ctx context.Context, res Response) {
+			defer close(done)
+			next(ctx, res)
+		}
+	})
+	robot.Use(RecoveryMiddleware(logger))
+
 	robot.Hear("panic", func(ctx context.Context, res Response) {
+		handlerMu.Lock()
 		handlerCalled = true
+		handlerMu.Unlock()
 		panic("test panic")
 	})
 
 	// Simulate a message
 	msg := direct.ReceivedMessage{Text: "panic"}
 	robot.handleMessage(context.Background(), msg)
-	time.Sleep(50 * time.Millisecond)
+	<-done
 
-	if !handlerCalled {
+	handlerMu.Lock()
+	called := handlerCalled
+	handlerMu.Unlock()
+	if !called {
 		t.Error("Handler was not called")
 	}
 
-	logOutput := buf.String()
+	logOutput := tw.String()
 	if !strings.Contains(logOutput, "RECOVER") {
 		t.Errorf("Expected recovery log, got: %s", logOutput)
 	}
@@ -114,10 +129,17 @@ func TestLoggingMiddleware(t *testing.T) {
 	robot := New()
 	robot.Use(LoggingMiddleware(logger))
 
+	// Add a wrapper middleware that closes done after everything finishes
 	done := make(chan struct{})
+	robot.Use(func(next Handler) Handler {
+		return func(ctx context.Context, res Response) {
+			defer close(done)
+			next(ctx, res)
+		}
+	})
+
 	robot.Hear("test", func(ctx context.Context, res Response) {
 		// Handler does nothing
-		close(done)
 	})
 
 	msg := direct.ReceivedMessage{
@@ -127,7 +149,7 @@ func TestLoggingMiddleware(t *testing.T) {
 	}
 	robot.handleMessage(context.Background(), msg)
 
-	// Wait for handler to complete
+	// Wait for handler and all middleware defers to complete
 	<-done
 
 	logStr := tw.String()
@@ -367,15 +389,23 @@ func TestMiddlewareNilSlice(t *testing.T) {
 
 	// Don't add any middlewares
 	var handlerCalled bool
+	var handlerMu sync.Mutex
+	done := make(chan struct{})
 	robot.Hear("test", func(ctx context.Context, res Response) {
+		handlerMu.Lock()
 		handlerCalled = true
+		handlerMu.Unlock()
+		close(done)
 	})
 
 	msg := direct.ReceivedMessage{Text: "test"}
 	robot.handleMessage(context.Background(), msg)
-	time.Sleep(50 * time.Millisecond)
+	<-done
 
-	if !handlerCalled {
+	handlerMu.Lock()
+	called := handlerCalled
+	handlerMu.Unlock()
+	if !called {
 		t.Error("Handler should be called even without middlewares")
 	}
 }
@@ -393,15 +423,27 @@ func TestMiddlewareStopChain(t *testing.T) {
 	})
 
 	var handlerCalled bool
+	var handlerMu sync.Mutex
+	done := make(chan struct{})
 	robot.Hear("test", func(ctx context.Context, res Response) {
+		handlerMu.Lock()
 		handlerCalled = true
+		handlerMu.Unlock()
+		close(done)
 	})
 
 	msg := direct.ReceivedMessage{Text: "test"}
 	robot.handleMessage(context.Background(), msg)
-	time.Sleep(50 * time.Millisecond)
 
-	if handlerCalled {
+	select {
+	case <-done:
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	handlerMu.Lock()
+	called := handlerCalled
+	handlerMu.Unlock()
+	if called {
 		t.Error("Handler should not be called when middleware stops chain")
 	}
 }
@@ -553,8 +595,8 @@ func TestMiddleware_OrderIsPreserved(t *testing.T) {
 // TestRecoveryMiddleware_DoesNotCrash verifies recovery middleware catches various panic types.
 func TestRecoveryMiddleware_DoesNotCrash(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
-		var buf bytes.Buffer
-		logger := log.New(&buf, "", 0)
+		tw := &testWriter{}
+		logger := log.New(tw, "", 0)
 
 		robot := New()
 		robot.Use(RecoveryMiddleware(logger))
@@ -562,7 +604,9 @@ func TestRecoveryMiddleware_DoesNotCrash(t *testing.T) {
 		// Generate different panic types (0-3)
 		panicType := rapid.IntRange(0, 3).Draw(t, "panicType")
 
+		done := make(chan struct{})
 		robot.Hear("panic", func(ctx context.Context, res Response) {
+			defer close(done)
 			switch panicType {
 			case 0:
 				panic("string panic")
@@ -577,10 +621,11 @@ func TestRecoveryMiddleware_DoesNotCrash(t *testing.T) {
 
 		msg := direct.ReceivedMessage{Text: "panic"}
 		robot.handleMessage(context.Background(), msg)
-		time.Sleep(100 * time.Millisecond)
+		<-done
+		time.Sleep(10 * time.Millisecond)
 
 		// Bot should still be alive (no actual Go panic crashed the test)
-		logOutput := buf.String()
+		logOutput := tw.String()
 		if !strings.Contains(logOutput, "[RECOVER]") {
 			t.Fatalf("Expected recovery log for panicType %d", panicType)
 		}
@@ -637,20 +682,28 @@ func TestContextMiddleware_ValuesAreSet(t *testing.T) {
 
 		robot := New()
 
-		// Generate random key-value pairs
+		// Generate random key-value pairs with unique keys
 		numPairs := rapid.IntRange(1, 5).Draw(t, "numPairs")
-		keys := make([]string, numPairs)
-		values := make([]interface{}, numPairs)
+		type kv struct{ key, value string }
+		kvPairs := make([]kv, 0, numPairs)
+		seenKeys := make(map[string]bool)
 
-		for i := 0; i < numPairs; i++ {
-			keys[i] = rapid.StringMatching(`[a-z]+`).Draw(t, "key")
-			values[i] = rapid.String().Draw(t, "value")
+		for i := 0; i < numPairs*2; i++ {
+			key := rapid.StringMatching(`[a-z]+`).Draw(t, "key")
+			if !seenKeys[key] {
+				seenKeys[key] = true
+				value := rapid.String().Draw(t, "value")
+				kvPairs = append(kvPairs, kv{key, value})
+				if len(kvPairs) >= numPairs {
+					break
+				}
+			}
 		}
 
 		// Build key-value args
-		args := make([]interface{}, 0, numPairs*2)
-		for i := 0; i < numPairs; i++ {
-			args = append(args, keys[i], values[i])
+		args := make([]interface{}, 0, len(kvPairs)*2)
+		for _, pair := range kvPairs {
+			args = append(args, pair.key, pair.value)
 		}
 
 		robot.Use(ContextMiddleware(args...))
@@ -662,8 +715,8 @@ func TestContextMiddleware_ValuesAreSet(t *testing.T) {
 		robot.Hear(pattern, func(ctx context.Context, res Response) {
 			capturedValuesMu.Lock()
 			defer capturedValuesMu.Unlock()
-			for _, key := range keys {
-				capturedValues[key] = GetContextValue(ctx, key)
+			for _, pair := range kvPairs {
+				capturedValues[pair.key] = GetContextValue(ctx, pair.key)
 			}
 			close(done)
 		})
@@ -675,9 +728,9 @@ func TestContextMiddleware_ValuesAreSet(t *testing.T) {
 		// Verify all values were set correctly
 		capturedValuesMu.Lock()
 		defer capturedValuesMu.Unlock()
-		for i, key := range keys {
-			if capturedValues[key] != values[i] {
-				t.Fatalf("Context key %s: expected %v, got %v", key, values[i], capturedValues[key])
+		for _, pair := range kvPairs {
+			if capturedValues[pair.key] != pair.value {
+				t.Fatalf("Context key %s: expected %v, got %v", pair.key, pair.value, capturedValues[pair.key])
 			}
 		}
 	})
@@ -686,8 +739,13 @@ func TestContextMiddleware_ValuesAreSet(t *testing.T) {
 // TestChain_EmptySlice verifies empty middleware chain works.
 func TestChain_EmptySlice(t *testing.T) {
 	var handlerCalled bool
+	var handlerMu sync.Mutex
+	done := make(chan struct{})
 	handler := func(ctx context.Context, res Response) {
+		handlerMu.Lock()
 		handlerCalled = true
+		handlerMu.Unlock()
+		close(done)
 	}
 
 	// Empty chain
@@ -695,8 +753,12 @@ func TestChain_EmptySlice(t *testing.T) {
 	wrapped := chain(handler)
 
 	wrapped(context.Background(), Response{})
+	<-done
 
-	if !handlerCalled {
+	handlerMu.Lock()
+	called := handlerCalled
+	handlerMu.Unlock()
+	if !called {
 		t.Error("Handler should be called with empty middleware chain")
 	}
 }
@@ -705,27 +767,40 @@ func TestChain_EmptySlice(t *testing.T) {
 func TestChain_SingleMiddleware(t *testing.T) {
 	var middlewareCalled bool
 	var handlerCalled bool
+	var mu sync.Mutex
+	done := make(chan struct{})
 
 	middleware := func(next Handler) Handler {
 		return func(ctx context.Context, res Response) {
+			mu.Lock()
 			middlewareCalled = true
+			mu.Unlock()
 			next(ctx, res)
 		}
 	}
 
 	handler := func(ctx context.Context, res Response) {
+		mu.Lock()
 		handlerCalled = true
+		mu.Unlock()
+		close(done)
 	}
 
 	chain := Chain(middleware)
 	wrapped := chain(handler)
 
 	wrapped(context.Background(), Response{})
+	<-done
 
-	if !middlewareCalled {
+	mu.Lock()
+	midCalled := middlewareCalled
+	handCalled := handlerCalled
+	mu.Unlock()
+
+	if !midCalled {
 		t.Error("Middleware should be called")
 	}
-	if !handlerCalled {
+	if !handCalled {
 		t.Error("Handler should be called")
 	}
 }
