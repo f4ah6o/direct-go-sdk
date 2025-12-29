@@ -3,9 +3,12 @@ package bot
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
+
+	"pgregory.net/rapid"
 
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
 	"github.com/f4ah6o/direct-go-sdk/direct-go/testutil"
@@ -477,4 +480,120 @@ func TestReply(t *testing.T) {
 	if !found {
 		t.Error("Expected reply message to contain mention")
 	}
+}
+
+// Property-Based Tests for normalizeRoomID using Rapid
+
+// TestNormalizeRoomID_NumericString verifies numeric strings are converted to uint64
+func TestNormalizeRoomID_NumericString(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		num := rapid.Uint64().Draw(t, "num")
+		roomID := strconv.FormatUint(num, 10)
+
+		result := normalizeRoomID(roomID)
+
+		resultUint, ok := result.(uint64)
+		if !ok {
+			t.Fatalf("normalizeRoomID(%q) returned %T, want uint64", roomID, result)
+		}
+		if resultUint != num {
+			t.Fatalf("normalizeRoomID(%q) = %d, want %d", roomID, resultUint, num)
+		}
+	})
+}
+
+// TestNormalizeRoomID_NonNumericString verifies non-numeric strings are returned unchanged
+func TestNormalizeRoomID_NonNumericString(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Generate string that starts with a letter (guaranteed non-numeric)
+		firstChar := rapid.StringMatching(`[a-zA-Z]`).Draw(t, "firstChar")
+		rest := rapid.StringMatching(`[a-zA-Z0-9_-]*`).Draw(t, "rest")
+		roomID := firstChar + rest
+
+		result := normalizeRoomID(roomID)
+
+		resultStr, ok := result.(string)
+		if !ok {
+			t.Fatalf("normalizeRoomID(%q) returned %T, want string", roomID, result)
+		}
+		if resultStr != roomID {
+			t.Fatalf("normalizeRoomID(%q) = %q, want %q", roomID, resultStr, roomID)
+		}
+	})
+}
+
+// TestNormalizeRoomID_EmptyString verifies empty string is returned as-is
+func TestNormalizeRoomID_EmptyString(t *testing.T) {
+	result := normalizeRoomID("")
+	if result != "" {
+		t.Fatalf("normalizeRoomID('') = %v, want ''", result)
+	}
+}
+
+// TestNormalizeRoomID_LeadingZeros verifies numbers with leading zeros work correctly
+func TestNormalizeRoomID_LeadingZeros(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Generate a small number and add leading zeros
+		num := rapid.Uint64Range(0, 99999).Draw(t, "num")
+		leadingZeros := rapid.IntRange(0, 10).Draw(t, "zeros")
+		roomID := ""
+		for i := 0; i < leadingZeros; i++ {
+			roomID += "0"
+		}
+		roomID += strconv.FormatUint(num, 10)
+
+		result := normalizeRoomID(roomID)
+
+		resultUint, ok := result.(uint64)
+		if !ok {
+			t.Fatalf("normalizeRoomID(%q) returned %T, want uint64", roomID, result)
+		}
+		if resultUint != num {
+			t.Fatalf("normalizeRoomID(%q) = %d, want %d", roomID, resultUint, num)
+		}
+	})
+}
+
+// TestNormalizeRoomID_SpecialChars verifies strings with special characters are returned unchanged
+func TestNormalizeRoomID_SpecialChars(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Generate string with special characters
+		special := rapid.StringMatching(`[a-zA-Z0-9_-]+`).Draw(t, "base")
+		suffix := rapid.StringMatching(`[-_@!#$%&*+]+`).Draw(t, "suffix")
+		roomID := special + suffix
+
+		result := normalizeRoomID(roomID)
+
+		resultStr, ok := result.(string)
+		if !ok {
+			t.Fatalf("normalizeRoomID(%q) returned %T, want string", roomID, result)
+		}
+		if resultStr != roomID {
+			t.Fatalf("normalizeRoomID(%q) = %q, want %q", roomID, resultStr, roomID)
+		}
+	})
+}
+
+// TestNormalizeRoomID_WhiteSpace verifies whitespace is preserved (returns original)
+func TestNormalizeRoomID_WhiteSpace(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Generate string with spaces
+		base := rapid.StringMatching(`[a-zA-Z0-9]+`).Draw(t, "base")
+		spaces := rapid.IntRange(1, 5).Draw(t, "spaces")
+		roomID := base
+		for i := 0; i < spaces; i++ {
+			roomID += " "
+		}
+
+		result := normalizeRoomID(roomID)
+
+		// Strings with spaces should not be parsed as numbers
+		resultStr, ok := result.(string)
+		if !ok {
+			t.Fatalf("normalizeRoomID(%q) returned %T, want string", roomID, result)
+		}
+		if resultStr != roomID {
+			t.Fatalf("normalizeRoomID(%q) = %q, want %q", roomID, resultStr, roomID)
+		}
+	})
 }
