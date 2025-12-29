@@ -676,12 +676,12 @@ func TestValidate_InvalidAction(t *testing.T) {
 		// Generate a string that's not a valid action
 		action := rapid.StringMatching(`[a-z_]+`).Filter(func(s string) bool {
 			validActions := map[string]bool{
-				"none":        true,
-				"reply":       true,
-				"send":        true,
-				"send_select": true,
-				"send_yesno":  true,
-				"send_task":   true,
+				"none":         true,
+				"reply":        true,
+				"send":         true,
+				"send_select":  true,
+				"send_yesno":   true,
+				"send_task":    true,
 				"reply_select": true,
 				"reply_yesno":  true,
 				"reply_task":   true,
