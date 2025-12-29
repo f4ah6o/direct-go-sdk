@@ -49,10 +49,18 @@ func runLogin() error {
 		proxyURL = os.Getenv("HTTP_PROXY")
 	}
 
-	// Prompt for credentials
+	// Prompt for credentials with better UX
 	email, password, err := promptCredentials()
 	if err != nil {
 		return fmt.Errorf("failed to read credentials: %w", err)
+	}
+
+	// Validate credentials
+	if email == "" {
+		return fmt.Errorf("email is required")
+	}
+	if password == "" {
+		return fmt.Errorf("password is required")
 	}
 
 	fmt.Println()
@@ -67,11 +75,16 @@ func runLogin() error {
 
 	// Connect first
 	if err := client.Connect(); err != nil {
-		return fmt.Errorf("failed to connect: %w", err)
+		return fmt.Errorf("failed to connect\n\n"+
+			"Troubleshooting:\n"+
+			"  - Check your network connection\n"+
+			"  - Verify the endpoint URL is correct: %s\n"+
+			"  - Check if a proxy is required\n"+
+			"  Error: %v", endpoint, err)
 	}
 	defer client.Close()
 
-	fmt.Println("Getting access token...")
+	fmt.Println("Authenticating...")
 
 	// Call create_access_token API
 	// Parameters: [email, password, device_name, device_info, ""]
@@ -84,13 +97,20 @@ func runLogin() error {
 	})
 
 	if err != nil {
-		return fmt.Errorf("login failed: %w", err)
+		return fmt.Errorf("login failed\n\n"+
+			"Troubleshooting:\n"+
+			"  - Verify your email and password are correct\n"+
+			"  - Make sure the account is a bot account\n"+
+			"  - Check if the account is active\n"+
+			"  Error: %v", err)
 	}
 
 	// Extract token from result
 	token := extractToken(result)
 	if token == "" {
-		return fmt.Errorf("failed to extract token from response: %v", result)
+		return fmt.Errorf("failed to extract token from response: %v\n\n"+
+			"The server returned an unexpected response format.\n"+
+			"Please contact support if the problem persists.", result)
 	}
 
 	// Save token
@@ -99,6 +119,7 @@ func runLogin() error {
 	}
 
 	fmt.Println("Logged in successfully!")
+	fmt.Printf("Token saved to: %s\n", direct.EnvFile)
 	return nil
 }
 
