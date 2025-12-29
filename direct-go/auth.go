@@ -97,6 +97,7 @@ func (a *Auth) SetToken(token string) error {
 	}
 
 	// Write back
+	// Note: 0600 permissions apply on Unix-like systems; Windows handles file permissions differently
 	return os.WriteFile(a.envFile, []byte(strings.Join(newLines, "\n")+"\n"), 0600)
 }
 

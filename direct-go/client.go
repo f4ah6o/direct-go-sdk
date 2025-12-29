@@ -209,7 +209,7 @@ func (c *Client) pingLoop() {
 
 // createSession authenticates with the server.
 func (c *Client) createSession() {
-	dlog("[DEBUG] Creating session with token: %s...", c.options.AccessToken[:min(20, len(c.options.AccessToken))])
+	dlog("[DEBUG] Creating session with token: ***...")
 	osString := "Go"
 	params := []interface{}{c.options.AccessToken, APIVersion, osString}
 
