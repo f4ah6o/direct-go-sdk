@@ -41,7 +41,11 @@ func (a *Auth) HasToken() bool {
 	}
 
 	// Check .env file
-	token, _ := a.readTokenFromFile()
+	token, err := a.readTokenFromFile()
+	if err != nil && !os.IsNotExist(err) {
+		// Log unexpected errors (permission issues, etc.) but ignore "file not found"
+		vlog("[WARNING] Error reading token file: %v", err)
+	}
 	return token != ""
 }
 
@@ -55,7 +59,11 @@ func (a *Auth) GetToken() string {
 	}
 
 	// Check .env file
-	token, _ := a.readTokenFromFile()
+	token, err := a.readTokenFromFile()
+	if err != nil && !os.IsNotExist(err) {
+		// Log unexpected errors (permission issues, etc.) but ignore "file not found"
+		vlog("[WARNING] Error reading token file: %v", err)
+	}
 	return token
 }
 

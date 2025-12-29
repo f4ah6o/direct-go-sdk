@@ -147,7 +147,8 @@ func (c *Client) Connect() error {
 	// Don't set Origin - let the library handle it
 	// header.Set("Origin", "https://"+c.options.Host)
 
-	conn, _, err := dialer.Dial(c.options.Endpoint, header)
+	// HTTP response from dialer is not needed after connection is established
+	conn, _ /* *http.Response */, err := dialer.Dial(c.options.Endpoint, header)
 	if err != nil {
 		return fmt.Errorf("websocket dial failed: %w", err)
 	}
