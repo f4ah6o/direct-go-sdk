@@ -102,6 +102,7 @@ type Robot struct {
 	endpoint      string
 	proxyURL      string
 	eventHandlers map[EventType][]func()
+	middlewares   []Middleware
 
 	// Goroutine management
 	wg       sync.WaitGroup
@@ -146,6 +147,7 @@ func New(opts ...Option) *Robot {
 		listeners:     make([]*Listener, 0),
 		auth:          direct.NewAuth(),
 		eventHandlers: make(map[EventType][]func()),
+		middlewares:   make([]Middleware, 0),
 		shutdown:      make(chan struct{}),
 	}
 	for _, opt := range opts {
@@ -304,23 +306,21 @@ func (r *Robot) handleMessage(ctx context.Context, msg direct.ReceivedMessage) {
 				Match:   matches,
 				Robot:   r,
 			}
+			// Apply middleware chain to the handler
+			handler := r.applyMiddlewares(listener.Handler)
 			r.wg.Add(1)
 			go func(h Handler, ctx context.Context, res Response) {
 				defer r.wg.Done()
-				defer func() {
-					if p := recover(); p != nil {
-						log.Printf("[PANIC] Message handler recovered: %v", p)
-					}
-				}()
 				select {
 				case <-r.shutdown:
 					return
 				case <-ctx.Done():
 					return
 				default:
+					// Middleware handles its own panic recovery
 					h(ctx, res)
 				}
-			}(listener.Handler, ctx, response)
+			}(handler, ctx, response)
 		}
 	}
 }
