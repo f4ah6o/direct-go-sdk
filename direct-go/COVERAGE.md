@@ -1,197 +1,64 @@
 # Direct4B Porting Coverage Report
 
-**Generated**: 2025-12-10
+**Generated**: 2025-12-29
+
+**Note**: This report shows the current state of the port. The SDK implements
+the core MessagePack RPC protocol and provides a Client type with methods
+for common operations. See the godoc documentation for the full API.
 
 ## Summary
 
-- **JavaScript Methods**: 82
-- **Go Methods**: 8
-- **Coverage**: 9.76% (8/82)
-- **Missing**: 74 methods
+The direct-go SDK provides a Go client for the Direct4B WebSocket API.
+It implements the MessagePack RPC protocol used by direct-js.
 
-## Coverage by Category
+## Implemented Features
 
-| Category | Total | Implemented | Coverage | Status |
-|----------|-------|-------------|----------|--------|
-| Session & Auth | 7 | 4 | 57.1% | 🟡 |
-| User Management | 11 | 1 | 9.1% | 🔴 |
-| Domain Management | 7 | 2 | 28.6% | 🟠 |
-| Department Management | 3 | 0 | 0.0% | 🔴 |
-| Talk/Room Management | 9 | 2 | 22.2% | 🟠 |
-| Message Operations | 17 | 1 | 5.9% | 🔴 |
-| File & Attachment Management | 6 | 0 | 0.0% | 🔴 |
-| Note Management | 6 | 0 | 0.0% | 🔴 |
-| Announcement Management | 4 | 0 | 0.0% | 🔴 |
-| Push Notification Management | 2 | 0 | 0.0% | 🔴 |
-| Conference/Call Management | 5 | 0 | 0.0% | 🔴 |
-| Miscellaneous | 5 | 0 | 0.0% | 🔴 |
+### Core Client Functionality
+- WebSocket connection management with automatic reconnection
+- MessagePack request/response handling
+- Event-based message receiving
+- Debug logging support
 
-## Detailed Status
+### Auth & Session
+- Token storage and retrieval from environment variables and .env files
+- Session creation with access token authentication
+- Environment variable loading
 
-### 1. Session & Auth (57.1%)
+### Message Operations
+- Send text messages to talks/rooms
+- Send messages with custom types (text, stamp, action, etc.)
+- Scheduled message operations
+- Message reaction handling
 
-#### ✅ Implemented (4)
-- `reset_notification`
-- `start_notification`
-- `update_last_used_at`
-- `create_session` (Note: not in JS list but implemented in Go)
+### Data Retrieval
+- Get current user information (get_me)
+- Get domain information
+- Get talks/rooms list
+- Get messages from talks
+- Get message stamps
 
-#### ❌ Missing (3)
-- `accept_account_control_request`
-- `get_account_control_requests`
-- `get_joined_account_control_group`
-- `reject_account_control_request`
+### Conference Support
+- Conference creation and management
+- Conference join info parsing
 
-### 2. User Management (9.1%)
+## Usage
 
-#### ✅ Implemented (1)
-- `get_me`
+```go
+import "github.com/f4ah6o/direct-go-sdk/direct-go"
 
-#### ❌ Missing (10)
-- `add_friend`
-- `delete_friend`
-- `get_acquaintances`
-- `get_friends`
-- `get_presences`
-- `get_profile`
-- `get_user_identifiers`
-- `get_users`
-- `update_profile`
-- `update_user`
+client := direct.NewClient(direct.Options{
+    AccessToken: "your-token",
+})
 
-### 3. Domain Management (28.6%)
+if err := client.Connect(); err != nil {
+    log.Fatal(err)
+}
 
-#### ✅ Implemented (2)
-- `accept_domain_invite`
-- `get_domains`
+// Send a message
+err := client.SendText(roomID, "Hello, world!")
+```
 
-#### ❌ Missing (5)
-- `delete_domain_invite`
-- `get_domain_invites`
-- `get_domain_users`
-- `leave_domain`
-- `search_domain_users`
+## See Also
 
-### 4. Department Management (0.0%)
-
-#### ❌ Missing (3)
-- `get_department_tree`
-- `get_department_user_count`
-- `get_department_users`
-
-### 5. Talk/Room Management (22.2%)
-
-#### ✅ Implemented (2)
-- `get_talk_statuses`
-- `get_talks`
-
-#### ❌ Missing (7)
-- `add_favorite_talk`
-- `add_talkers`
-- `create_group_talk`
-- `create_pair_talk`
-- `delete_favorite_talk`
-- `delete_talker`
-- `update_group_talk`
-
-### 6. Message Operations (5.9%)
-
-#### ✅ Implemented (1)
-- `create_message`
-
-#### ❌ Missing (16)
-- `add_favorite_message`
-- `delete_favorite_message`
-- `delete_message`
-- `delete_scheduled_message`
-- `get_available_message_reactions`
-- `get_favorite_messages`
-- `get_message_reaction_users`
-- `get_messages`
-- `get_read_status`
-- `get_scheduled_messages`
-- `reschedule_message`
-- `reset_message_reaction`
-- `schedule_message`
-- `search_messages`
-- `search_messages_around_datetime`
-- `set_message_reaction`
-
-### 7. File & Attachment Management (0.0%)
-
-#### ❌ Missing (6)
-- `create_file_preview`
-- `create_upload_auth`
-- `delete_attachment`
-- `get_attachments`
-- `get_file_preview`
-- `search_attachments`
-
-### 8. Note Management (0.0%)
-
-#### ❌ Missing (6)
-- `delete_note`
-- `get_note`
-- `get_note_statuses`
-- `lock_note`
-- `unlock_note`
-- `update_note_setting`
-
-### 9. Announcement Management (0.0%)
-
-#### ❌ Missing (4)
-- `create_announcement`
-- `get_announcement_statuses`
-- `get_announcements`
-- `update_announcement_status`
-
-### 10. Push Notification Management (0.0%)
-
-#### ❌ Missing (2)
-- `disable_push_notification`
-- `enable_push_notification`
-
-### 11. Conference/Call Management (0.0%)
-
-#### ❌ Missing (5)
-- `get_conference_participants`
-- `get_conferences`
-- `join_conference`
-- `leave_conference`
-- `reject_conference`
-
-### 12. Miscellaneous (0.0%)
-
-#### ❌ Missing (5)
-- `get_actions`
-- `get_direct_apps`
-- `get_flow_notification_badges`
-- `get_solutions`
-- `get_stampsets`
-
-## Priority Recommendations
-
-Based on common usage patterns, consider implementing:
-
-### 🔴 High Priority (Core functionality)
-- get_messages - Retrieve messages from a talk
-- get_users - Get user information
-- update_read_statuses - Mark messages as read (not in current list)
-- create_group_talk - Create group conversations
-- create_pair_talk - Create 1-to-1 conversations
-
-### 🟡 Medium Priority (Enhanced functionality)
-- search_messages - Search through message history
-- get_attachments - Retrieve file attachments
-- add_favorite_message - Bookmark messages
-- get_profile - Get detailed user profiles
-- update_group_talk - Modify group settings
-
-### 🟢 Low Priority (Advanced features)
-- Conference/call methods - Video/audio calls
-- Note management - Collaborative notes
-- Announcement system - Broadcast messages
-- Scheduled messages - Send messages at specific times
-
----
-*Generated by direct4b-coverage-tool v1.0.0*
+- [Package documentation](https://pkg.go.dev/github.com/f4ah6o/direct-go-sdk/direct-go)
+- [daab-go bot framework](../daab-go/README.md)

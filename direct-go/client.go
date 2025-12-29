@@ -20,7 +20,11 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 )
 
-// EnableDebugServer enables sending logs to a debug server
+// EnableDebugServer enables sending logs to a debug WebSocket server.
+// The debug server receives all WebSocket messages for debugging purposes.
+//
+// The url parameter should be a WebSocket server URL (e.g., "ws://localhost:8080").
+// Use the direct-logserver tool to start a debug server.
 func EnableDebugServer(url string) {
 	debuglog.SetServer(url)
 }
@@ -48,29 +52,43 @@ const (
 	DefaultEndpoint = "wss://api.direct4b.com/albero-app-server/api"
 )
 
-// Options configures the direct client.
+// Options configures the direct client behavior.
+// All fields are optional; unset fields will use their default values.
 type Options struct {
-	// Endpoint is the WebSocket API endpoint.
+	// Endpoint is the WebSocket API endpoint (e.g., "wss://api.direct4b.com/...").
+	// If empty, DefaultEndpoint is used.
 	Endpoint string
 
-	// AccessToken is the authentication token.
+	// AccessToken is the authentication token for the API.
+	// Can be retrieved via the Auth type or from the HUBOT_DIRECT_TOKEN environment variable.
 	AccessToken string
 
-	// ProxyURL is an optional HTTP proxy URL.
+	// ProxyURL is an optional HTTP proxy URL for WebSocket connections.
+	// If set, all WebSocket traffic will be routed through this proxy.
 	ProxyURL string
 
-	// Host is the API host (derived from Endpoint if not set).
+	// Host is the API host name.
+	// If empty, it is derived from the Endpoint URL.
 	Host string
 
-	// Name is the bot name (for logging).
+	// Name is the bot name, used in log messages for debugging.
 	Name string
 }
 
-// ResponseHandler handles RPC responses.
+// ResponseHandler handles RPC responses for async requests.
+// It is used internally by the call method for callback-based handling.
+// For synchronous requests, use the Call method instead.
 type ResponseHandler struct {
-	Method    string
+	// Method is the RPC method name that was called.
+	Method string
+
+	// OnSuccess is called when the RPC call succeeds.
+	// The result parameter contains the unmarshaled response data.
 	OnSuccess func(result interface{})
-	OnError   func(err interface{})
+
+	// OnError is called when the RPC call fails.
+	// The err parameter contains the error information from the server.
+	OnError func(err interface{})
 }
 
 // Client is a direct API client.
@@ -96,9 +114,20 @@ type Client struct {
 // EventHandler is a callback for events.
 type EventHandler func(data interface{})
 
-// NewClient creates a new direct client with the given options.
-// If no endpoint is provided, DefaultEndpoint is used.
-// The client must be connected via Connect() before use.
+// NewClient creates a new direct API client with the given options.
+// The Options struct allows configuring the client's behavior.
+//
+// If no endpoint is provided in opts, DefaultEndpoint is used.
+// If no host is provided, it is derived from the endpoint URL.
+// The client must be connected via Connect() before calling any RPC methods.
+//
+// Example:
+//
+//	client := direct.NewClient(direct.Options{
+//	    AccessToken: "your-token-here",
+//	    ProxyURL:    "http://proxy.example.com:8080", // optional
+//	})
+//	err := client.Connect()
 func NewClient(opts Options) *Client {
 	if opts.Endpoint == "" {
 		opts.Endpoint = DefaultEndpoint
