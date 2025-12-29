@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"pgregory.net/rapid"
+
 	"github.com/f4ah6o/direct-go-sdk/direct-go/testutil"
 )
 
@@ -232,5 +234,217 @@ func TestSendTextWithContext(t *testing.T) {
 
 	if !found {
 		t.Error("create_message was not called with expected params")
+	}
+}
+
+// Property-Based Tests for toInt64 using Rapid
+
+// TestToInt64_Int verifies int values are correctly converted to int64
+func TestToInt64_Int(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		val := rapid.Int().Draw(t, "val")
+		result, ok := toInt64(val)
+		if !ok {
+			t.Fatalf("toInt64(%d) returned false", val)
+		}
+		if result != int64(val) {
+			t.Fatalf("toInt64(%d) = %d, want %d", val, result, int64(val))
+		}
+	})
+}
+
+// TestToInt64_Int8 verifies int8 values are correctly converted to int64
+func TestToInt64_Int8(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		val := rapid.Int8().Draw(t, "val")
+		result, ok := toInt64(val)
+		if !ok {
+			t.Fatalf("toInt64(%d) returned false", val)
+		}
+		if result != int64(val) {
+			t.Fatalf("toInt64(%d) = %d, want %d", val, result, int64(val))
+		}
+	})
+}
+
+// TestToInt64_Int16 verifies int16 values are correctly converted to int64
+func TestToInt64_Int16(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		val := rapid.Int16().Draw(t, "val")
+		result, ok := toInt64(val)
+		if !ok {
+			t.Fatalf("toInt64(%d) returned false", val)
+		}
+		if result != int64(val) {
+			t.Fatalf("toInt64(%d) = %d, want %d", val, result, int64(val))
+		}
+	})
+}
+
+// TestToInt64_Int32 verifies int32 values are correctly converted to int64
+func TestToInt64_Int32(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		val := rapid.Int32().Draw(t, "val")
+		result, ok := toInt64(val)
+		if !ok {
+			t.Fatalf("toInt64(%d) returned false", val)
+		}
+		if result != int64(val) {
+			t.Fatalf("toInt64(%d) = %d, want %d", val, result, int64(val))
+		}
+	})
+}
+
+// TestToInt64_Int64 verifies int64 values are returned as-is
+func TestToInt64_Int64(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		val := rapid.Int64().Draw(t, "val")
+		result, ok := toInt64(val)
+		if !ok {
+			t.Fatalf("toInt64(%d) returned false", val)
+		}
+		if result != val {
+			t.Fatalf("toInt64(%d) = %d, want %d", val, result, val)
+		}
+	})
+}
+
+// TestToInt64_Uint verifies uint values are correctly converted to int64
+func TestToInt64_Uint(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		val := rapid.Uint().Draw(t, "val")
+		result, ok := toInt64(val)
+		if !ok {
+			t.Fatalf("toInt64(%d) returned false", val)
+		}
+		if result != int64(val) {
+			t.Fatalf("toInt64(%d) = %d, want %d", val, result, int64(val))
+		}
+	})
+}
+
+// TestToInt64_Uint8 verifies uint8 values are correctly converted to int64
+func TestToInt64_Uint8(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		val := rapid.Uint8().Draw(t, "val")
+		result, ok := toInt64(val)
+		if !ok {
+			t.Fatalf("toInt64(%d) returned false", val)
+		}
+		if result != int64(val) {
+			t.Fatalf("toInt64(%d) = %d, want %d", val, result, int64(val))
+		}
+	})
+}
+
+// TestToInt64_Uint16 verifies uint16 values are correctly converted to int64
+func TestToInt64_Uint16(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		val := rapid.Uint16().Draw(t, "val")
+		result, ok := toInt64(val)
+		if !ok {
+			t.Fatalf("toInt64(%d) returned false", val)
+		}
+		if result != int64(val) {
+			t.Fatalf("toInt64(%d) = %d, want %d", val, result, int64(val))
+		}
+	})
+}
+
+// TestToInt64_Uint32 verifies uint32 values are correctly converted to int64
+func TestToInt64_Uint32(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		val := rapid.Uint32().Draw(t, "val")
+		result, ok := toInt64(val)
+		if !ok {
+			t.Fatalf("toInt64(%d) returned false", val)
+		}
+		if result != int64(val) {
+			t.Fatalf("toInt64(%d) = %d, want %d", val, result, int64(val))
+		}
+	})
+}
+
+// TestToInt64_Uint64 verifies uint64 values (within int64 range) are correctly converted
+func TestToInt64_Uint64(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Only test values within int64 range to avoid overflow
+		val := rapid.Uint64Range(0, 1<<63-1).Draw(t, "val")
+		result, ok := toInt64(val)
+		if !ok {
+			t.Fatalf("toInt64(%d) returned false", val)
+		}
+		if result != int64(val) {
+			t.Fatalf("toInt64(%d) = %d, want %d", val, result, int64(val))
+		}
+	})
+}
+
+// TestToInt64_Float32 verifies float32 values are correctly converted to int64
+func TestToInt64_Float32(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		val := rapid.Float32().Draw(t, "val")
+		result, ok := toInt64(val)
+		if !ok {
+			t.Fatalf("toInt64(%f) returned false", val)
+		}
+		if result != int64(val) {
+			t.Fatalf("toInt64(%f) = %d, want %d", val, result, int64(val))
+		}
+	})
+}
+
+// TestToInt64_Float64 verifies float64 values are correctly converted to int64
+func TestToInt64_Float64(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		val := rapid.Float64().Draw(t, "val")
+		result, ok := toInt64(val)
+		if !ok {
+			t.Fatalf("toInt64(%f) returned false", val)
+		}
+		if result != int64(val) {
+			t.Fatalf("toInt64(%f) = %d, want %d", val, result, int64(val))
+		}
+	})
+}
+
+// TestToInt64_String verifies non-numeric types return false
+func TestToInt64_String(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		val := rapid.String().Draw(t, "val")
+		_, ok := toInt64(val)
+		if ok {
+			t.Fatalf("toInt64(%q) should return false for string", val)
+		}
+	})
+}
+
+// TestToInt64_Slice verifies non-numeric types return false
+func TestToInt64_Slice(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		val := rapid.SliceOf(rapid.Int()).Draw(t, "val")
+		_, ok := toInt64(val)
+		if ok {
+			t.Fatalf("toInt64(%v) should return false for slice", val)
+		}
+	})
+}
+
+// TestToInt64_Map verifies non-numeric types return false
+func TestToInt64_Map(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		val := rapid.MapOf(rapid.String(), rapid.Int()).Draw(t, "val")
+		_, ok := toInt64(val)
+		if ok {
+			t.Fatalf("toInt64(%v) should return false for map", val)
+		}
+	})
+}
+
+// TestToInt64_Nil verifies nil returns false
+func TestToInt64_Nil(t *testing.T) {
+	_, ok := toInt64(nil)
+	if ok {
+		t.Fatal("toInt64(nil) should return false")
 	}
 }
