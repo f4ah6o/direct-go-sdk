@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"sync"
 	"testing"
@@ -594,6 +595,180 @@ func TestNormalizeRoomID_WhiteSpace(t *testing.T) {
 		}
 		if resultStr != roomID {
 			t.Fatalf("normalizeRoomID(%q) = %q, want %q", roomID, resultStr, roomID)
+		}
+	})
+}
+
+// Property-Based Tests for extractMessageID using Rapid
+
+// TestExtractMessageID_MapWithMessageID verifies maps with message_id field return the ID
+func TestExtractMessageID_MapWithMessageID(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		id := rapid.StringMatching(`[a-zA-Z0-9_-]+`).Draw(t, "id")
+		result := map[string]interface{}{
+			"message_id": id,
+			"other":      "ignored",
+		}
+
+		extracted := extractMessageID(result)
+		if extracted != fmt.Sprintf("%v", id) {
+			t.Fatalf("extractMessageID(%v) = %q, want %q", result, extracted, id)
+		}
+	})
+}
+
+// TestExtractMessageID_MapWithID verifies maps with id field (no message_id) return the ID
+func TestExtractMessageID_MapWithID(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		id := rapid.StringMatching(`[a-zA-Z0-9_-]+`).Draw(t, "id")
+		result := map[string]interface{}{
+			"id": id,
+		}
+
+		extracted := extractMessageID(result)
+		if extracted != fmt.Sprintf("%v", id) {
+			t.Fatalf("extractMessageID(%v) = %q, want %q", result, extracted, id)
+		}
+	})
+}
+
+// TestExtractMessageID_MapWithBoth verifies message_id takes precedence over id
+func TestExtractMessageID_MapWithBoth(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		messageID := rapid.StringMatching(`[a-zA-Z0-9_-]+`).Draw(t, "messageID")
+		regularID := rapid.StringMatching(`[a-zA-Z0-9_-]+`).Draw(t, "regularID")
+		result := map[string]interface{}{
+			"message_id": messageID,
+			"id":         regularID,
+		}
+
+		extracted := extractMessageID(result)
+		if extracted != fmt.Sprintf("%v", messageID) {
+			t.Fatalf("extractMessageID(%v) = %q, want message_id %q", result, extracted, messageID)
+		}
+	})
+}
+
+// TestExtractMessageID_String verifies strings are returned as-is
+func TestExtractMessageID_String(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		str := rapid.StringMatching(`[a-zA-Z0-9_-]+`).Draw(t, "str")
+
+		extracted := extractMessageID(str)
+		if extracted != str {
+			t.Fatalf("extractMessageID(%q) = %q, want %q", str, extracted, str)
+		}
+	})
+}
+
+// TestExtractMessageID_Int verifies integers are converted to strings
+func TestExtractMessageID_Int(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		num := rapid.Int().Draw(t, "num")
+
+		extracted := extractMessageID(num)
+		expected := fmt.Sprintf("%v", num)
+		if extracted != expected {
+			t.Fatalf("extractMessageID(%d) = %q, want %q", num, extracted, expected)
+		}
+	})
+}
+
+// TestExtractMessageID_Int64 verifies int64 values are converted to strings
+func TestExtractMessageID_Int64(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		num := rapid.Int64().Draw(t, "num")
+
+		extracted := extractMessageID(num)
+		expected := fmt.Sprintf("%v", num)
+		if extracted != expected {
+			t.Fatalf("extractMessageID(%d) = %q, want %q", num, extracted, expected)
+		}
+	})
+}
+
+// TestExtractMessageID_Uint64 verifies uint64 values are converted to strings
+func TestExtractMessageID_Uint64(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		num := rapid.Uint64().Draw(t, "num")
+
+		extracted := extractMessageID(num)
+		expected := fmt.Sprintf("%v", num)
+		if extracted != expected {
+			t.Fatalf("extractMessageID(%d) = %q, want %q", num, extracted, expected)
+		}
+	})
+}
+
+// TestExtractMessageID_Float verifies floats are converted to strings
+func TestExtractMessageID_Float(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		num := rapid.Float64().Draw(t, "num")
+
+		extracted := extractMessageID(num)
+		expected := fmt.Sprintf("%v", num)
+		if extracted != expected {
+			t.Fatalf("extractMessageID(%f) = %q, want %q", num, extracted, expected)
+		}
+	})
+}
+
+// TestExtractMessageID_Nil verifies nil returns empty string
+func TestExtractMessageID_Nil(t *testing.T) {
+	extracted := extractMessageID(nil)
+	if extracted != "" {
+		t.Fatalf("extractMessageID(nil) = %q, want empty string", extracted)
+	}
+}
+
+// TestExtractMessageID_EmptyMap verifies empty map returns empty string
+func TestExtractMessageID_EmptyMap(t *testing.T) {
+	extracted := extractMessageID(map[string]interface{}{})
+	if extracted != "" {
+		t.Fatalf("extractMessageID(empty map) = %q, want empty string", extracted)
+	}
+}
+
+// TestExtractMessageID_MapWithOtherKeys verifies map without id fields returns empty string
+func TestExtractMessageID_MapWithOtherKeys(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		key := rapid.StringMatching(`[a-z]+`).Filter(func(s string) bool {
+			return s != "message_id" && s != "id"
+		}).Draw(t, "key")
+		value := rapid.String().Draw(t, "value")
+		result := map[string]interface{}{
+			key: value,
+		}
+
+		extracted := extractMessageID(result)
+		if extracted != "" {
+			t.Fatalf("extractMessageID(%v) = %q, want empty string", result, extracted)
+		}
+	})
+}
+
+// TestExtractMessageID_Bool verifies booleans are converted to strings
+func TestExtractMessageID_Bool(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		b := rapid.Bool().Draw(t, "b")
+
+		extracted := extractMessageID(b)
+		expected := fmt.Sprintf("%v", b)
+		if extracted != expected {
+			t.Fatalf("extractMessageID(%t) = %q, want %q", b, extracted, expected)
+		}
+	})
+}
+
+// TestExtractMessageID_Slice verifies slices are converted to strings
+func TestExtractMessageID_Slice(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		slice := rapid.SliceOf(rapid.StringMatching(`[a-z]+`)).Draw(t, "slice")
+
+		extracted := extractMessageID(slice)
+		expected := fmt.Sprintf("%v", slice)
+		if extracted != expected {
+			t.Fatalf("extractMessageID(%v) = %q, want %q", slice, extracted, expected)
 		}
 	})
 }
