@@ -376,6 +376,13 @@ func (c *Client) Close() error {
 		return nil
 	}
 
+	// Clear response handlers map to free memory
+	c.mu.Lock()
+	c.responseHandlers = make(map[int64]*ResponseHandler)
+	// Clear talkDomains cache to free memory
+	c.talkDomains = make(map[string]string)
+	c.mu.Unlock()
+
 	// Close Done channel without holding the lock to avoid deadlock
 	c.closeOnce.Do(func() {
 		close(c.Done)
@@ -407,7 +414,7 @@ func (c *Client) OnMessage(handler func(ReceivedMessage)) {
 }
 
 // call sends an RPC request to the server.
-func (c *Client) call(method string, params []interface{}, onSuccess func(interface{}), onError func(interface{})) {
+func (c *Client) call(method string, params []interface{}, onSuccess func(interface{}), onError func(interface{})) int64 {
 	c.mu.Lock()
 
 	if c.conn == nil {
@@ -415,7 +422,7 @@ func (c *Client) call(method string, params []interface{}, onSuccess func(interf
 		if onError != nil {
 			onError(map[string]string{"message": "not connected"})
 		}
-		return
+		return 0
 	}
 
 	msgID := atomic.AddInt64(&c.msgID, 1)
@@ -434,10 +441,13 @@ func (c *Client) call(method string, params []interface{}, onSuccess func(interf
 
 	data, err := msgpack.Marshal(request)
 	if err != nil {
+		c.mu.Lock()
+		delete(c.responseHandlers, msgID)
+		c.mu.Unlock()
 		if onError != nil {
 			onError(map[string]string{"message": err.Error()})
 		}
-		return
+		return 0
 	}
 
 	c.mu.Lock()
@@ -445,10 +455,15 @@ func (c *Client) call(method string, params []interface{}, onSuccess func(interf
 	c.mu.Unlock()
 
 	if err != nil {
+		c.mu.Lock()
+		delete(c.responseHandlers, msgID)
+		c.mu.Unlock()
 		if onError != nil {
 			onError(map[string]string{"message": err.Error()})
 		}
 	}
+
+	return msgID
 }
 
 // Call sends a synchronous RPC request to the direct API server.
@@ -459,7 +474,7 @@ func (c *Client) Call(method string, params []interface{}) (interface{}, error) 
 	resultCh := make(chan interface{}, DefaultResultChannelSize)
 	errCh := make(chan interface{}, DefaultResultChannelSize)
 
-	c.call(method, params, func(result interface{}) {
+	msgID := c.call(method, params, func(result interface{}) {
 		resultCh <- result
 	}, func(err interface{}) {
 		errCh <- err
@@ -471,6 +486,12 @@ func (c *Client) Call(method string, params []interface{}) (interface{}, error) 
 	case err := <-errCh:
 		return nil, fmt.Errorf("RPC error: %v", err)
 	case <-time.After(DefaultRequestTimeout):
+		// Clean up the handler on timeout
+		if msgID != 0 {
+			c.mu.Lock()
+			delete(c.responseHandlers, msgID)
+			c.mu.Unlock()
+		}
 		return nil, fmt.Errorf("RPC timeout")
 	}
 }
