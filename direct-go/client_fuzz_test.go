@@ -163,10 +163,10 @@ func FuzzTextMessageParsing(f *testing.F) {
 func FuzzMessageBytesRoundTrip(f *testing.F) {
 	// Seed corpus
 	seed := ReceivedMessage{
-		ID:     "msg123",
-		Text:   "Hello",
-		UserID: "user123",
-		TalkID: "room123",
+		ID:      "msg123",
+		Text:    "Hello",
+		UserID:  "user123",
+		TalkID:  "room123",
 		Created: 1234567890,
 	}
 	data, _ := msgpack.Marshal(seed)

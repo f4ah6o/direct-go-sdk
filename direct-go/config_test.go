@@ -93,10 +93,10 @@ func TestConfigDefaults(t *testing.T) {
 
 func TestConfigToOptions(t *testing.T) {
 	cfg := &Config{
-		Token:     "test-token",
-		Endpoint:  "wss://example.com",
-		ProxyURL:  "http://proxy:8080",
-		Name:      "testbot",
+		Token:    "test-token",
+		Endpoint: "wss://example.com",
+		ProxyURL: "http://proxy:8080",
+		Name:     "testbot",
 	}
 
 	opts := cfg.ToOptions()

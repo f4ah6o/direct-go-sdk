@@ -8,10 +8,10 @@ import (
 // NewTestMessage creates a test ReceivedMessage with common fields.
 func NewTestMessage(id, text, userID, talkID string) ReceivedMessage {
 	return ReceivedMessage{
-		ID:     id,
-		Text:   text,
-		UserID: userID,
-		TalkID: talkID,
+		ID:      id,
+		Text:    text,
+		UserID:  userID,
+		TalkID:  talkID,
 		Created: time.Now().Unix(),
 	}
 }

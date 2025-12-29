@@ -24,8 +24,8 @@ const (
 
 // Debug log buffer and channel sizes
 const (
-	defaultLogBufferSize   = 5000 // Number of log entries to keep in memory
-	defaultLogChannelSize  = 100  // Buffer size for log subscriber channels
+	defaultLogBufferSize  = 5000 // Number of log entries to keep in memory
+	defaultLogChannelSize = 100  // Buffer size for log subscriber channels
 )
 
 // LogEntry represents a structured log message
