@@ -1,11 +1,12 @@
 module github.com/f4ah6o/direct-go-sdk/daab-go
 
-go 1.24
+go 1.24.0
 
 require (
 	github.com/f4ah6o/direct-go-sdk/direct-go v0.0.0-20251215153455-bd7b7d48fdd6
 	github.com/spf13/cobra v1.8.0
-	golang.org/x/term v0.29.0
+	golang.org/x/term v0.39.0
+	pgregory.net/rapid v1.2.0
 )
 
 require (
@@ -15,6 +16,5 @@ require (
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	golang.org/x/net v0.17.0 // indirect
-	golang.org/x/sys v0.30.0 // indirect
-	pgregory.net/rapid v1.2.0 // indirect
+	golang.org/x/sys v0.40.0 // indirect
 )
