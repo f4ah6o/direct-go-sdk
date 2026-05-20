@@ -18,15 +18,15 @@ type DirectSender interface {
 type Service struct {
 	cfg      *config.Config
 	st       *store.Store
-	graph    *teams.Client
+	teams    *teams.Client
 	direct   DirectSender
 	directIn <-chan model.DirectMessage
 	teamsIn  <-chan model.DirectOutbound
 	logger   *log.Logger
 }
 
-func NewService(cfg *config.Config, st *store.Store, graph *teams.Client, direct DirectSender, directIn <-chan model.DirectMessage, teamsIn <-chan model.DirectOutbound, logger *log.Logger) *Service {
-	return &Service{cfg: cfg, st: st, graph: graph, direct: direct, directIn: directIn, teamsIn: teamsIn, logger: logger}
+func NewService(cfg *config.Config, st *store.Store, teamsClient *teams.Client, direct DirectSender, directIn <-chan model.DirectMessage, teamsIn <-chan model.DirectOutbound, logger *log.Logger) *Service {
+	return &Service{cfg: cfg, st: st, teams: teamsClient, direct: direct, directIn: directIn, teamsIn: teamsIn, logger: logger}
 }
 
 func (s *Service) Run(ctx context.Context) {
@@ -55,21 +55,26 @@ func (s *Service) handleDirectMessage(ctx context.Context, msg model.DirectMessa
 	if !ok {
 		return nil
 	}
-	ch := s.cfg.TeamsChannels[account.TeamsChannel]
+	binding, ok := s.st.GetChannelBinding(account.TeamsChannel)
+	if !ok {
+		s.logger.Printf("[bridge] teams channel alias %q is not bound; run @bot bind %s in Teams", account.TeamsChannel, account.TeamsChannel)
+		return nil
+	}
 	mapping, ok := s.st.GetByTalk(msg.AccountID, msg.TalkID)
 	if !ok {
 		rootID, err := retry(ctx, func() (string, error) {
-			return s.graph.CreateRootMessage(ctx, ch.TeamID, ch.ChannelID, msg)
+			return s.teams.CreateRootMessage(ctx, binding.ServiceURL, binding.ConversationID, msg)
 		})
 		if err != nil {
 			return err
 		}
 		mapping = store.ThreadMapping{
-			AccountID: msg.AccountID,
-			TalkID:    msg.TalkID,
-			TeamID:    ch.TeamID,
-			ChannelID: ch.ChannelID,
-			RootID:    rootID,
+			AccountID:      msg.AccountID,
+			TalkID:         msg.TalkID,
+			ChannelAlias:   account.TeamsChannel,
+			ConversationID: binding.ConversationID,
+			ServiceURL:     binding.ServiceURL,
+			RootID:         rootID,
 		}
 		if err := s.st.PutMapping(mapping); err != nil {
 			return err
@@ -81,7 +86,7 @@ func (s *Service) handleDirectMessage(ctx context.Context, msg model.DirectMessa
 		return nil
 	}
 	replyID, err := retry(ctx, func() (string, error) {
-		return s.graph.ReplyToThread(ctx, mapping.TeamID, mapping.ChannelID, mapping.RootID, msg)
+		return s.teams.ReplyToThread(ctx, mapping.ServiceURL, mapping.ConversationID, mapping.RootID, msg)
 	})
 	if err != nil {
 		return err

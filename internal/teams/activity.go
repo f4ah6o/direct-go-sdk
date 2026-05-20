@@ -1,0 +1,114 @@
+package teams
+
+import (
+	"html"
+	"regexp"
+	"strings"
+)
+
+type Activity struct {
+	Type         string              `json:"type"`
+	ID           string              `json:"id,omitempty"`
+	Timestamp    string              `json:"timestamp,omitempty"`
+	ServiceURL   string              `json:"serviceUrl,omitempty"`
+	ChannelID    string              `json:"channelId,omitempty"`
+	From         ChannelAccount      `json:"from,omitempty"`
+	Recipient    ChannelAccount      `json:"recipient,omitempty"`
+	Conversation ConversationAccount `json:"conversation,omitempty"`
+	Text         string              `json:"text,omitempty"`
+	TextFormat   string              `json:"textFormat,omitempty"`
+	ReplyToID    string              `json:"replyToId,omitempty"`
+	Entities     []Entity            `json:"entities,omitempty"`
+	Attachments  []Attachment        `json:"attachments,omitempty"`
+	ChannelData  ChannelData         `json:"channelData,omitempty"`
+}
+
+type ChannelAccount struct {
+	ID   string `json:"id,omitempty"`
+	Name string `json:"name,omitempty"`
+}
+
+type ConversationAccount struct {
+	ID               string `json:"id,omitempty"`
+	Name             string `json:"name,omitempty"`
+	ConversationType string `json:"conversationType,omitempty"`
+	TenantID         string `json:"tenantId,omitempty"`
+}
+
+type Entity struct {
+	Type      string         `json:"type,omitempty"`
+	Text      string         `json:"text,omitempty"`
+	Mentioned ChannelAccount `json:"mentioned,omitempty"`
+}
+
+type Attachment struct {
+	ContentType string      `json:"contentType,omitempty"`
+	ContentURL  string      `json:"contentUrl,omitempty"`
+	Name        string      `json:"name,omitempty"`
+	Content     interface{} `json:"content,omitempty"`
+}
+
+type ChannelData struct {
+	Team    TeamInfo    `json:"team,omitempty"`
+	Channel ChannelInfo `json:"channel,omitempty"`
+	Tenant  TenantInfo  `json:"tenant,omitempty"`
+}
+
+type TeamInfo struct {
+	ID string `json:"id,omitempty"`
+}
+
+type ChannelInfo struct {
+	ID string `json:"id,omitempty"`
+}
+
+type TenantInfo struct {
+	ID string `json:"id,omitempty"`
+}
+
+func NewMessageActivity(text string) Activity {
+	return Activity{
+		Type:       "message",
+		TextFormat: "plain",
+		Text:       text,
+	}
+}
+
+func MentionsRecipient(a Activity) bool {
+	for _, entity := range a.Entities {
+		if entity.Type == "mention" && entity.Mentioned.ID == a.Recipient.ID {
+			return true
+		}
+	}
+	return false
+}
+
+func StripRecipientMention(a Activity) string {
+	text := a.Text
+	for _, entity := range a.Entities {
+		if entity.Type == "mention" && entity.Mentioned.ID == a.Recipient.ID {
+			text = strings.ReplaceAll(text, entity.Text, "")
+		}
+	}
+	text = stripTags(text)
+	text = html.UnescapeString(text)
+	return strings.TrimSpace(text)
+}
+
+func ParseBindAlias(a Activity) (string, bool) {
+	text := strings.ToLower(StripRecipientMention(a))
+	fields := strings.Fields(text)
+	if len(fields) == 2 && fields[0] == "bind" && fields[1] != "" {
+		return fields[1], true
+	}
+	return "", false
+}
+
+var tagRE = regexp.MustCompile(`<[^>]+>`)
+
+func stripTags(s string) string {
+	s = strings.ReplaceAll(s, "<br>", "\n")
+	s = strings.ReplaceAll(s, "<br/>", "\n")
+	s = strings.ReplaceAll(s, "<br />", "\n")
+	return tagRE.ReplaceAllString(s, "")
+}

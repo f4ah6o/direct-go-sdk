@@ -3,6 +3,7 @@ package teams
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -13,33 +14,35 @@ import (
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/store"
 )
 
+type AuthValidator interface {
+	Validate(*http.Request) error
+}
+
+type BearerValidator struct{}
+
+func (BearerValidator) Validate(r *http.Request) error {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") || strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == "" {
+		return fmt.Errorf("missing bearer token")
+	}
+	return nil
+}
+
 type Server struct {
 	cfg        *config.Config
-	graph      *Client
+	client     *Client
 	store      *store.Store
 	out        chan<- model.DirectOutbound
 	logger     *log.Logger
+	validator  AuthValidator
 	httpServer *http.Server
 }
 
-type ChangeNotifications struct {
-	Value []ChangeNotification `json:"value"`
-}
-
-type ChangeNotification struct {
-	ClientState  string       `json:"clientState"`
-	Resource     string       `json:"resource"`
-	ResourceData ResourceData `json:"resourceData"`
-}
-
-type ResourceData struct {
-	ID string `json:"id"`
-}
-
-func NewServer(cfg *config.Config, graph *Client, st *store.Store, out chan<- model.DirectOutbound, logger *log.Logger) *Server {
-	s := &Server{cfg: cfg, graph: graph, store: st, out: out, logger: logger}
+func NewServer(cfg *config.Config, client *Client, st *store.Store, out chan<- model.DirectOutbound, logger *log.Logger) *Server {
+	validator := AuthValidator(BearerValidator{})
+	s := &Server{cfg: cfg, client: client, store: st, out: out, logger: logger, validator: validator}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/graph/notifications", s.handleNotifications)
+	mux.HandleFunc(cfg.Bot.EndpointPath, s.handleActivity)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
@@ -55,7 +58,7 @@ func NewServer(cfg *config.Config, graph *Client, st *store.Store, out chan<- mo
 func (s *Server) Run(ctx context.Context) error {
 	errCh := make(chan error, 1)
 	go func() {
-		s.logger.Printf("[teams] notification server listening on %s", s.cfg.Server.ListenAddr)
+		s.logger.Printf("[teams] bot endpoint listening on %s%s", s.cfg.Server.ListenAddr, s.cfg.Bot.EndpointPath)
 		errCh <- s.httpServer.ListenAndServe()
 	}()
 	select {
@@ -71,97 +74,103 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 }
 
-func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
-	if token := r.URL.Query().Get("validationToken"); token != "" {
-		w.Header().Set("Content-Type", "text/plain")
-		_, _ = w.Write([]byte(token))
-		return
-	}
+func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	var payload ChangeNotifications
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	if !s.cfg.Bot.DisableAuthValidation {
+		if err := s.validator.Validate(r); err != nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+	var activity Activity
+	if err := json.NewDecoder(r.Body).Decode(&activity); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
-	go s.processNotifications(context.Background(), payload)
+	go s.processActivity(context.Background(), activity)
 }
 
-func (s *Server) processNotifications(ctx context.Context, payload ChangeNotifications) {
-	for _, n := range payload.Value {
-		if n.ClientState != s.cfg.Graph.ClientState {
-			s.logger.Printf("[teams] ignoring notification with invalid clientState")
-			continue
-		}
-		teamID, channelID, rootID, replyID, ok := parseReplyResource(n.Resource)
-		if !ok {
-			s.logger.Printf("[teams] ignoring unsupported resource=%s", n.Resource)
-			continue
-		}
-		mapping, ok := s.store.GetByThread(teamID, channelID, rootID)
-		if !ok {
-			s.logger.Printf("[teams] ignoring unmapped thread team=%s channel=%s root=%s", teamID, channelID, rootID)
-			continue
-		}
-		ch, ok := s.cfg.TeamsChannels[channelNameFor(s.cfg, teamID, channelID)]
-		if !ok {
-			s.logger.Printf("[teams] no config for team=%s channel=%s", teamID, channelID)
-			continue
-		}
-		msg, err := s.graph.GetReply(ctx, teamID, channelID, rootID, replyID)
-		if err != nil {
-			s.logger.Printf("[teams] get reply failed: %v", err)
-			continue
-		}
-		if s.store.IsSentTeamsMessage(msg.ID) {
-			continue
-		}
-		if !MentionsUser(msg, ch.MentionUserID) {
-			continue
-		}
-		text := StripMentions(msg)
-		attachments := AttachmentsFromMessage(ctx, s.graph, teamID, channelID, msg, s.cfg.Attachments.MaxBytes)
-		out := model.DirectOutbound{
-			AccountID:   mapping.AccountID,
-			TalkID:      mapping.TalkID,
-			Text:        text,
-			Attachments: attachments,
-		}
-		select {
-		case s.out <- out:
-		case <-ctx.Done():
-			return
-		}
+func (s *Server) processActivity(ctx context.Context, activity Activity) {
+	if activity.Type != "message" {
+		return
+	}
+	if activity.From.ID == activity.Recipient.ID {
+		return
+	}
+	if alias, ok := ParseBindAlias(activity); ok {
+		s.bindChannel(ctx, alias, activity)
+		return
+	}
+	if !MentionsRecipient(activity) {
+		return
+	}
+	rootID := activity.ReplyToID
+	if rootID == "" {
+		s.logger.Printf("[teams] ignoring mentioned message without replyToId activity=%s", activity.ID)
+		return
+	}
+	mapping, ok := s.store.GetByThread(activity.Conversation.ID, rootID)
+	if !ok {
+		s.logger.Printf("[teams] ignoring unmapped thread conversation=%s root=%s", activity.Conversation.ID, rootID)
+		return
+	}
+	text := StripRecipientMention(activity)
+	attachments := s.attachmentsFromActivity(ctx, activity)
+	out := model.DirectOutbound{
+		AccountID:   mapping.AccountID,
+		TalkID:      mapping.TalkID,
+		Text:        text,
+		Attachments: attachments,
+	}
+	select {
+	case s.out <- out:
+	case <-ctx.Done():
 	}
 }
 
-func channelNameFor(cfg *config.Config, teamID, channelID string) string {
-	for name, ch := range cfg.TeamsChannels {
-		if ch.TeamID == teamID && ch.ChannelID == channelID {
-			return name
+func (s *Server) bindChannel(ctx context.Context, alias string, activity Activity) {
+	if _, ok := s.cfg.TeamsChannels[alias]; !ok {
+		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "unknown channel alias: "+alias)
+		return
+	}
+	binding := store.TeamsChannelBinding{
+		Alias:          alias,
+		TeamID:         activity.ChannelData.Team.ID,
+		ChannelID:      activity.ChannelData.Channel.ID,
+		ConversationID: activity.Conversation.ID,
+		ServiceURL:     activity.ServiceURL,
+		TenantID:       firstNonEmpty(activity.ChannelData.Tenant.ID, activity.Conversation.TenantID),
+		BotID:          activity.Recipient.ID,
+	}
+	if err := s.store.PutChannelBinding(binding); err != nil {
+		s.logger.Printf("[teams] bind failed alias=%s err=%v", alias, err)
+		return
+	}
+	_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "bound channel alias: "+alias)
+}
+
+func (s *Server) attachmentsFromActivity(ctx context.Context, activity Activity) []model.Attachment {
+	out := make([]model.Attachment, 0, len(activity.Attachments))
+	for _, att := range activity.Attachments {
+		item := model.Attachment{Name: att.Name, ContentType: att.ContentType, URL: att.ContentURL}
+		if data, contentType, err := s.client.DownloadAttachment(ctx, att, s.cfg.Attachments.MaxBytes); err == nil {
+			item.Data = data
+			item.ContentType = firstNonEmpty(contentType, item.ContentType)
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
 		}
 	}
 	return ""
-}
-
-func parseReplyResource(resource string) (teamID, channelID, rootID, replyID string, ok bool) {
-	parts := strings.Split(strings.Trim(resource, "/"), "/")
-	for i := 0; i < len(parts)-1; i++ {
-		switch parts[i] {
-		case "teams":
-			teamID = parts[i+1]
-		case "channels":
-			channelID = parts[i+1]
-		case "messages":
-			if rootID == "" {
-				rootID = parts[i+1]
-			}
-		case "replies":
-			replyID = parts[i+1]
-		}
-	}
-	return teamID, channelID, rootID, replyID, teamID != "" && channelID != "" && rootID != "" && replyID != ""
 }

@@ -1,20 +1,14 @@
 op:
   binary: "op"
 
-graph:
-  tenant_id: "${GRAPH_TENANT_ID}"
-  client_id: "${GRAPH_CLIENT_ID}"
-  access_token_env: "GRAPH_ACCESS_TOKEN"
-  client_secret_env: "GRAPH_CLIENT_SECRET"
-  client_state: "${GRAPH_CLIENT_STATE}"
-  scopes:
-    - "https://graph.microsoft.com/.default"
+bot:
+  app_id: "${MICROSOFT_APP_ID}"
+  app_password_env: "MICROSOFT_APP_PASSWORD"
+  app_password_ref: "op://path/to/app_password"
+  endpoint_path: "/api/messages"
 
 teams_channels:
-  support:
-    team_id: "${TEAMS_TEAM_ID}"
-    channel_id: "${TEAMS_CHANNEL_ID}"
-    mention_user_id: "${TEAMS_BRIDGE_USER_ID}"
+  support: {}
 
 accounts:
   - id: "account-a"

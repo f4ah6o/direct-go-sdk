@@ -41,6 +41,8 @@ func run(args []string, logger *log.Logger) error {
 		return loginDirect(args[2:], logger)
 	case "mappings":
 		return mappings(args[2:])
+	case "channels":
+		return channels(args[2:])
 	default:
 		return usage()
 	}
@@ -68,10 +70,10 @@ func runBridge(args []string, logger *log.Logger) error {
 
 	directToTeams := make(chan model.DirectMessage, cfg.Queues.DirectToTeams)
 	teamsToDirect := make(chan model.DirectOutbound, cfg.Queues.TeamsToDirect)
-	graph := teams.NewClient(cfg.Graph)
+	teamsClient := teams.NewClient(cfg.Bot)
 	directManager := directworker.NewManager(cfg.Accounts, directToTeams, logger)
-	service := appbridge.NewService(cfg, st, graph, directManager, directToTeams, teamsToDirect, logger)
-	server := teams.NewServer(cfg, graph, st, teamsToDirect, logger)
+	service := appbridge.NewService(cfg, st, teamsClient, directManager, directToTeams, teamsToDirect, logger)
+	server := teams.NewServer(cfg, teamsClient, st, teamsToDirect, logger)
 
 	directManager.Run(ctx)
 	service.Run(ctx)
@@ -173,8 +175,61 @@ func mappings(args []string) error {
 	}
 }
 
+func channels(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("channels requires list or forget")
+	}
+	switch args[0] {
+	case "list":
+		fs := flag.NewFlagSet("channels list", flag.ExitOnError)
+		configPath := fs.String("config", "config.yaml", "config file")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		cfg, err := config.Load(*configPath)
+		if err != nil {
+			return err
+		}
+		st, err := store.Open(cfg.State.Path)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(st.ListChannelBindings())
+	case "forget":
+		fs := flag.NewFlagSet("channels forget", flag.ExitOnError)
+		configPath := fs.String("config", "config.yaml", "config file")
+		alias := fs.String("alias", "", "teams channel alias")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *alias == "" {
+			return fmt.Errorf("--alias is required")
+		}
+		cfg, err := config.Load(*configPath)
+		if err != nil {
+			return err
+		}
+		st, err := store.Open(cfg.State.Path)
+		if err != nil {
+			return err
+		}
+		return st.ForgetChannelBinding(*alias)
+	default:
+		return fmt.Errorf("unknown channels command %q", args[0])
+	}
+}
+
 func resolveTokenRefs(ctx context.Context, cfg *config.Config) error {
 	runner := opsecret.Runner{Binary: cfg.OP.Binary}
+	if cfg.Bot.AppPassword == "" && cfg.Bot.AppPasswordEnv != "" && os.Getenv(cfg.Bot.AppPasswordEnv) == "" && cfg.Bot.AppPasswordRef != "" {
+		secret, err := runner.Read(ctx, cfg.Bot.AppPasswordRef)
+		if err != nil {
+			return err
+		}
+		if err := os.Setenv(cfg.Bot.AppPasswordEnv, secret); err != nil {
+			return err
+		}
+	}
 	for i := range cfg.Accounts {
 		account := &cfg.Accounts[i]
 		if account.TokenEnv == "" {
@@ -242,5 +297,5 @@ func redactRef(ref string) string {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: direct-teams-bridge <run|login-direct|mappings>")
+	return fmt.Errorf("usage: direct-teams-bridge <run|login-direct|mappings|channels>")
 }

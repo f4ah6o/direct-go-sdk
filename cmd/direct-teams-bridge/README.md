@@ -6,7 +6,7 @@ v1 assumes the first message starts on direct. The bridge creates one Teams chan
 
 ## Configuration
 
-Copy `config.example.yaml` and fill the Graph and Teams IDs.
+Copy `config.example.yaml` and fill the Teams bot app ID.
 
 Direct tokens are not stored in the config. Use either:
 
@@ -17,8 +17,7 @@ On a VPS, keep secret references in an env file:
 
 ```env
 DIRECT_TOKEN_ACCOUNT_A=op://path/to/direct_access_token
-GRAPH_ACCESS_TOKEN=op://path/to/graph_access_token
-GRAPH_CLIENT_SECRET=op://path/to/graph_client_secret
+MICROSOFT_APP_PASSWORD=op://path/to/app_password
 ```
 
 Run the container through host-side 1Password CLI:
@@ -27,8 +26,7 @@ Run the container through host-side 1Password CLI:
 op run --env-file /etc/direct-teams-bridge/secrets.env -- \
   docker run --rm \
     --env DIRECT_TOKEN_ACCOUNT_A \
-    --env GRAPH_ACCESS_TOKEN \
-    --env GRAPH_CLIENT_SECRET \
+    --env MICROSOFT_APP_PASSWORD \
     -v /etc/direct-teams-bridge/config.yaml:/config.yaml:ro \
     -v /var/lib/direct-teams-bridge:/state \
     -p 127.0.0.1:8080:8080 \
@@ -51,15 +49,23 @@ The command calls direct `create_access_token` and writes the token to the confi
 direct-teams-bridge run --config config.yaml
 ```
 
-Expose `/graph/notifications` over HTTPS with Caddy or Nginx and configure Microsoft Graph change notifications to use that URL.
+Expose `/api/messages` over HTTPS with Caddy or Nginx and configure the Teams bot messaging endpoint to use that URL.
 
-For normal Teams message send, prefer a delegated Graph access token supplied through `GRAPH_ACCESS_TOKEN`. The client credentials path is kept for Graph operations that support application permissions.
+Install the Teams app into the target Team. Then mention the bot in the target channel once:
+
+```text
+@DirectBridge bind support
+```
+
+This saves the Teams conversation reference for the `support` alias. direct messages can only create Teams threads after the alias is bound.
 
 ## Mappings
 
 ```bash
 direct-teams-bridge mappings list --config config.yaml
 direct-teams-bridge mappings forget --config config.yaml --account account-a --talk-id 123
+direct-teams-bridge channels list --config config.yaml
+direct-teams-bridge channels forget --config config.yaml --alias support
 ```
 
 ## Build With ko
@@ -87,7 +93,7 @@ Wants=network-online.target
 Restart=always
 Environment=OP_SERVICE_ACCOUNT_TOKEN=...
 ExecStart=/usr/bin/op run --env-file /etc/direct-teams-bridge/secrets.env -- /usr/bin/docker run --rm --name direct-teams-bridge \
-  --env DIRECT_TOKEN_ACCOUNT_A --env GRAPH_ACCESS_TOKEN --env GRAPH_CLIENT_SECRET \
+  --env DIRECT_TOKEN_ACCOUNT_A --env MICROSOFT_APP_PASSWORD \
   -v /etc/direct-teams-bridge/config.yaml:/config.yaml:ro \
   -v /var/lib/direct-teams-bridge:/state \
   -p 127.0.0.1:8080:8080 \
@@ -101,5 +107,5 @@ WantedBy=multi-user.target
 ## Limitations
 
 - Unmapped Teams threads are ignored.
-- Teams file reference attachments are best effort. If the bridge cannot download the file through Graph, it sends a link.
+- Teams file attachments are best effort. If the bridge cannot download the file from the Bot activity URL, it sends a link.
 - direct file upload uses the SDK's raw RPC helpers and may need adjustment if direct changes its file auth response shape.

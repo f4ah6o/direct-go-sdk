@@ -13,7 +13,7 @@ type Config struct {
 	OP            OPConfig                      `yaml:"op"`
 	TeamsChannels map[string]TeamsChannelConfig `yaml:"teams_channels"`
 	Accounts      []AccountConfig               `yaml:"accounts"`
-	Graph         GraphConfig                   `yaml:"graph"`
+	Bot           BotConfig                     `yaml:"bot"`
 	State         StateConfig                   `yaml:"state"`
 	Server        ServerConfig                  `yaml:"server"`
 	Queues        QueueConfig                   `yaml:"queues"`
@@ -22,9 +22,8 @@ type Config struct {
 }
 
 type TeamsChannelConfig struct {
-	TeamID        string `yaml:"team_id"`
-	ChannelID     string `yaml:"channel_id"`
-	MentionUserID string `yaml:"mention_user_id"`
+	// Alias-only config. The actual Teams conversation is bound at runtime by
+	// sending "@bot bind <alias>" in the target channel.
 }
 
 type AccountConfig struct {
@@ -40,16 +39,16 @@ type OPConfig struct {
 	Binary string `yaml:"binary"`
 }
 
-type GraphConfig struct {
-	TenantID        string   `yaml:"tenant_id"`
-	ClientID        string   `yaml:"client_id"`
-	ClientSecret    string   `yaml:"client_secret"`
-	ClientSecretEnv string   `yaml:"client_secret_env"`
-	AccessTokenEnv  string   `yaml:"access_token_env"`
-	Scopes          []string `yaml:"scopes"`
-	ClientState     string   `yaml:"client_state"`
-	TokenURL        string   `yaml:"token_url"`
-	APIBaseURL      string   `yaml:"api_base_url"`
+type BotConfig struct {
+	AppID                 string   `yaml:"app_id"`
+	AppPassword           string   `yaml:"app_password"`
+	AppPasswordEnv        string   `yaml:"app_password_env"`
+	AppPasswordRef        string   `yaml:"app_password_ref"`
+	EndpointPath          string   `yaml:"endpoint_path"`
+	TokenURL              string   `yaml:"token_url"`
+	ConnectorScope        string   `yaml:"connector_scope"`
+	AllowedServiceURLs    []string `yaml:"allowed_service_urls"`
+	DisableAuthValidation bool     `yaml:"disable_auth_validation"`
 }
 
 type StateConfig struct {
@@ -115,11 +114,14 @@ func (c *Config) Defaults() {
 	if c.Attachments.MaxBytes == 0 {
 		c.Attachments.MaxBytes = 25 << 20
 	}
-	if c.Graph.APIBaseURL == "" {
-		c.Graph.APIBaseURL = "https://graph.microsoft.com/v1.0"
+	if c.Bot.EndpointPath == "" {
+		c.Bot.EndpointPath = "/api/messages"
 	}
-	if c.Graph.TokenURL == "" && c.Graph.TenantID != "" {
-		c.Graph.TokenURL = fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", c.Graph.TenantID)
+	if c.Bot.TokenURL == "" {
+		c.Bot.TokenURL = "https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token"
+	}
+	if c.Bot.ConnectorScope == "" {
+		c.Bot.ConnectorScope = "https://api.botframework.com/.default"
 	}
 }
 
@@ -130,21 +132,15 @@ func (c *Config) Validate() error {
 	if len(c.TeamsChannels) == 0 {
 		return errors.New("at least one teams channel is required")
 	}
-	if c.Graph.ClientState == "" {
-		return errors.New("graph.client_state is required")
+	if c.Bot.AppID == "" {
+		return errors.New("bot.app_id is required")
 	}
-	if c.Graph.ClientID == "" {
-		return errors.New("graph.client_id is required")
+	if c.Bot.AppPassword == "" && c.Bot.AppPasswordEnv == "" && c.Bot.AppPasswordRef == "" {
+		return errors.New("bot.app_password, bot.app_password_env, or bot.app_password_ref is required")
 	}
-	if c.Graph.TokenURL == "" {
-		return errors.New("graph.token_url or graph.tenant_id is required")
-	}
-	for name, ch := range c.TeamsChannels {
-		if strings.TrimSpace(ch.TeamID) == "" || strings.TrimSpace(ch.ChannelID) == "" {
-			return fmt.Errorf("teams channel %q requires team_id and channel_id", name)
-		}
-		if strings.TrimSpace(ch.MentionUserID) == "" {
-			return fmt.Errorf("teams channel %q requires mention_user_id", name)
+	for name := range c.TeamsChannels {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("teams channel alias cannot be empty")
 		}
 	}
 	seen := map[string]bool{}
