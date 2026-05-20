@@ -12,6 +12,7 @@ This is an **unofficial** SDK for the direct (direct4b.com) chat service. It pro
 
 - **[direct-go](./direct-go)**: Go SDK for Direct4B WebSocket/MessagePack RPC API
 - **[daab-go](./daab-go)**: Bot framework and CLI tools built on direct-go
+- **[direct-teams-bridge](./cmd/direct-teams-bridge)**: Multi-account direct4b ⇄ Microsoft Teams bridge
 
 ## Reference Repositories
 

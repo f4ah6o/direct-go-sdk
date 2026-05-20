@@ -1,0 +1,39 @@
+op:
+  binary: "op"
+
+graph:
+  tenant_id: "${GRAPH_TENANT_ID}"
+  client_id: "${GRAPH_CLIENT_ID}"
+  access_token_env: "GRAPH_ACCESS_TOKEN"
+  client_secret_env: "GRAPH_CLIENT_SECRET"
+  client_state: "${GRAPH_CLIENT_STATE}"
+  scopes:
+    - "https://graph.microsoft.com/.default"
+
+teams_channels:
+  support:
+    team_id: "${TEAMS_TEAM_ID}"
+    channel_id: "${TEAMS_CHANNEL_ID}"
+    mention_user_id: "${TEAMS_BRIDGE_USER_ID}"
+
+accounts:
+  - id: "account-a"
+    token_env: "DIRECT_TOKEN_ACCOUNT_A"
+    token_ref: "op://path/to/direct_access_token"
+    endpoint: "wss://api.direct4b.com/albero-app-server/api"
+    proxy_url: ""
+    teams_channel: "support"
+
+state:
+  path: "/state/direct-teams-bridge.json"
+
+server:
+  listen_addr: ":8080"
+  public_base_url: "https://bridge.example.com"
+
+queues:
+  direct_to_teams: 1000
+  teams_to_direct: 1000
+
+attachments:
+  max_bytes: 26214400

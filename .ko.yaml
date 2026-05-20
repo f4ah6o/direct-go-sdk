@@ -1,0 +1,12 @@
+defaultBaseImage: cgr.dev/chainguard/static:latest
+builds:
+  - id: direct-teams-bridge
+    dir: .
+    main: ./cmd/direct-teams-bridge
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s
+      - -w
