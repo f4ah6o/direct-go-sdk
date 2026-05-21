@@ -239,6 +239,35 @@ func TestSendTextWithContext(t *testing.T) {
 	}
 }
 
+func TestSendTextWithContextConvertsNumericTalkID(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+	mockServer.OnSimple("create_message", map[string]interface{}{
+		"id": "msg123",
+	})
+
+	client := NewClient(Options{Endpoint: mockServer.URL()})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close()
+
+	if err := client.SendTextWithContext(context.Background(), "1792967566075891712", "Hello"); err != nil {
+		t.Fatalf("SendTextWithContext failed: %v", err)
+	}
+
+	for _, msg := range mockServer.GetReceivedMessages() {
+		if len(msg) >= 4 && msg[2] == "create_message" {
+			params := msg[3].([]interface{})
+			if _, ok := params[0].(uint64); !ok {
+				t.Fatalf("talk id type = %T, want uint64", params[0])
+			}
+			return
+		}
+	}
+	t.Fatal("create_message was not called")
+}
+
 // Property-Based Tests for toInt64 using Rapid
 
 // TestToInt64_Int verifies int values are correctly converted to int64

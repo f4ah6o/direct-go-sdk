@@ -954,7 +954,11 @@ func (c *Client) GetMeWithContext(ctx context.Context) (*UserInfo, error) {
 // roomID is the talk/room identifier, and text is the message content.
 // This is the preferred method over the legacy SendText().
 func (c *Client) SendTextWithContext(ctx context.Context, roomID string, text string) error {
-	_, err := c.Call(MethodCreateMessage, []interface{}{roomID, 1, text})
+	var talkID interface{} = roomID
+	if id, err := strconv.ParseUint(roomID, 10, 64); err == nil {
+		talkID = id
+	}
+	_, err := c.Call(MethodCreateMessage, []interface{}{talkID, 1, text})
 	return err
 }
 

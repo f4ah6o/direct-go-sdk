@@ -5,6 +5,7 @@ bot:
   app_id: "${MICROSOFT_APP_ID}"
   app_password_env: "MICROSOFT_APP_PASSWORD"
   app_password_ref: "op://path/to/app_password"
+  tenant_id: "${MICROSOFT_TENANT_ID}"
   endpoint_path: "/api/messages"
 
 teams_channels:
@@ -19,7 +20,7 @@ accounts:
     teams_channel: "support"
 
 state:
-  path: "/state/direct-teams-bridge.json"
+  path: "./state/direct-teams-bridge.json"
 
 server:
   listen_addr: ":5173"

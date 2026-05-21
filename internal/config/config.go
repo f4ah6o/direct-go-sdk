@@ -44,6 +44,7 @@ type BotConfig struct {
 	AppPassword           string   `yaml:"app_password"`
 	AppPasswordEnv        string   `yaml:"app_password_env"`
 	AppPasswordRef        string   `yaml:"app_password_ref"`
+	TenantID              string   `yaml:"tenant_id"`
 	EndpointPath          string   `yaml:"endpoint_path"`
 	TokenURL              string   `yaml:"token_url"`
 	ConnectorScope        string   `yaml:"connector_scope"`
@@ -126,7 +127,11 @@ func (c *Config) Defaults() {
 		c.Bot.EndpointPath = "/api/messages"
 	}
 	if c.Bot.TokenURL == "" {
-		c.Bot.TokenURL = "https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token"
+		tenant := strings.TrimSpace(c.Bot.TenantID)
+		if tenant == "" {
+			tenant = "botframework.com"
+		}
+		c.Bot.TokenURL = "https://login.microsoftonline.com/" + tenant + "/oauth2/v2.0/token"
 	}
 	if c.Bot.ConnectorScope == "" {
 		c.Bot.ConnectorScope = "https://api.botframework.com/.default"

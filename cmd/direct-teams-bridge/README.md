@@ -57,6 +57,7 @@ For local testing, use a local state path and the Cloudflare Tunnel public URL:
 bot:
   app_id: "YOUR_MICROSOFT_APP_ID"
   app_password_env: "MICROSOFT_APP_PASSWORD"
+  tenant_id: "YOUR_MICROSOFT_TENANT_ID"
   endpoint_path: "/api/messages"
 
 teams_channels:
@@ -77,6 +78,11 @@ server:
   listen_addr: ":5173"
   public_base_url: "https://bridge.example.com"
 ```
+
+If the Azure Bot is configured as single tenant, `tenant_id` is required so the
+bridge requests Bot Connector tokens from your tenant instead of the legacy
+`botframework.com` tenant. Without it, replies can fail with `AADSTS700016:
+Application with identifier ... was not found in the directory 'Bot Framework'`.
 
 ### 3. Prepare secrets
 

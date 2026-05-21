@@ -117,14 +117,14 @@ func (s *Server) processActivity(ctx context.Context, activity Activity) {
 	if !MentionsRecipient(activity) {
 		return
 	}
-	rootID := activity.ReplyToID
+	conversationID, rootID := threadReference(activity)
 	if rootID == "" {
 		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, rootOnlyHelpText())
 		return
 	}
-	mapping, ok := s.store.GetByThread(activity.Conversation.ID, rootID)
+	mapping, ok := s.store.GetByThread(conversationID, rootID)
 	if !ok {
-		s.logger.Printf("[teams] ignoring unmapped thread conversation=%s root=%s", activity.Conversation.ID, rootID)
+		s.logger.Printf("[teams] ignoring unmapped thread conversation=%s root=%s", conversationID, rootID)
 		return
 	}
 	text := StripRecipientMention(activity)
@@ -170,15 +170,23 @@ func rootOnlyHelpText() string {
 }
 
 func (s *Server) bindChannel(ctx context.Context, alias string, activity Activity) {
+	if activity.ReplyToID != "" {
+		if _, err := s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "❌ bind must be sent as a new channel message, not as a thread reply."); err != nil {
+			s.logger.Printf("[teams] bind placement response failed alias=%s err=%v", alias, err)
+		}
+		return
+	}
 	if _, ok := s.cfg.TeamsChannels[alias]; !ok {
-		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "unknown channel alias: "+alias)
+		if _, err := s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "❌ unknown channel alias: "+alias); err != nil {
+			s.logger.Printf("[teams] unknown alias response failed alias=%s err=%v", alias, err)
+		}
 		return
 	}
 	binding := store.TeamsChannelBinding{
 		Alias:          alias,
 		TeamID:         activity.ChannelData.Team.ID,
 		ChannelID:      activity.ChannelData.Channel.ID,
-		ConversationID: activity.Conversation.ID,
+		ConversationID: channelConversationID(activity),
 		ServiceURL:     activity.ServiceURL,
 		TenantID:       firstNonEmpty(activity.ChannelData.Tenant.ID, activity.Conversation.TenantID),
 		BotID:          activity.Recipient.ID,
@@ -187,7 +195,28 @@ func (s *Server) bindChannel(ctx context.Context, alias string, activity Activit
 		s.logger.Printf("[teams] bind failed alias=%s err=%v", alias, err)
 		return
 	}
-	_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "bound channel alias: "+alias)
+	if _, err := s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "✅ bound channel alias: "+alias); err != nil {
+		s.logger.Printf("[teams] bind response failed alias=%s err=%v", alias, err)
+	}
+}
+
+func channelConversationID(activity Activity) string {
+	if activity.ChannelData.Channel.ID != "" {
+		return activity.ChannelData.Channel.ID
+	}
+	return strings.SplitN(activity.Conversation.ID, ";messageid=", 2)[0]
+}
+
+func threadReference(activity Activity) (conversationID, rootID string) {
+	conversationID = channelConversationID(activity)
+	if activity.ReplyToID != "" {
+		return conversationID, activity.ReplyToID
+	}
+	_, rootID, ok := strings.Cut(activity.Conversation.ID, ";messageid=")
+	if !ok {
+		return conversationID, ""
+	}
+	return conversationID, rootID
 }
 
 func (s *Server) attachmentsFromActivity(ctx context.Context, activity Activity) []model.Attachment {

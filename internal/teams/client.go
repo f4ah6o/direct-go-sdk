@@ -47,7 +47,7 @@ func (c *Client) ReplyToThread(ctx context.Context, serviceURL, conversationID, 
 		}
 	}
 	activity := NewMessageActivity(text)
-	return c.sendActivity(ctx, serviceURL, conversationID, rootID, activity)
+	return c.sendActivity(ctx, serviceURL, teamsThreadConversationID(conversationID, rootID), "", activity)
 }
 
 func (c *Client) SendText(ctx context.Context, serviceURL, conversationID, replyToID, text string) (string, error) {
@@ -159,7 +159,7 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("bot token status=%d body=%s", resp.StatusCode, string(b))
+		return "", fmt.Errorf("bot token url=%s status=%d body=%s", c.cfg.TokenURL, resp.StatusCode, string(b))
 	}
 	var tr struct {
 		AccessToken string `json:"access_token"`
@@ -180,4 +180,11 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 
 func formatDirectMessage(msg model.DirectMessage) string {
 	return fmt.Sprintf("[direct:%s]\nroom=%s user=%s\n%s", msg.AccountID, msg.TalkID, msg.UserID, msg.Text)
+}
+
+func teamsThreadConversationID(conversationID, rootID string) string {
+	if rootID == "" || strings.Contains(conversationID, ";messageid=") {
+		return conversationID
+	}
+	return conversationID + ";messageid=" + rootID
 }

@@ -73,3 +73,12 @@ accounts:
 		t.Fatalf("full validation should still reject missing bot and teams config")
 	}
 }
+
+func TestDefaultsUseTenantTokenURL(t *testing.T) {
+	cfg := Config{Bot: BotConfig{TenantID: "tenant-id"}}
+	cfg.Defaults()
+	want := "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token"
+	if cfg.Bot.TokenURL != want {
+		t.Fatalf("token url = %q, want %q", cfg.Bot.TokenURL, want)
+	}
+}

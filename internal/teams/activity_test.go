@@ -45,3 +45,24 @@ func TestBotWasAdded(t *testing.T) {
 		t.Fatalf("expected bot to be detected in membersAdded")
 	}
 }
+
+func TestChannelConversationIDPrefersChannelID(t *testing.T) {
+	a := Activity{
+		Conversation: ConversationAccount{ID: "19:channel@thread.tacv2;messageid=123"},
+		ChannelData:  ChannelData{Channel: ChannelInfo{ID: "19:channel@thread.tacv2"}},
+	}
+	if got := channelConversationID(a); got != "19:channel@thread.tacv2" {
+		t.Fatalf("channelConversationID() = %q", got)
+	}
+}
+
+func TestThreadReferenceUsesConversationMessageID(t *testing.T) {
+	a := Activity{
+		Conversation: ConversationAccount{ID: "19:channel@thread.tacv2;messageid=123"},
+		ChannelData:  ChannelData{Channel: ChannelInfo{ID: "19:channel@thread.tacv2"}},
+	}
+	conversationID, rootID := threadReference(a)
+	if conversationID != "19:channel@thread.tacv2" || rootID != "123" {
+		t.Fatalf("threadReference() = %q, %q", conversationID, rootID)
+	}
+}
