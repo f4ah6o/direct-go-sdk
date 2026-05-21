@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
@@ -312,10 +313,14 @@ func sleepWithBackoff(ctx context.Context, backoff *time.Duration) {
 }
 
 func fallbackAttachmentText(att model.Attachment) string {
-	if att.URL != "" {
-		return fmt.Sprintf("[attachment: %s] %s", att.Name, att.URL)
+	name := strings.TrimSpace(att.Name)
+	if name == "" {
+		name = "attachment"
 	}
-	return fmt.Sprintf("[attachment: %s]", att.Name)
+	if att.URL != "" {
+		return fmt.Sprintf("[attachment: %s] %s", name, att.URL)
+	}
+	return fmt.Sprintf("[attachment: %s]", name)
 }
 
 func firstNonEmpty(values ...string) string {

@@ -298,6 +298,9 @@ func (s *Server) attachmentsFromActivity(ctx context.Context, activity Activity)
 			item.Data = data
 			item.ContentType = firstNonEmpty(contentType, item.ContentType)
 		}
+		if strings.TrimSpace(item.Name) == "" && strings.TrimSpace(item.URL) == "" && len(item.Data) == 0 {
+			continue
+		}
 		out = append(out, item)
 	}
 	return out
