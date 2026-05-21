@@ -70,9 +70,10 @@ func runBridge(args []string, logger *log.Logger) error {
 
 	directToTeams := make(chan model.DirectMessage, cfg.Queues.DirectToTeams)
 	teamsToDirect := make(chan model.DirectOutbound, cfg.Queues.TeamsToDirect)
+	directSent := make(chan model.DirectSent, cfg.Queues.TeamsToDirect)
 	teamsClient := teams.NewClient(cfg.Bot, cfg.Server.PublicBaseURL)
-	directManager := directworker.NewManager(cfg.Accounts, directToTeams, logger)
-	service := appbridge.NewService(cfg, st, teamsClient, directManager, directToTeams, teamsToDirect, logger)
+	directManager := directworker.NewManager(cfg.Accounts, directToTeams, directSent, logger)
+	service := appbridge.NewService(cfg, st, teamsClient, directManager, directToTeams, teamsToDirect, directSent, logger)
 	server := teams.NewServer(cfg, teamsClient, st, teamsToDirect, logger)
 
 	directManager.Run(ctx)

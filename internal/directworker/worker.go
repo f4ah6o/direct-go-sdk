@@ -21,14 +21,16 @@ type Manager struct {
 	accounts map[string]config.AccountConfig
 	queues   map[string]chan model.DirectOutbound
 	out      chan<- model.DirectMessage
+	sent     chan<- model.DirectSent
 	logger   *log.Logger
 }
 
-func NewManager(accounts []config.AccountConfig, out chan<- model.DirectMessage, logger *log.Logger) *Manager {
+func NewManager(accounts []config.AccountConfig, out chan<- model.DirectMessage, sent chan<- model.DirectSent, logger *log.Logger) *Manager {
 	m := &Manager{
 		accounts: map[string]config.AccountConfig{},
 		queues:   map[string]chan model.DirectOutbound{},
 		out:      out,
+		sent:     sent,
 		logger:   logger,
 	}
 	for _, account := range accounts {
@@ -42,7 +44,7 @@ func (m *Manager) Run(ctx context.Context) {
 	for _, account := range m.accounts {
 		account := account
 		queue := m.queues[account.ID]
-		go runAccountWorker(ctx, account, queue, m.out, m.logger)
+		go runAccountWorker(ctx, account, queue, m.out, m.sent, m.logger)
 	}
 }
 
@@ -59,7 +61,7 @@ func (m *Manager) Send(ctx context.Context, msg model.DirectOutbound) error {
 	}
 }
 
-func runAccountWorker(ctx context.Context, cfg config.AccountConfig, in <-chan model.DirectOutbound, out chan<- model.DirectMessage, logger *log.Logger) {
+func runAccountWorker(ctx context.Context, cfg config.AccountConfig, in <-chan model.DirectOutbound, out chan<- model.DirectMessage, sent chan<- model.DirectSent, logger *log.Logger) {
 	backoff := time.Second
 	for {
 		select {
@@ -136,8 +138,18 @@ func runAccountWorker(ctx context.Context, cfg config.AccountConfig, in <-chan m
 				_ = client.Close()
 				disconnected = true
 			case msg := <-in:
-				if err := sendDirect(ctx, client, msg); err != nil {
+				messageID, err := sendDirect(ctx, client, msg)
+				if err != nil {
 					logger.Printf("[%s] direct send failed: talk=%s err=%v", cfg.ID, msg.TalkID, err)
+					select {
+					case sent <- model.DirectSent{Outbound: msg, Err: err}:
+					case <-ctx.Done():
+					}
+					continue
+				}
+				select {
+				case sent <- model.DirectSent{Outbound: msg, MessageID: messageID}:
+				case <-ctx.Done():
 				}
 			}
 		}
@@ -145,31 +157,43 @@ func runAccountWorker(ctx context.Context, cfg config.AccountConfig, in <-chan m
 	}
 }
 
-func sendDirect(ctx context.Context, client *direct.Client, msg model.DirectOutbound) error {
+func sendDirect(ctx context.Context, client *direct.Client, msg model.DirectOutbound) (string, error) {
 	if len(msg.Attachments) == 0 {
-		return client.SendTextWithContext(ctx, msg.TalkID, msg.Text)
+		return client.CreateTextMessageWithContext(ctx, msg.TalkID, msg.Text)
 	}
 	files := make([]map[string]interface{}, 0, len(msg.Attachments))
 	for _, att := range msg.Attachments {
 		fileInfo, err := uploadAttachment(ctx, client, att)
 		if err != nil {
 			if msg.Text != "" {
-				return client.SendTextWithContext(ctx, msg.TalkID, msg.Text+"\n"+fallbackAttachmentText(att))
+				return client.CreateTextMessageWithContext(ctx, msg.TalkID, msg.Text+"\n"+fallbackAttachmentText(att))
 			}
-			return client.SendTextWithContext(ctx, msg.TalkID, fallbackAttachmentText(att))
+			return client.CreateTextMessageWithContext(ctx, msg.TalkID, fallbackAttachmentText(att))
 		}
 		files = append(files, fileInfo)
 	}
 	if len(files) == 1 && msg.Text == "" {
-		_, err := client.Call(direct.MethodCreateMessage, []interface{}{normalizeTalkID(msg.TalkID), direct.MsgTypeFile, files[0]})
-		return err
+		result, err := client.Call(direct.MethodCreateMessage, []interface{}{normalizeTalkID(msg.TalkID), direct.MsgTypeFile, files[0]})
+		return directMessageID(result), err
 	}
 	content := map[string]interface{}{"files": files}
 	if msg.Text != "" {
 		content["text"] = msg.Text
 	}
-	_, err := client.Call(direct.MethodCreateMessage, []interface{}{normalizeTalkID(msg.TalkID), direct.MsgTypeTextMultipleFile, content})
-	return err
+	result, err := client.Call(direct.MethodCreateMessage, []interface{}{normalizeTalkID(msg.TalkID), direct.MsgTypeTextMultipleFile, content})
+	return directMessageID(result), err
+}
+
+func directMessageID(result interface{}) string {
+	if m, ok := result.(map[string]interface{}); ok {
+		if id, ok := m["id"].(string); ok {
+			return id
+		}
+		if id, ok := m["id"]; ok {
+			return fmt.Sprint(id)
+		}
+	}
+	return ""
 }
 
 func uploadAttachment(ctx context.Context, client *direct.Client, att model.Attachment) (map[string]interface{}, error) {

@@ -43,4 +43,11 @@ type DirectOutbound struct {
 	TalkID      string
 	Text        string
 	Attachments []Attachment
+	Echo        bool
+}
+
+type DirectSent struct {
+	Outbound  DirectOutbound
+	MessageID string
+	Err       error
 }

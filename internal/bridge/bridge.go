@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/config"
@@ -22,16 +23,18 @@ type Service struct {
 	direct   DirectSender
 	directIn <-chan model.DirectMessage
 	teamsIn  <-chan model.DirectOutbound
+	sentIn   <-chan model.DirectSent
 	logger   *log.Logger
 }
 
-func NewService(cfg *config.Config, st *store.Store, teamsClient *teams.Client, direct DirectSender, directIn <-chan model.DirectMessage, teamsIn <-chan model.DirectOutbound, logger *log.Logger) *Service {
-	return &Service{cfg: cfg, st: st, teams: teamsClient, direct: direct, directIn: directIn, teamsIn: teamsIn, logger: logger}
+func NewService(cfg *config.Config, st *store.Store, teamsClient *teams.Client, direct DirectSender, directIn <-chan model.DirectMessage, teamsIn <-chan model.DirectOutbound, sentIn <-chan model.DirectSent, logger *log.Logger) *Service {
+	return &Service{cfg: cfg, st: st, teams: teamsClient, direct: direct, directIn: directIn, teamsIn: teamsIn, sentIn: sentIn, logger: logger}
 }
 
 func (s *Service) Run(ctx context.Context) {
 	go s.runDirectToTeams(ctx)
 	go s.runTeamsToDirect(ctx)
+	go s.runDirectSent(ctx)
 }
 
 func (s *Service) runDirectToTeams(ctx context.Context) {
@@ -102,9 +105,61 @@ func (s *Service) runTeamsToDirect(ctx context.Context) {
 		case msg := <-s.teamsIn:
 			if err := s.direct.Send(ctx, msg); err != nil {
 				s.logger.Printf("[bridge] teams->direct failed: account=%s talk=%s err=%v", msg.AccountID, msg.TalkID, err)
+				s.notifyTeamsSendFailure(ctx, model.DirectSent{Outbound: msg, Err: err})
 			}
 		}
 	}
+}
+
+func (s *Service) runDirectSent(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case sent := <-s.sentIn:
+			if sent.MessageID != "" {
+				if err := s.st.MarkDirectMessage(sent.MessageID); err != nil {
+					s.logger.Printf("[bridge] failed to mark direct message id=%s err=%v", sent.MessageID, err)
+				}
+			}
+			if sent.Err != nil {
+				s.notifyTeamsSendFailure(ctx, sent)
+				continue
+			}
+			if sent.Outbound.Echo {
+				s.echoTeamsSentMessage(ctx, sent.Outbound)
+			}
+		}
+	}
+}
+
+func (s *Service) notifyTeamsSendFailure(ctx context.Context, sent model.DirectSent) {
+	mapping, ok := s.st.GetByTalk(sent.Outbound.AccountID, sent.Outbound.TalkID)
+	if !ok {
+		return
+	}
+	text := "❌ failed to send to direct: " + sent.Err.Error()
+	if _, err := s.teams.SendText(ctx, mapping.ServiceURL, teamsThreadConversationID(mapping.ConversationID, mapping.RootID), "", text); err != nil {
+		s.logger.Printf("[bridge] failed to notify teams send failure: account=%s talk=%s err=%v", sent.Outbound.AccountID, sent.Outbound.TalkID, err)
+	}
+}
+
+func (s *Service) echoTeamsSentMessage(ctx context.Context, msg model.DirectOutbound) {
+	mapping, ok := s.st.GetByTalk(msg.AccountID, msg.TalkID)
+	if !ok {
+		return
+	}
+	text := "echo: " + msg.Text
+	if _, err := s.teams.SendText(ctx, mapping.ServiceURL, teamsThreadConversationID(mapping.ConversationID, mapping.RootID), "", text); err != nil {
+		s.logger.Printf("[bridge] failed to echo teams sent message: account=%s talk=%s err=%v", msg.AccountID, msg.TalkID, err)
+	}
+}
+
+func teamsThreadConversationID(conversationID, rootID string) string {
+	if rootID == "" || strings.Contains(conversationID, ";messageid=") {
+		return conversationID
+	}
+	return conversationID + ";messageid=" + rootID
 }
 
 func retry[T any](ctx context.Context, fn func() (T, error)) (T, error) {

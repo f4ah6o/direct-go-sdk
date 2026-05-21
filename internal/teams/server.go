@@ -192,12 +192,19 @@ func (s *Server) processActivity(ctx context.Context, activity Activity) {
 		return
 	}
 	text := StripRecipientMention(activity)
+	echo := false
+	trimmedText := strings.TrimSpace(text)
+	if fields := strings.Fields(trimmedText); len(fields) > 0 && strings.EqualFold(fields[0], "echo") {
+		echo = true
+		text = strings.TrimSpace(trimmedText[len(fields[0]):])
+	}
 	attachments := s.attachmentsFromActivity(ctx, activity)
 	out := model.DirectOutbound{
 		AccountID:   mapping.AccountID,
 		TalkID:      mapping.TalkID,
 		Text:        text,
 		Attachments: attachments,
+		Echo:        echo,
 	}
 	select {
 	case s.out <- out:
