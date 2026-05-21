@@ -18,6 +18,7 @@ type Activity struct {
 	Text         string              `json:"text,omitempty"`
 	TextFormat   string              `json:"textFormat,omitempty"`
 	ReplyToID    string              `json:"replyToId,omitempty"`
+	MembersAdded []ChannelAccount    `json:"membersAdded,omitempty"`
 	Entities     []Entity            `json:"entities,omitempty"`
 	Attachments  []Attachment        `json:"attachments,omitempty"`
 	ChannelData  ChannelData         `json:"channelData,omitempty"`
@@ -102,6 +103,27 @@ func ParseBindAlias(a Activity) (string, bool) {
 		return fields[1], true
 	}
 	return "", false
+}
+
+func ParseCommand(a Activity) string {
+	text := strings.ToLower(StripRecipientMention(a))
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+func BotWasAdded(a Activity) bool {
+	if len(a.MembersAdded) == 0 {
+		return false
+	}
+	for _, member := range a.MembersAdded {
+		if member.ID != "" && member.ID == a.Recipient.ID {
+			return true
+		}
+	}
+	return false
 }
 
 var tagRE = regexp.MustCompile(`<[^>]+>`)

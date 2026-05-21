@@ -1,0 +1,33 @@
+op:
+  binary: "op"
+
+bot:
+  app_id: "${MICROSOFT_APP_ID}"
+  app_password_env: "MICROSOFT_APP_PASSWORD"
+  app_password_ref: "op://path/to/app_password"
+  endpoint_path: "/api/messages"
+
+teams_channels:
+  support: {}
+
+accounts:
+  - id: "bot-trial"
+    token_env: "DIRECT_TOKEN_ACCOUNT_TRIAL"
+    token_ref: "op://path/to/direct_access_token"
+    endpoint: "wss://api.direct4b.com/albero-app-server/api"
+    proxy_url: ""
+    teams_channel: "support"
+
+state:
+  path: "/state/direct-teams-bridge.json"
+
+server:
+  listen_addr: ":5173"
+  public_base_url: "https://bridge.example.com"
+
+queues:
+  direct_to_teams: 1000
+  teams_to_direct: 1000
+
+attachments:
+  max_bytes: 26214400

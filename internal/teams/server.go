@@ -95,6 +95,12 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) processActivity(ctx context.Context, activity Activity) {
+	if activity.Type == "conversationUpdate" {
+		if BotWasAdded(activity) {
+			s.sendWelcome(ctx, activity)
+		}
+		return
+	}
 	if activity.Type != "message" {
 		return
 	}
@@ -105,12 +111,15 @@ func (s *Server) processActivity(ctx context.Context, activity Activity) {
 		s.bindChannel(ctx, alias, activity)
 		return
 	}
+	if s.handleCommand(ctx, activity) {
+		return
+	}
 	if !MentionsRecipient(activity) {
 		return
 	}
 	rootID := activity.ReplyToID
 	if rootID == "" {
-		s.logger.Printf("[teams] ignoring mentioned message without replyToId activity=%s", activity.ID)
+		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, rootOnlyHelpText())
 		return
 	}
 	mapping, ok := s.store.GetByThread(activity.Conversation.ID, rootID)
@@ -130,6 +139,34 @@ func (s *Server) processActivity(ctx context.Context, activity Activity) {
 	case s.out <- out:
 	case <-ctx.Done():
 	}
+}
+
+func (s *Server) sendWelcome(ctx context.Context, activity Activity) {
+	text := "direct bridge is ready. In the target channel, mention me with `bind <alias>` to connect this Teams channel to a configured direct account route."
+	if _, err := s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, "", text); err != nil {
+		s.logger.Printf("[teams] welcome message failed conversation=%s err=%v", activity.Conversation.ID, err)
+	}
+}
+
+func (s *Server) handleCommand(ctx context.Context, activity Activity) bool {
+	command := ParseCommand(activity)
+	switch command {
+	case "bind":
+		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "usage: @direct bind <alias>")
+		return true
+	case "hi", "hello":
+		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "Hi. Use `@direct bind <alias>` in a channel, or reply in a bridged thread with `@direct <message>`.")
+		return true
+	case "help":
+		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, rootOnlyHelpText())
+		return true
+	default:
+		return false
+	}
+}
+
+func rootOnlyHelpText() string {
+	return "This bridge accepts `@direct bind <alias>` in a Teams channel. To send a Teams reply back to direct, reply inside a thread created from direct and mention `@direct`."
 }
 
 func (s *Server) bindChannel(ctx context.Context, alias string, activity Activity) {

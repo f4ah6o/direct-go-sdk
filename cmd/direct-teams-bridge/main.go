@@ -90,7 +90,7 @@ func loginDirect(args []string, logger *log.Logger) error {
 	if *accountID == "" {
 		return fmt.Errorf("--account is required")
 	}
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.LoadPartial(*configPath)
 	if err != nil {
 		return err
 	}

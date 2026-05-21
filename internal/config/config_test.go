@@ -51,3 +51,25 @@ func TestValidateRejectsUnknownTeamsChannel(t *testing.T) {
 		t.Fatalf("expected validation error")
 	}
 }
+
+func TestLoadPartialSkipsRunValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	err := os.WriteFile(path, []byte(`
+accounts:
+  - id: bot-trial
+    token_ref: op://path/to/direct_access_token
+`), 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadPartial(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.Account("bot-trial"); !ok {
+		t.Fatalf("expected account to load")
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("full validation should still reject missing bot and teams config")
+	}
+}

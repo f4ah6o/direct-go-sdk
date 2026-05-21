@@ -76,6 +76,17 @@ type AttachmentConfig struct {
 }
 
 func Load(path string) (*Config, error) {
+	cfg, err := LoadPartial(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func LoadPartial(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -86,9 +97,6 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	cfg.Defaults()
-	if err := cfg.Validate(); err != nil {
-		return nil, err
-	}
 	return &cfg, nil
 }
 

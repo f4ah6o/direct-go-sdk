@@ -24,3 +24,24 @@ func TestStripRecipientMention(t *testing.T) {
 		t.Fatalf("StripRecipientMention() = %q", got)
 	}
 }
+
+func TestParseCommand(t *testing.T) {
+	a := Activity{
+		Text:      `<at>direct</at> Hi`,
+		Recipient: ChannelAccount{ID: "bot"},
+		Entities:  []Entity{{Type: "mention", Text: "direct", Mentioned: ChannelAccount{ID: "bot"}}},
+	}
+	if got := ParseCommand(a); got != "hi" {
+		t.Fatalf("ParseCommand() = %q", got)
+	}
+}
+
+func TestBotWasAdded(t *testing.T) {
+	a := Activity{
+		Recipient:    ChannelAccount{ID: "bot"},
+		MembersAdded: []ChannelAccount{{ID: "user"}, {ID: "bot"}},
+	}
+	if !BotWasAdded(a) {
+		t.Fatalf("expected bot to be detected in membersAdded")
+	}
+}
