@@ -70,7 +70,7 @@ type TenantInfo struct {
 func NewMessageActivity(text string) Activity {
 	return Activity{
 		Type:       "message",
-		TextFormat: "plain",
+		TextFormat: "markdown",
 		Text:       text,
 	}
 }

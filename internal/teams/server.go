@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -43,6 +46,7 @@ func NewServer(cfg *config.Config, client *Client, st *store.Store, out chan<- m
 	s := &Server{cfg: cfg, client: client, store: st, out: out, logger: logger, validator: validator}
 	mux := http.NewServeMux()
 	mux.HandleFunc(cfg.Bot.EndpointPath, s.handleActivity)
+	mux.HandleFunc("/files/direct", s.handleDirectFile)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
@@ -92,6 +96,66 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusAccepted)
 	go s.processActivity(context.Background(), activity)
+}
+
+func (s *Server) handleDirectFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	accountID := r.URL.Query().Get("account")
+	rawURL := r.URL.Query().Get("url")
+	if accountID == "" || rawURL == "" {
+		http.Error(w, "missing account or url", http.StatusBadRequest)
+		return
+	}
+	account, ok := s.cfg.Account(accountID)
+	if !ok {
+		http.Error(w, "unknown account", http.StatusNotFound)
+		return
+	}
+	fileURL, err := url.Parse(rawURL)
+	if err != nil || fileURL.Scheme != "https" || fileURL.Host != "api.direct4b.com" || !strings.HasPrefix(fileURL.Path, "/albero-app-server/files/") {
+		http.Error(w, "invalid direct file url", http.StatusBadRequest)
+		return
+	}
+	token := os.Getenv(account.TokenEnv)
+	if token == "" {
+		http.Error(w, "direct token is not available", http.StatusInternalServerError)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL.String(), nil)
+	if err != nil {
+		http.Error(w, "invalid direct file request", http.StatusBadRequest)
+		return
+	}
+	req.Header.Set("Authorization", "ALB "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		s.logger.Printf("[teams] direct file proxy failed account=%s err=%v", accountID, err)
+		http.Error(w, "direct file fetch failed", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		s.logger.Printf("[teams] direct file proxy status=%d account=%s body=%s", resp.StatusCode, accountID, string(b))
+		http.Error(w, "direct file fetch failed", http.StatusBadGateway)
+		return
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	}
+	if cd := resp.Header.Get("Content-Disposition"); cd != "" {
+		w.Header().Set("Content-Disposition", cd)
+	}
+	if cl := resp.Header.Get("Content-Length"); cl != "" {
+		w.Header().Set("Content-Length", cl)
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, resp.Body)
 }
 
 func (s *Server) processActivity(ctx context.Context, activity Activity) {

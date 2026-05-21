@@ -18,35 +18,33 @@ import (
 )
 
 type Client struct {
-	cfg        config.BotConfig
-	httpClient *http.Client
-	mu         sync.Mutex
-	token      string
-	expiresAt  time.Time
+	cfg           config.BotConfig
+	publicBaseURL string
+	httpClient    *http.Client
+	mu            sync.Mutex
+	token         string
+	expiresAt     time.Time
 }
 
-func NewClient(cfg config.BotConfig) *Client {
+func NewClient(cfg config.BotConfig, publicBaseURL ...string) *Client {
+	baseURL := ""
+	if len(publicBaseURL) > 0 {
+		baseURL = publicBaseURL[0]
+	}
 	return &Client{
-		cfg:        cfg,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		cfg:           cfg,
+		publicBaseURL: strings.TrimRight(baseURL, "/"),
+		httpClient:    &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
 func (c *Client) CreateRootMessage(ctx context.Context, serviceURL, conversationID string, msg model.DirectMessage) (string, error) {
-	activity := NewMessageActivity(formatDirectMessage(msg))
+	activity := NewMessageActivity(c.formatDirectRootMessage(msg))
 	return c.sendActivity(ctx, serviceURL, conversationID, "", activity)
 }
 
 func (c *Client) ReplyToThread(ctx context.Context, serviceURL, conversationID, rootID string, msg model.DirectMessage) (string, error) {
-	text := formatDirectMessage(msg)
-	for _, att := range msg.Attachments {
-		if att.URL != "" {
-			text += "\n" + fmt.Sprintf("[attachment: %s] %s", att.Name, att.URL)
-		} else if att.Name != "" {
-			text += "\n" + fmt.Sprintf("[attachment: %s]", att.Name)
-		}
-	}
-	activity := NewMessageActivity(text)
+	activity := NewMessageActivity(c.formatDirectReplyMessage(msg))
 	return c.sendActivity(ctx, serviceURL, teamsThreadConversationID(conversationID, rootID), "", activity)
 }
 
@@ -178,8 +176,34 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 	return tr.AccessToken, nil
 }
 
-func formatDirectMessage(msg model.DirectMessage) string {
-	return fmt.Sprintf("[direct:%s]\nroom=%s user=%s\n%s", msg.AccountID, msg.TalkID, msg.UserID, msg.Text)
+func (c *Client) formatDirectRootMessage(msg model.DirectMessage) string {
+	return appendAttachmentLinks(fmt.Sprintf("[direct:%s] room=%s\nuser=%s\n%s", msg.AccountID, msg.TalkID, msg.UserID, msg.Text), msg, c.publicBaseURL)
+}
+
+func (c *Client) formatDirectReplyMessage(msg model.DirectMessage) string {
+	return appendAttachmentLinks(fmt.Sprintf("user=%s\n%s", msg.UserID, msg.Text), msg, c.publicBaseURL)
+}
+
+func appendAttachmentLinks(text string, msg model.DirectMessage, publicBaseURL string) string {
+	for _, att := range msg.Attachments {
+		name := strings.TrimSpace(att.Name)
+		if name == "" {
+			name = "attachment"
+		}
+		if att.URL != "" && publicBaseURL != "" {
+			u := publicBaseURL + "/files/direct?account=" + url.QueryEscape(msg.AccountID) + "&url=" + url.QueryEscape(att.URL)
+			text += "\n" + fmt.Sprintf("[attachment: %s](%s)", escapeMarkdownLinkText(name), u)
+		} else if att.URL != "" {
+			text += "\n" + fmt.Sprintf("[attachment: %s](%s)", escapeMarkdownLinkText(name), att.URL)
+		} else {
+			text += "\n" + fmt.Sprintf("[attachment: %s]", name)
+		}
+	}
+	return text
+}
+
+func escapeMarkdownLinkText(s string) string {
+	return strings.NewReplacer("[", "\\[", "]", "\\]").Replace(s)
 }
 
 func teamsThreadConversationID(conversationID, rootID string) string {
