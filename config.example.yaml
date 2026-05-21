@@ -6,6 +6,10 @@ bot:
   app_password_env: "MICROSOFT_APP_PASSWORD"
   app_password_ref: "op://path/to/app_password"
   endpoint_path: "/api/messages"
+  # Incoming Bot Framework JWT validation defaults to the public Bot Connector metadata.
+  # Set allow_emulator: true only for Bot Framework Emulator local development.
+  allow_emulator: false
+  allowed_service_urls: []
 
 teams_channels:
   support: {}
@@ -31,3 +35,4 @@ queues:
 
 attachments:
   max_bytes: 26214400
+  file_proxy_ttl: "24h"

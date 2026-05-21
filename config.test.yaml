@@ -7,6 +7,8 @@ bot:
   app_password_ref: "op://path/to/app_password"
   tenant_id: "${MICROSOFT_TENANT_ID}"
   endpoint_path: "/api/messages"
+  allow_emulator: false
+  allowed_service_urls: []
 
 teams_channels:
   support: {}
@@ -32,3 +34,4 @@ queues:
 
 attachments:
   max_bytes: 26214400
+  file_proxy_ttl: "24h"

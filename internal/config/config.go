@@ -10,20 +10,50 @@ import (
 )
 
 type Config struct {
-	OP            OPConfig                      `yaml:"op"`
-	TeamsChannels map[string]TeamsChannelConfig `yaml:"teams_channels"`
-	Accounts      []AccountConfig               `yaml:"accounts"`
-	Bot           BotConfig                     `yaml:"bot"`
-	State         StateConfig                   `yaml:"state"`
-	Server        ServerConfig                  `yaml:"server"`
-	Queues        QueueConfig                   `yaml:"queues"`
-	Retry         RetryConfig                   `yaml:"retry"`
-	Attachments   AttachmentConfig              `yaml:"attachments"`
+	OP            OPConfig         `yaml:"op"`
+	TeamsChannels TeamsChannels    `yaml:"teams_channels"`
+	Accounts      []AccountConfig  `yaml:"accounts"`
+	Bot           BotConfig        `yaml:"bot"`
+	State         StateConfig      `yaml:"state"`
+	Server        ServerConfig     `yaml:"server"`
+	Queues        QueueConfig      `yaml:"queues"`
+	Retry         RetryConfig      `yaml:"retry"`
+	Attachments   AttachmentConfig `yaml:"attachments"`
 }
+
+type TeamsChannels map[string]TeamsChannelConfig
 
 type TeamsChannelConfig struct {
 	// Alias-only config. The actual Teams conversation is bound at runtime by
 	// sending "@bot bind <alias>" in the target channel.
+}
+
+func (tc *TeamsChannels) UnmarshalYAML(value *yaml.Node) error {
+	out := TeamsChannels{}
+	switch value.Kind {
+	case yaml.MappingNode:
+		var m map[string]TeamsChannelConfig
+		if err := value.Decode(&m); err != nil {
+			return err
+		}
+		for k, v := range m {
+			out[k] = v
+		}
+	case yaml.SequenceNode:
+		for _, item := range value.Content {
+			var m map[string]TeamsChannelConfig
+			if err := item.Decode(&m); err != nil {
+				return err
+			}
+			for k, v := range m {
+				out[k] = v
+			}
+		}
+	default:
+		return fmt.Errorf("teams_channels must be a map or list of maps")
+	}
+	*tc = out
+	return nil
 }
 
 type AccountConfig struct {
@@ -40,16 +70,19 @@ type OPConfig struct {
 }
 
 type BotConfig struct {
-	AppID                 string   `yaml:"app_id"`
-	AppPassword           string   `yaml:"app_password"`
-	AppPasswordEnv        string   `yaml:"app_password_env"`
-	AppPasswordRef        string   `yaml:"app_password_ref"`
-	TenantID              string   `yaml:"tenant_id"`
-	EndpointPath          string   `yaml:"endpoint_path"`
-	TokenURL              string   `yaml:"token_url"`
-	ConnectorScope        string   `yaml:"connector_scope"`
-	AllowedServiceURLs    []string `yaml:"allowed_service_urls"`
-	DisableAuthValidation bool     `yaml:"disable_auth_validation"`
+	AppID                     string   `yaml:"app_id"`
+	AppPassword               string   `yaml:"app_password"`
+	AppPasswordEnv            string   `yaml:"app_password_env"`
+	AppPasswordRef            string   `yaml:"app_password_ref"`
+	TenantID                  string   `yaml:"tenant_id"`
+	EndpointPath              string   `yaml:"endpoint_path"`
+	TokenURL                  string   `yaml:"token_url"`
+	ConnectorScope            string   `yaml:"connector_scope"`
+	OpenIDMetadataURL         string   `yaml:"openid_metadata_url"`
+	EmulatorOpenIDMetadataURL string   `yaml:"emulator_openid_metadata_url"`
+	AllowedServiceURLs        []string `yaml:"allowed_service_urls"`
+	AllowEmulator             bool     `yaml:"allow_emulator"`
+	DisableAuthValidation     bool     `yaml:"disable_auth_validation"`
 }
 
 type StateConfig struct {
@@ -72,8 +105,9 @@ type RetryConfig struct {
 }
 
 type AttachmentConfig struct {
-	MaxBytes int64  `yaml:"max_bytes"`
-	TempDir  string `yaml:"temp_dir"`
+	MaxBytes     int64  `yaml:"max_bytes"`
+	TempDir      string `yaml:"temp_dir"`
+	FileProxyTTL string `yaml:"file_proxy_ttl"`
 }
 
 func Load(path string) (*Config, error) {
@@ -123,6 +157,9 @@ func (c *Config) Defaults() {
 	if c.Attachments.MaxBytes == 0 {
 		c.Attachments.MaxBytes = 25 << 20
 	}
+	if c.Attachments.FileProxyTTL == "" {
+		c.Attachments.FileProxyTTL = "24h"
+	}
 	if c.Bot.EndpointPath == "" {
 		c.Bot.EndpointPath = "/api/messages"
 	}
@@ -135,6 +172,12 @@ func (c *Config) Defaults() {
 	}
 	if c.Bot.ConnectorScope == "" {
 		c.Bot.ConnectorScope = "https://api.botframework.com/.default"
+	}
+	if c.Bot.OpenIDMetadataURL == "" {
+		c.Bot.OpenIDMetadataURL = "https://login.botframework.com/v1/.well-known/openidconfiguration"
+	}
+	if c.Bot.EmulatorOpenIDMetadataURL == "" {
+		c.Bot.EmulatorOpenIDMetadataURL = "https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration"
 	}
 }
 
@@ -150,6 +193,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Bot.AppPassword == "" && c.Bot.AppPasswordEnv == "" && c.Bot.AppPasswordRef == "" {
 		return errors.New("bot.app_password, bot.app_password_env, or bot.app_password_ref is required")
+	}
+	if c.Bot.DisableAuthValidation && !c.allowsLocalAuthBypass() {
+		return errors.New("bot.disable_auth_validation is only allowed with local listen/public URLs")
 	}
 	for name := range c.TeamsChannels {
 		if strings.TrimSpace(name) == "" {
@@ -173,6 +219,51 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+func (c *Config) allowsLocalAuthBypass() bool {
+	host := listenHost(c.Server.ListenAddr)
+	if host != "" && !isLocalHost(host) {
+		return false
+	}
+	if strings.TrimSpace(c.Server.PublicBaseURL) == "" {
+		return true
+	}
+	return isLocalURL(c.Server.PublicBaseURL)
+}
+
+func listenHost(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" || strings.HasPrefix(addr, ":") {
+		return ""
+	}
+	if strings.HasPrefix(addr, "[") {
+		end := strings.Index(addr, "]")
+		if end >= 0 {
+			return strings.Trim(addr[1:end], "[]")
+		}
+	}
+	host, _, ok := strings.Cut(addr, ":")
+	if ok {
+		return host
+	}
+	return addr
+}
+
+func isLocalURL(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return true
+	}
+	withoutScheme := strings.TrimPrefix(strings.TrimPrefix(raw, "http://"), "https://")
+	host, _, _ := strings.Cut(withoutScheme, "/")
+	host, _, _ = strings.Cut(host, ":")
+	return isLocalHost(host)
+}
+
+func isLocalHost(host string) bool {
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
+	return host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
 func (c *Config) Account(id string) (AccountConfig, bool) {

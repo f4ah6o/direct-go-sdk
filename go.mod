@@ -4,6 +4,7 @@ go 1.25
 
 require (
 	github.com/f4ah6o/direct-go-sdk/direct-go v0.0.0
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	golang.org/x/term v0.13.0
 	gopkg.in/yaml.v3 v3.0.1
 )

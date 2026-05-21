@@ -82,3 +82,55 @@ func TestDefaultsUseTenantTokenURL(t *testing.T) {
 		t.Fatalf("token url = %q, want %q", cfg.Bot.TokenURL, want)
 	}
 }
+
+func TestLoadAcceptsTeamsChannelListOfMaps(t *testing.T) {
+	t.Setenv("BOT_APP_ID", "bot-1")
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	err := os.WriteFile(path, []byte(`
+bot:
+  app_id: ${BOT_APP_ID}
+  app_password_env: MICROSOFT_APP_PASSWORD
+teams_channels:
+  - ict-support: {}
+    trial: {}
+accounts:
+  - id: ict-support
+    token_ref: op://vault/item/token
+    teams_channel: ict-support
+`), 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.TeamsChannels["ict-support"]; !ok {
+		t.Fatalf("expected ict-support channel")
+	}
+	if _, ok := cfg.TeamsChannels["trial"]; !ok {
+		t.Fatalf("expected trial channel")
+	}
+}
+
+func TestValidateAllowsDisableAuthValidationOnlyForLocalServer(t *testing.T) {
+	cfg := Config{
+		Bot: BotConfig{
+			AppID:                 "bot",
+			AppPassword:           "secret",
+			DisableAuthValidation: true,
+		},
+		TeamsChannels: TeamsChannels{"support": {}},
+		Accounts:      []AccountConfig{{ID: "account-a", TokenEnv: "TOKEN", TeamsChannel: "support"}},
+		Server:        ServerConfig{ListenAddr: "127.0.0.1:5173", PublicBaseURL: "http://localhost:5173"},
+	}
+	cfg.Defaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() local error = %v", err)
+	}
+
+	cfg.Server.PublicBaseURL = "https://bridge.example.com"
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected public disable_auth_validation to be rejected")
+	}
+}

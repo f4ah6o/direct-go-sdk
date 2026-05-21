@@ -71,7 +71,7 @@ func runBridge(args []string, logger *log.Logger) error {
 	directToTeams := make(chan model.DirectMessage, cfg.Queues.DirectToTeams)
 	teamsToDirect := make(chan model.DirectOutbound, cfg.Queues.TeamsToDirect)
 	directSent := make(chan model.DirectSent, cfg.Queues.TeamsToDirect)
-	teamsClient := teams.NewClient(cfg.Bot, cfg.Server.PublicBaseURL)
+	teamsClient := teams.NewClient(cfg.Bot, cfg.Server.PublicBaseURL, cfg.Attachments.FileProxyTTL)
 	directManager := directworker.NewManager(cfg.Accounts, directToTeams, directSent, logger)
 	service := appbridge.NewService(cfg, st, teamsClient, directManager, directToTeams, teamsToDirect, directSent, logger)
 	server := teams.NewServer(cfg, teamsClient, st, teamsToDirect, logger)
@@ -142,7 +142,7 @@ func mappings(args []string) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		cfg, err := config.Load(*configPath)
+		cfg, err := config.LoadPartial(*configPath)
 		if err != nil {
 			return err
 		}
@@ -162,7 +162,7 @@ func mappings(args []string) error {
 		if *accountID == "" || *talkID == "" {
 			return fmt.Errorf("--account and --talk-id are required")
 		}
-		cfg, err := config.Load(*configPath)
+		cfg, err := config.LoadPartial(*configPath)
 		if err != nil {
 			return err
 		}
@@ -187,7 +187,7 @@ func channels(args []string) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		cfg, err := config.Load(*configPath)
+		cfg, err := config.LoadPartial(*configPath)
 		if err != nil {
 			return err
 		}
@@ -206,7 +206,7 @@ func channels(args []string) error {
 		if *alias == "" {
 			return fmt.Errorf("--alias is required")
 		}
-		cfg, err := config.Load(*configPath)
+		cfg, err := config.LoadPartial(*configPath)
 		if err != nil {
 			return err
 		}

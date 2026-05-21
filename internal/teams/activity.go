@@ -1,6 +1,7 @@
 package teams
 
 import (
+	"encoding/json"
 	"html"
 	"regexp"
 	"strings"
@@ -47,6 +48,25 @@ type Attachment struct {
 	ContentURL  string      `json:"contentUrl,omitempty"`
 	Name        string      `json:"name,omitempty"`
 	Content     interface{} `json:"content,omitempty"`
+}
+
+func (a Attachment) DownloadURL() string {
+	switch content := a.Content.(type) {
+	case map[string]interface{}:
+		if v, ok := content["downloadUrl"].(string); ok {
+			return v
+		}
+	case map[string]string:
+		return content["downloadUrl"]
+	case json.RawMessage:
+		var m map[string]interface{}
+		if err := json.Unmarshal(content, &m); err == nil {
+			if v, ok := m["downloadUrl"].(string); ok {
+				return v
+			}
+		}
+	}
+	return ""
 }
 
 type ChannelData struct {

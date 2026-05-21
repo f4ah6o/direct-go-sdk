@@ -59,6 +59,8 @@ bot:
   app_password_env: "MICROSOFT_APP_PASSWORD"
   tenant_id: "YOUR_MICROSOFT_TENANT_ID"
   endpoint_path: "/api/messages"
+  allow_emulator: false
+  allowed_service_urls: []
 
 teams_channels:
   support: {}
@@ -77,12 +79,31 @@ state:
 server:
   listen_addr: ":5173"
   public_base_url: "https://bridge.example.com"
+
+attachments:
+  file_proxy_ttl: "24h"
 ```
 
 If the Azure Bot is configured as single tenant, `tenant_id` is required so the
 bridge requests Bot Connector tokens from your tenant instead of the legacy
 `botframework.com` tenant. Without it, replies can fail with `AADSTS700016:
 Application with identifier ... was not found in the directory 'Bot Framework'`.
+
+Incoming Teams activities are authenticated with the Bot Framework JWT in the
+`Authorization: Bearer ...` header. The bridge verifies the JWT signature,
+issuer, audience, expiry, Teams channel endorsement, and that the token
+`serviceurl` claim matches the activity `serviceUrl`.
+
+`allowed_service_urls` is optional additional hardening. Leave it empty until the
+first successful Teams activity shows the service URL you want to pin, then set
+that exact URL.
+
+`disable_auth_validation` is only accepted for local loopback development. It is
+rejected when `server.public_base_url` is a public URL. For Bot Framework
+Emulator testing, prefer `allow_emulator: true` instead.
+
+Direct attachment links posted into Teams use `/files/direct` proxy URLs signed
+with the Teams bot secret and an expiry controlled by `attachments.file_proxy_ttl`.
 
 ### 3. Prepare secrets
 

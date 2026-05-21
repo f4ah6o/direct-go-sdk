@@ -40,7 +40,10 @@ func TestFormatDirectRootAndReplyMessages(t *testing.T) {
 	if !strings.HasPrefix(root, "[direct:bot-trial] room=1792967566075891712\nuser=1792959268018716672\n") {
 		t.Fatalf("unexpected root message: %q", root)
 	}
-	if !strings.Contains(root, "[attachment: image.png](https://bridge.example.com/files/direct?account=bot-trial&url=") {
+	if !strings.Contains(root, "[attachment: image.png](https://bridge.example.com/files/direct?") ||
+		!strings.Contains(root, "account=bot-trial") ||
+		!strings.Contains(root, "url=https%3A%2F%2Fapi.direct4b.com%2Falbero-app-server%2Ffiles%2Ffile%2Ftoken%3Fmessage_id%3D1") ||
+		!strings.Contains(root, "sig=") {
 		t.Fatalf("expected proxied markdown link: %q", root)
 	}
 

@@ -66,3 +66,22 @@ func TestThreadReferenceUsesConversationMessageID(t *testing.T) {
 		t.Fatalf("threadReference() = %q, %q", conversationID, rootID)
 	}
 }
+
+func TestAttachmentDownloadURL(t *testing.T) {
+	a := Attachment{Content: map[string]interface{}{"downloadUrl": "https://example.com/file.png"}}
+	if got := a.DownloadURL(); got != "https://example.com/file.png" {
+		t.Fatalf("DownloadURL() = %q", got)
+	}
+}
+
+func TestAppendTeamsSenderName(t *testing.T) {
+	if got := appendTeamsSenderName("了解です", "Taro Yamada"); got != "了解です（Taro Yamada）" {
+		t.Fatalf("appendTeamsSenderName() = %q", got)
+	}
+}
+
+func TestAppendTeamsSenderNameJapaneseName(t *testing.T) {
+	if got := appendTeamsSenderName("了解です", "山田 太郎"); got != "了解です（山田 太郎）" {
+		t.Fatalf("appendTeamsSenderName() = %q", got)
+	}
+}

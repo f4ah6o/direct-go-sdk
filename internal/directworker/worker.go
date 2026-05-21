@@ -3,6 +3,7 @@ package directworker
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"log"
@@ -77,6 +78,7 @@ func runAccountWorker(ctx context.Context, cfg config.AccountConfig, in <-chan m
 			sleepWithBackoff(ctx, &backoff)
 			continue
 		}
+		logger.Printf("[%s] using direct token env=%s len=%d sha=%s", cfg.ID, cfg.TokenEnv, len(token), tokenFingerprint(token))
 
 		endpoint := cfg.Endpoint
 		if endpoint == "" {
@@ -88,18 +90,46 @@ func runAccountWorker(ctx context.Context, cfg config.AccountConfig, in <-chan m
 			ProxyURL:    cfg.ProxyURL,
 			Name:        cfg.ID,
 		})
+		reconnectNow := make(chan struct{}, 1)
+		readyNow := make(chan struct{}, 1)
+		requestReconnect := func() {
+			select {
+			case reconnectNow <- struct{}{}:
+			default:
+			}
+		}
+		markReady := func() {
+			select {
+			case readyNow <- struct{}{}:
+			default:
+			}
+		}
 
 		client.On(direct.EventError, func(data interface{}) {
 			logger.Printf("[%s] direct error: %+v", cfg.ID, data)
+		})
+		client.On(direct.EventSessionError, func(data interface{}) {
+			logger.Printf("[%s] direct session error: %+v", cfg.ID, data)
+			if isInvalidTokenError(data) {
+				logger.Printf("[%s] direct token is invalid; waiting for token update before reconnect", cfg.ID)
+				return
+			}
+			requestReconnect()
 		})
 		client.On(direct.EventSessionCreated, func(data interface{}) {
 			logger.Printf("[%s] direct session created", cfg.ID)
 		})
 		client.On(direct.EventDataRecovered, func(data interface{}) {
 			logger.Printf("[%s] direct notification ready", cfg.ID)
+			markReady()
+		})
+		client.On(direct.EventNotificationError, func(data interface{}) {
+			logger.Printf("[%s] direct notification error: %+v", cfg.ID, data)
+			requestReconnect()
 		})
 		client.OnMessage(func(msg direct.ReceivedMessage) {
 			if msg.ID == "" {
+				logger.Printf("[%s] direct message ignored without id: talk=%s user=%s type=%d", cfg.ID, msg.TalkID, msg.UserID, msg.Type)
 				return
 			}
 			bm := model.DirectMessage{
@@ -112,6 +142,7 @@ func runAccountWorker(ctx context.Context, cfg config.AccountConfig, in <-chan m
 				Raw:       msg,
 			}
 			bm.Attachments = attachmentsFromDirectMessage(msg)
+			logger.Printf("[%s] direct message received: id=%s talk=%s user=%s type=%d attachments=%d", cfg.ID, msg.ID, msg.TalkID, msg.UserID, msg.Type, len(bm.Attachments))
 			select {
 			case out <- bm:
 			case <-ctx.Done():
@@ -125,7 +156,6 @@ func runAccountWorker(ctx context.Context, cfg config.AccountConfig, in <-chan m
 			continue
 		}
 		logger.Printf("[%s] connected", cfg.ID)
-		backoff = time.Second
 
 		disconnected := false
 		for !disconnected {
@@ -138,6 +168,12 @@ func runAccountWorker(ctx context.Context, cfg config.AccountConfig, in <-chan m
 				logger.Printf("[%s] disconnected; recreating client", cfg.ID)
 				_ = client.Close()
 				disconnected = true
+			case <-reconnectNow:
+				logger.Printf("[%s] recreating client after direct startup error", cfg.ID)
+				_ = client.Close()
+				disconnected = true
+			case <-readyNow:
+				backoff = time.Second
 			case msg := <-in:
 				messageID, err := sendDirect(ctx, client, msg)
 				if err != nil {
@@ -156,6 +192,21 @@ func runAccountWorker(ctx context.Context, cfg config.AccountConfig, in <-chan m
 		}
 		sleepWithBackoff(ctx, &backoff)
 	}
+}
+
+func tokenFingerprint(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return fmt.Sprintf("%x", sum[:])[:12]
+}
+
+func isInvalidTokenError(data interface{}) bool {
+	m, ok := data.(map[string]interface{})
+	if !ok {
+		return false
+	}
+	code := fmt.Sprint(m["code"])
+	message := fmt.Sprint(m["message"])
+	return code == "401" && (message == "invalid token" || message == "bad token")
 }
 
 func sendDirect(ctx context.Context, client *direct.Client, msg model.DirectOutbound) (string, error) {

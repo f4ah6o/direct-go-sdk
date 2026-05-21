@@ -20,6 +20,7 @@ import (
 type Client struct {
 	cfg           config.BotConfig
 	publicBaseURL string
+	fileProxyTTL  string
 	httpClient    *http.Client
 	mu            sync.Mutex
 	token         string
@@ -31,9 +32,14 @@ func NewClient(cfg config.BotConfig, publicBaseURL ...string) *Client {
 	if len(publicBaseURL) > 0 {
 		baseURL = publicBaseURL[0]
 	}
+	ttl := "24h"
+	if len(publicBaseURL) > 1 && strings.TrimSpace(publicBaseURL[1]) != "" {
+		ttl = publicBaseURL[1]
+	}
 	return &Client{
 		cfg:           cfg,
 		publicBaseURL: strings.TrimRight(baseURL, "/"),
+		fileProxyTTL:  ttl,
 		httpClient:    &http.Client{Timeout: 30 * time.Second},
 	}
 }
@@ -53,10 +59,11 @@ func (c *Client) SendText(ctx context.Context, serviceURL, conversationID, reply
 }
 
 func (c *Client) DownloadAttachment(ctx context.Context, activity Attachment, maxBytes int64) ([]byte, string, error) {
-	if activity.ContentURL == "" {
+	contentURL := firstNonEmptyString(activity.DownloadURL(), activity.ContentURL)
+	if contentURL == "" {
 		return nil, "", fmt.Errorf("attachment has no contentUrl")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, activity.ContentURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, contentURL, nil)
 	if err != nil {
 		return nil, "", err
 	}
@@ -177,21 +184,24 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 }
 
 func (c *Client) formatDirectRootMessage(msg model.DirectMessage) string {
-	return appendAttachmentLinks(fmt.Sprintf("[direct:%s] room=%s\nuser=%s\n%s", msg.AccountID, msg.TalkID, msg.UserID, msg.Text), msg, c.publicBaseURL)
+	return appendAttachmentLinks(fmt.Sprintf("[direct:%s] room=%s\nuser=%s\n%s", msg.AccountID, msg.TalkID, msg.UserID, msg.Text), msg, c.cfg, c.publicBaseURL, c.fileProxyTTL)
 }
 
 func (c *Client) formatDirectReplyMessage(msg model.DirectMessage) string {
-	return appendAttachmentLinks(fmt.Sprintf("user=%s\n%s", msg.UserID, msg.Text), msg, c.publicBaseURL)
+	return appendAttachmentLinks(fmt.Sprintf("user=%s\n%s", msg.UserID, msg.Text), msg, c.cfg, c.publicBaseURL, c.fileProxyTTL)
 }
 
-func appendAttachmentLinks(text string, msg model.DirectMessage, publicBaseURL string) string {
+func appendAttachmentLinks(text string, msg model.DirectMessage, cfg config.BotConfig, publicBaseURL, fileProxyTTL string) string {
 	for _, att := range msg.Attachments {
 		name := strings.TrimSpace(att.Name)
 		if name == "" {
 			name = "attachment"
 		}
 		if att.URL != "" && publicBaseURL != "" {
-			u := publicBaseURL + "/files/direct?account=" + url.QueryEscape(msg.AccountID) + "&url=" + url.QueryEscape(att.URL)
+			u, err := signedDirectFileURL(publicBaseURL, cfg, fileProxyTTL, msg.AccountID, att.URL, time.Now())
+			if err != nil {
+				u = att.URL
+			}
 			text += "\n" + fmt.Sprintf("[attachment: %s](%s)", escapeMarkdownLinkText(name), u)
 		} else if att.URL != "" {
 			text += "\n" + fmt.Sprintf("[attachment: %s](%s)", escapeMarkdownLinkText(name), att.URL)
@@ -204,6 +214,15 @@ func appendAttachmentLinks(text string, msg model.DirectMessage, publicBaseURL s
 
 func escapeMarkdownLinkText(s string) string {
 	return strings.NewReplacer("[", "\\[", "]", "\\]").Replace(s)
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func teamsThreadConversationID(conversationID, rootID string) string {

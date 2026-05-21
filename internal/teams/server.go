@@ -3,12 +3,13 @@ package teams
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,20 +17,6 @@ import (
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/model"
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/store"
 )
-
-type AuthValidator interface {
-	Validate(*http.Request) error
-}
-
-type BearerValidator struct{}
-
-func (BearerValidator) Validate(r *http.Request) error {
-	auth := r.Header.Get("Authorization")
-	if !strings.HasPrefix(auth, "Bearer ") || strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == "" {
-		return fmt.Errorf("missing bearer token")
-	}
-	return nil
-}
 
 type Server struct {
 	cfg        *config.Config
@@ -42,7 +29,7 @@ type Server struct {
 }
 
 func NewServer(cfg *config.Config, client *Client, st *store.Store, out chan<- model.DirectOutbound, logger *log.Logger) *Server {
-	validator := AuthValidator(BearerValidator{})
+	validator := AuthValidator(NewBotFrameworkValidator(cfg.Bot))
 	s := &Server{cfg: cfg, client: client, store: st, out: out, logger: logger, validator: validator}
 	mux := http.NewServeMux()
 	mux.HandleFunc(cfg.Bot.EndpointPath, s.handleActivity)
@@ -83,19 +70,32 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !s.cfg.Bot.DisableAuthValidation {
-		if err := s.validator.Validate(r); err != nil {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-	}
 	var activity Activity
 	if err := json.NewDecoder(r.Body).Decode(&activity); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
+	if !s.authValidationBypassed(r) {
+		if err := s.validator.Validate(r.Context(), r, activity); err != nil {
+			s.logger.Printf("[teams] unauthorized activity: %v", err)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
 	w.WriteHeader(http.StatusAccepted)
 	go s.processActivity(context.Background(), activity)
+}
+
+func (s *Server) authValidationBypassed(r *http.Request) bool {
+	if !s.cfg.Bot.DisableAuthValidation {
+		return false
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
 }
 
 func (s *Server) handleDirectFile(w http.ResponseWriter, r *http.Request) {
@@ -105,8 +105,13 @@ func (s *Server) handleDirectFile(w http.ResponseWriter, r *http.Request) {
 	}
 	accountID := r.URL.Query().Get("account")
 	rawURL := r.URL.Query().Get("url")
-	if accountID == "" || rawURL == "" {
-		http.Error(w, "missing account or url", http.StatusBadRequest)
+	exp, err := strconv.ParseInt(r.URL.Query().Get("exp"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid signed file url", http.StatusBadRequest)
+		return
+	}
+	if err := validateDirectFileSignature(s.cfg.Bot, accountID, rawURL, exp, r.URL.Query().Get("sig"), time.Now()); err != nil {
+		http.Error(w, "invalid signed file url", http.StatusForbidden)
 		return
 	}
 	account, ok := s.cfg.Account(accountID)
@@ -198,6 +203,7 @@ func (s *Server) processActivity(ctx context.Context, activity Activity) {
 		echo = true
 		text = strings.TrimSpace(trimmedText[len(fields[0]):])
 	}
+	text = appendTeamsSenderName(text, activity.From.Name)
 	attachments := s.attachmentsFromActivity(ctx, activity)
 	out := model.DirectOutbound{
 		AccountID:   mapping.AccountID,
@@ -210,6 +216,17 @@ func (s *Server) processActivity(ctx context.Context, activity Activity) {
 	case s.out <- out:
 	case <-ctx.Done():
 	}
+}
+
+func appendTeamsSenderName(text, displayName string) string {
+	name := strings.TrimSpace(displayName)
+	if name == "" {
+		return text
+	}
+	if strings.TrimSpace(text) == "" {
+		return "（" + name + "）"
+	}
+	return strings.TrimSpace(text) + "（" + name + "）"
 }
 
 func (s *Server) sendWelcome(ctx context.Context, activity Activity) {
@@ -293,10 +310,12 @@ func threadReference(activity Activity) (conversationID, rootID string) {
 func (s *Server) attachmentsFromActivity(ctx context.Context, activity Activity) []model.Attachment {
 	out := make([]model.Attachment, 0, len(activity.Attachments))
 	for _, att := range activity.Attachments {
-		item := model.Attachment{Name: att.Name, ContentType: att.ContentType, URL: att.ContentURL}
+		item := model.Attachment{Name: att.Name, ContentType: att.ContentType, URL: firstNonEmpty(att.DownloadURL(), att.ContentURL)}
 		if data, contentType, err := s.client.DownloadAttachment(ctx, att, s.cfg.Attachments.MaxBytes); err == nil {
 			item.Data = data
 			item.ContentType = firstNonEmpty(contentType, item.ContentType)
+		} else {
+			s.logger.Printf("[teams] attachment download failed content_type=%s name=%s url=%s err=%v", att.ContentType, att.Name, item.URL, err)
 		}
 		if strings.TrimSpace(item.Name) == "" && strings.TrimSpace(item.URL) == "" && len(item.Data) == 0 {
 			continue
