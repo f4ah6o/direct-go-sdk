@@ -1,6 +1,9 @@
 package teams
 
 import (
+	"encoding/json"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -22,6 +25,41 @@ func TestAuthValidationBypassedOnlyForLoopbackRemote(t *testing.T) {
 	if s.authValidationBypassed(remote) {
 		t.Fatalf("expected remote request not to bypass auth validation")
 	}
+}
+
+func TestHealthzReportsDirectWorkerStatus(t *testing.T) {
+	s := NewServer(
+		&config.Config{Bot: config.BotConfig{EndpointPath: "/api/messages"}},
+		nil,
+		nil,
+		nil,
+		discardLogger(),
+		WithHealthCheck(func() (bool, interface{}) {
+			return false, []map[string]interface{}{{"account_id": "account-a", "ready": false}}
+		}),
+	)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+
+	s.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("healthz response is not json: %v", err)
+	}
+	if body["ok"] != false {
+		t.Fatalf("ok = %v, want false", body["ok"])
+	}
+	if _, ok := body["direct_accounts"]; !ok {
+		t.Fatalf("direct_accounts missing in response: %v", body)
+	}
+}
+
+func discardLogger() *log.Logger {
+	return log.New(io.Discard, "", 0)
 }
 
 func TestHandleDirectFileRejectsUnsignedURL(t *testing.T) {

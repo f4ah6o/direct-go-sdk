@@ -77,9 +77,13 @@ func runBridge(args []string, logger *log.Logger) error {
 	teamsClient := teams.NewClient(cfg.Bot, cfg.Server.PublicBaseURL, cfg.Attachments.FileProxyTTL)
 	directManager := directworker.NewManager(directToTeams, directSent, logger)
 	service := appbridge.NewService(runtimeState.Account, st, teamsClient, directManager, directToTeams, teamsToDirect, directSent, logger)
-	server := teams.NewServer(cfg, teamsClient, st, teamsToDirect, logger, teams.WithRuntimeLookups(runtimeState.HasChannel, runtimeState.Account, runtimeState.Token))
+	server := teams.NewServer(cfg, teamsClient, st, teamsToDirect, logger,
+		teams.WithRuntimeLookups(runtimeState.HasChannel, runtimeState.Account, runtimeState.Token),
+		teams.WithHealthCheck(func() (bool, interface{}) { return directManager.Healthy() }),
+	)
 
 	directManager.Apply(ctx, runtimeState.DirectAccounts())
+	go directManager.StartWatchdog(ctx, 10*time.Second, 2*time.Minute)
 	go watchConfig(ctx, *configPath, runtimeState, directManager, logger)
 	service.Run(ctx)
 	return server.Run(ctx)

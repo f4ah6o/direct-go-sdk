@@ -21,13 +21,16 @@ import (
 )
 
 type Manager struct {
-	mu            sync.Mutex
-	workers       map[string]*accountWorker
-	out           chan<- model.DirectMessage
-	sent          chan<- model.DirectSent
-	logger        *log.Logger
-	clientFactory directClientFactory
-	sleepBackoff  func(context.Context, *time.Duration)
+	mu             sync.Mutex
+	workers        map[string]*accountWorker
+	statuses       map[string]AccountStatus
+	nextGeneration uint64
+	out            chan<- model.DirectMessage
+	sent           chan<- model.DirectSent
+	logger         *log.Logger
+	clientFactory  directClientFactory
+	sleepBackoff   func(context.Context, *time.Duration)
+	now            func() time.Time
 }
 
 type RuntimeAccount struct {
@@ -36,9 +39,28 @@ type RuntimeAccount struct {
 }
 
 type accountWorker struct {
-	account RuntimeAccount
-	queue   chan model.DirectOutbound
-	cancel  context.CancelFunc
+	account    RuntimeAccount
+	generation uint64
+	queue      chan model.DirectOutbound
+	cancel     context.CancelFunc
+	restart    chan struct{}
+	status     func(func(*AccountStatus))
+}
+
+type AccountStatus struct {
+	AccountID    string    `json:"account_id"`
+	Generation   uint64    `json:"generation"`
+	Running      bool      `json:"running"`
+	Connected    bool      `json:"connected"`
+	Ready        bool      `json:"ready"`
+	StartedAt    time.Time `json:"started_at"`
+	UnreadySince time.Time `json:"unready_since,omitempty"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	ReadyAt      time.Time `json:"ready_at,omitempty"`
+	RestartedAt  time.Time `json:"restarted_at,omitempty"`
+	Restarts     int       `json:"restarts"`
+	AuthInvalid  bool      `json:"auth_invalid"`
+	LastError    string    `json:"last_error,omitempty"`
 }
 
 type directClient interface {
@@ -70,6 +92,8 @@ func NewManager(out chan<- model.DirectMessage, sent chan<- model.DirectSent, lo
 		logger:        logger,
 		clientFactory: newProductionDirectClient,
 		sleepBackoff:  sleepWithBackoff,
+		statuses:      map[string]AccountStatus{},
+		now:           time.Now,
 	}
 }
 
@@ -96,6 +120,45 @@ func (m *Manager) Send(ctx context.Context, msg model.DirectOutbound) error {
 	}
 }
 
+func (m *Manager) Statuses() []AccountStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]AccountStatus, 0, len(m.statuses))
+	for _, status := range m.statuses {
+		out = append(out, status)
+	}
+	return out
+}
+
+func (m *Manager) Healthy() (bool, []AccountStatus) {
+	statuses := m.Statuses()
+	for _, status := range statuses {
+		if !status.Running || !status.Connected || !status.Ready {
+			return false, statuses
+		}
+	}
+	return true, statuses
+}
+
+func (m *Manager) StartWatchdog(ctx context.Context, interval, startupTimeout time.Duration) {
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	if startupTimeout <= 0 {
+		startupTimeout = 2 * time.Minute
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.restartStaleWorkers(startupTimeout)
+		}
+	}
+}
+
 func (m *Manager) Apply(ctx context.Context, accounts []RuntimeAccount) {
 	next := map[string]RuntimeAccount{}
 	for _, account := range accounts {
@@ -110,22 +173,80 @@ func (m *Manager) Apply(ctx context.Context, accounts []RuntimeAccount) {
 			m.logger.Printf("[%s] stopping direct worker", id)
 			worker.cancel()
 			delete(m.workers, id)
+			delete(m.statuses, id)
 		}
 	}
 	for id, account := range next {
 		if _, ok := m.workers[id]; ok {
 			continue
 		}
+		m.nextGeneration++
+		generation := m.nextGeneration
 		workerCtx, cancel := context.WithCancel(ctx)
 		worker := &accountWorker{
-			account: account,
-			queue:   make(chan model.DirectOutbound, 100),
-			cancel:  cancel,
+			account:    account,
+			generation: generation,
+			queue:      make(chan model.DirectOutbound, 100),
+			cancel:     cancel,
+			restart:    make(chan struct{}, 1),
+		}
+		worker.status = func(update func(*AccountStatus)) {
+			m.updateStatus(id, generation, update)
 		}
 		m.workers[id] = worker
+		now := m.now()
+		m.statuses[id] = AccountStatus{AccountID: id, Generation: generation, StartedAt: now, UnreadySince: now, UpdatedAt: now}
 		m.logger.Printf("[%s] starting direct worker", id)
-		go runAccountWorker(workerCtx, account, worker.queue, m.out, m.sent, m.logger, m.clientFactory, m.sleepBackoff)
+		go runAccountWorker(workerCtx, worker, m.out, m.sent, m.logger, m.clientFactory, m.sleepBackoff, m.now)
 	}
+}
+
+func (m *Manager) restartStaleWorkers(startupTimeout time.Duration) {
+	now := m.now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, worker := range m.workers {
+		status := m.statuses[id]
+		if status.AuthInvalid {
+			continue
+		}
+		if status.Ready {
+			continue
+		}
+		unreadySince := status.UnreadySince
+		if unreadySince.IsZero() {
+			unreadySince = status.StartedAt
+		}
+		if unreadySince.IsZero() || now.Sub(unreadySince) < startupTimeout {
+			continue
+		}
+		m.logger.Printf("[%s] direct worker is not ready after %s; requesting restart", id, startupTimeout)
+		select {
+		case worker.restart <- struct{}{}:
+			status.RestartedAt = now
+			status.UpdatedAt = now
+			status.LastError = fmt.Sprintf("not ready after %s", startupTimeout)
+			m.statuses[id] = status
+		default:
+		}
+	}
+}
+
+func (m *Manager) updateStatus(accountID string, generation uint64, update func(*AccountStatus)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	worker, ok := m.workers[accountID]
+	if !ok || worker.generation != generation {
+		return
+	}
+	status := m.statuses[accountID]
+	if status.AccountID == "" {
+		status.AccountID = accountID
+	}
+	status.Generation = generation
+	update(&status)
+	status.UpdatedAt = m.now()
+	m.statuses[accountID] = status
 }
 
 func sameRuntimeAccount(a, b RuntimeAccount) bool {
@@ -136,10 +257,33 @@ func sameRuntimeAccount(a, b RuntimeAccount) bool {
 		a.Config.TeamsChannel == b.Config.TeamsChannel
 }
 
-func runAccountWorker(ctx context.Context, account RuntimeAccount, in <-chan model.DirectOutbound, out chan<- model.DirectMessage, sent chan<- model.DirectSent, logger *log.Logger, clientFactory directClientFactory, sleepBackoff func(context.Context, *time.Duration)) {
+func markUnready(status *AccountStatus, now time.Time) {
+	if status.UnreadySince.IsZero() {
+		status.UnreadySince = now
+	}
+}
+
+func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- model.DirectMessage, sent chan<- model.DirectSent, logger *log.Logger, clientFactory directClientFactory, sleepBackoff func(context.Context, *time.Duration), now func() time.Time) {
+	account := worker.account
+	in := worker.queue
 	cfg := account.Config
 	backoff := time.Second
 	var pending *model.DirectOutbound
+	worker.status(func(status *AccountStatus) {
+		status.Running = true
+		status.StartedAt = now()
+		status.Connected = false
+		status.Ready = false
+		markUnready(status, now())
+		status.AuthInvalid = false
+		status.LastError = ""
+	})
+	defer worker.status(func(status *AccountStatus) {
+		status.Running = false
+		status.Connected = false
+		status.Ready = false
+		markUnready(status, now())
+	})
 	for {
 		select {
 		case <-ctx.Done():
@@ -150,9 +294,22 @@ func runAccountWorker(ctx context.Context, account RuntimeAccount, in <-chan mod
 		token := account.Token
 		if token == "" {
 			logger.Printf("[%s] direct token is empty; retrying", cfg.ID)
+			worker.status(func(status *AccountStatus) {
+				status.LastError = "direct token is empty"
+			})
 			sleepBackoff(ctx, &backoff)
 			continue
 		}
+		worker.status(func(status *AccountStatus) {
+			// StartedAt tracks the current connection attempt; UnreadySince tracks
+			// the continuous period without a ready notification.
+			status.StartedAt = now()
+			status.Connected = false
+			status.Ready = false
+			markUnready(status, now())
+			status.AuthInvalid = false
+			status.LastError = ""
+		})
 		logger.Printf("[%s] using direct token len=%d sha=%s", cfg.ID, len(token), tokenFingerprint(token))
 
 		endpoint := cfg.Endpoint
@@ -182,12 +339,24 @@ func runAccountWorker(ctx context.Context, account RuntimeAccount, in <-chan mod
 
 		client.On(direct.EventError, func(data interface{}) {
 			logger.Printf("[%s] direct error: %+v", cfg.ID, data)
+			worker.status(func(status *AccountStatus) {
+				status.LastError = fmt.Sprint(data)
+			})
 			requestReconnect()
 		})
 		client.On(direct.EventSessionError, func(data interface{}) {
 			logger.Printf("[%s] direct session error: %+v", cfg.ID, data)
+			worker.status(func(status *AccountStatus) {
+				status.LastError = fmt.Sprint(data)
+			})
 			if isInvalidTokenError(data) {
 				logger.Printf("[%s] direct token is invalid; waiting for token update before reconnect", cfg.ID)
+				worker.status(func(status *AccountStatus) {
+					status.AuthInvalid = true
+					status.Connected = false
+					status.Ready = false
+					markUnready(status, now())
+				})
 				return
 			}
 			requestReconnect()
@@ -197,10 +366,19 @@ func runAccountWorker(ctx context.Context, account RuntimeAccount, in <-chan mod
 		})
 		client.On(direct.EventDataRecovered, func(data interface{}) {
 			logger.Printf("[%s] direct notification ready", cfg.ID)
+			worker.status(func(status *AccountStatus) {
+				status.Ready = true
+				status.ReadyAt = now()
+				status.UnreadySince = time.Time{}
+				status.LastError = ""
+			})
 			markReady()
 		})
 		client.On(direct.EventNotificationError, func(data interface{}) {
 			logger.Printf("[%s] direct notification error: %+v", cfg.ID, data)
+			worker.status(func(status *AccountStatus) {
+				status.LastError = fmt.Sprint(data)
+			})
 			requestReconnect()
 		})
 		client.OnMessage(func(msg direct.ReceivedMessage) {
@@ -227,11 +405,21 @@ func runAccountWorker(ctx context.Context, account RuntimeAccount, in <-chan mod
 
 		if err := client.Connect(); err != nil {
 			logger.Printf("[%s] connect failed: %v", cfg.ID, err)
+			worker.status(func(status *AccountStatus) {
+				status.Connected = false
+				status.Ready = false
+				markUnready(status, now())
+				status.LastError = err.Error()
+			})
 			_ = client.Close()
 			sleepBackoff(ctx, &backoff)
 			continue
 		}
 		logger.Printf("[%s] connected", cfg.ID)
+		worker.status(func(status *AccountStatus) {
+			status.Connected = true
+			status.LastError = ""
+		})
 
 		disconnected := false
 		for !disconnected {
@@ -239,6 +427,9 @@ func runAccountWorker(ctx context.Context, account RuntimeAccount, in <-chan mod
 				messageID, err := sendDirect(ctx, client, *pending)
 				if err != nil {
 					logger.Printf("[%s] direct send failed: talk=%s err=%v", cfg.ID, pending.TalkID, err)
+					worker.status(func(status *AccountStatus) {
+						status.LastError = err.Error()
+					})
 					if isRecoverableDirectError(err) {
 						logger.Printf("[%s] recreating client after recoverable direct send error", cfg.ID)
 						_ = client.Close()
@@ -252,6 +443,9 @@ func runAccountWorker(ctx context.Context, account RuntimeAccount, in <-chan mod
 					pending = nil
 					continue
 				}
+				worker.status(func(status *AccountStatus) {
+					status.LastError = ""
+				})
 				select {
 				case sent <- model.DirectSent{Outbound: *pending, MessageID: messageID}:
 				case <-ctx.Done():
@@ -267,10 +461,32 @@ func runAccountWorker(ctx context.Context, account RuntimeAccount, in <-chan mod
 				return
 			case <-client.Done():
 				logger.Printf("[%s] disconnected; recreating client", cfg.ID)
+				worker.status(func(status *AccountStatus) {
+					status.Connected = false
+					status.Ready = false
+					markUnready(status, now())
+					status.LastError = "disconnected"
+				})
 				_ = client.Close()
 				disconnected = true
 			case <-reconnectNow:
 				logger.Printf("[%s] recreating client after direct startup error", cfg.ID)
+				worker.status(func(status *AccountStatus) {
+					status.Connected = false
+					status.Ready = false
+					markUnready(status, now())
+				})
+				_ = client.Close()
+				disconnected = true
+			case <-worker.restart:
+				logger.Printf("[%s] recreating client after watchdog restart request", cfg.ID)
+				worker.status(func(status *AccountStatus) {
+					status.Connected = false
+					status.Ready = false
+					markUnready(status, now())
+					status.Restarts++
+					status.RestartedAt = now()
+				})
 				_ = client.Close()
 				disconnected = true
 			case <-readyNow:

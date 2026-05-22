@@ -24,7 +24,8 @@ func TestAccountWorkerRecreatesClientOnDirectError(t *testing.T) {
 	out := make(chan model.DirectMessage)
 	sent := make(chan model.DirectSent, 1)
 
-	go runAccountWorker(ctx, runtimeAccount(), in, out, sent, discardLogger(), factory.New, noBackoff)
+	worker := testAccountWorker(runtimeAccount(), in)
+	go runAccountWorker(ctx, worker, out, sent, discardLogger(), factory.New, noBackoff, time.Now)
 
 	first := factory.waitForClient(t, 1)
 	first.emit(direct.EventError, map[string]string{"error": "read failed"})
@@ -56,7 +57,8 @@ func TestAccountWorkerRecreatesClientOnDone(t *testing.T) {
 	out := make(chan model.DirectMessage)
 	sent := make(chan model.DirectSent, 1)
 
-	go runAccountWorker(ctx, runtimeAccount(), in, out, sent, discardLogger(), factory.New, noBackoff)
+	worker := testAccountWorker(runtimeAccount(), in)
+	go runAccountWorker(ctx, worker, out, sent, discardLogger(), factory.New, noBackoff, time.Now)
 
 	first := factory.waitForClient(t, 1)
 	if err := first.Close(); err != nil {
@@ -95,7 +97,8 @@ func TestAccountWorkerRetriesOutboundAfterRecoverableSendError(t *testing.T) {
 	out := make(chan model.DirectMessage)
 	sent := make(chan model.DirectSent, 1)
 
-	go runAccountWorker(ctx, runtimeAccount(), in, out, sent, discardLogger(), factory.New, noBackoff)
+	worker := testAccountWorker(runtimeAccount(), in)
+	go runAccountWorker(ctx, worker, out, sent, discardLogger(), factory.New, noBackoff, time.Now)
 
 	first := factory.waitForClient(t, 1)
 	in <- model.DirectOutbound{AccountID: "account-a", TalkID: "talk-a", Text: "retry me"}
@@ -129,7 +132,8 @@ func TestAccountWorkerDoesNotRetryNonRecoverableSendError(t *testing.T) {
 	out := make(chan model.DirectMessage)
 	sent := make(chan model.DirectSent, 1)
 
-	go runAccountWorker(ctx, runtimeAccount(), in, out, sent, discardLogger(), factory.New, noBackoff)
+	worker := testAccountWorker(runtimeAccount(), in)
+	go runAccountWorker(ctx, worker, out, sent, discardLogger(), factory.New, noBackoff, time.Now)
 
 	first := factory.waitForClient(t, 1)
 	in <- model.DirectOutbound{AccountID: "account-a", TalkID: "talk-a", Text: "fail"}
@@ -145,10 +149,140 @@ func TestAccountWorkerDoesNotRetryNonRecoverableSendError(t *testing.T) {
 	}
 }
 
+func TestManagerWatchdogRestartsWorkerThatNeverBecomesReady(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	out := make(chan model.DirectMessage)
+	sent := make(chan model.DirectSent, 1)
+	factory := &fakeDirectClientFactory{}
+	manager := NewManager(out, sent, discardLogger())
+	manager.clientFactory = factory.New
+	manager.sleepBackoff = noBackoff
+
+	manager.Apply(ctx, []RuntimeAccount{runtimeAccount()})
+	first := factory.waitForClient(t, 1)
+
+	manager.mu.Lock()
+	status := manager.statuses["account-a"]
+	status.StartedAt = time.Now().Add(-time.Minute)
+	status.UnreadySince = status.StartedAt
+	manager.statuses["account-a"] = status
+	manager.mu.Unlock()
+
+	manager.restartStaleWorkers(time.Second)
+	second := factory.waitForClient(t, 2)
+
+	if !first.isClosed() {
+		t.Fatalf("first client was not closed after watchdog restart")
+	}
+	if second == first {
+		t.Fatalf("expected a new client after watchdog restart")
+	}
+
+	statuses := manager.Statuses()
+	if len(statuses) != 1 {
+		t.Fatalf("statuses len = %d, want 1", len(statuses))
+	}
+	if statuses[0].Restarts == 0 {
+		t.Fatalf("expected restart count to be incremented")
+	}
+}
+
+func TestManagerWatchdogDoesNotRestartInvalidTokenWorker(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	out := make(chan model.DirectMessage)
+	sent := make(chan model.DirectSent, 1)
+	factory := &fakeDirectClientFactory{}
+	manager := NewManager(out, sent, discardLogger())
+	manager.clientFactory = factory.New
+	manager.sleepBackoff = noBackoff
+
+	manager.Apply(ctx, []RuntimeAccount{runtimeAccount()})
+	_ = factory.waitForClient(t, 1)
+
+	manager.mu.Lock()
+	status := manager.statuses["account-a"]
+	status.StartedAt = time.Now().Add(-time.Minute)
+	status.UnreadySince = status.StartedAt
+	status.AuthInvalid = true
+	manager.statuses["account-a"] = status
+	manager.mu.Unlock()
+
+	manager.restartStaleWorkers(time.Second)
+
+	if factory.clientCount() != 1 {
+		t.Fatalf("client count = %d, want 1", factory.clientCount())
+	}
+}
+
+func TestManagerIgnoresStatusUpdatesFromOldWorkerGeneration(t *testing.T) {
+	out := make(chan model.DirectMessage)
+	sent := make(chan model.DirectSent, 1)
+	manager := NewManager(out, sent, discardLogger())
+
+	manager.mu.Lock()
+	manager.workers["account-a"] = &accountWorker{generation: 2}
+	manager.statuses["account-a"] = AccountStatus{AccountID: "account-a", Generation: 2, Running: true, Ready: true}
+	manager.mu.Unlock()
+
+	manager.updateStatus("account-a", 1, func(status *AccountStatus) {
+		status.Running = false
+		status.Ready = false
+		status.LastError = "old worker exited"
+	})
+
+	statuses := manager.Statuses()
+	if len(statuses) != 1 {
+		t.Fatalf("statuses len = %d, want 1", len(statuses))
+	}
+	if !statuses[0].Running || !statuses[0].Ready || statuses[0].LastError != "" {
+		t.Fatalf("old generation changed status: %+v", statuses[0])
+	}
+}
+
+func TestManagerDoesNotResurrectStatusAfterWorkerRemoval(t *testing.T) {
+	out := make(chan model.DirectMessage)
+	sent := make(chan model.DirectSent, 1)
+	manager := NewManager(out, sent, discardLogger())
+
+	manager.updateStatus("account-a", 1, func(status *AccountStatus) {
+		status.Running = false
+		status.LastError = "removed worker exited"
+	})
+
+	if statuses := manager.Statuses(); len(statuses) != 0 {
+		t.Fatalf("statuses len = %d, want 0: %+v", len(statuses), statuses)
+	}
+}
+
 func runtimeAccount() RuntimeAccount {
 	return RuntimeAccount{
 		Config: config.AccountConfig{ID: "account-a", TeamsChannel: "support"},
 		Token:  "token-a",
+	}
+}
+
+func testAccountWorker(account RuntimeAccount, in chan model.DirectOutbound) *accountWorker {
+	statuses := map[string]AccountStatus{}
+	var mu sync.Mutex
+	return &accountWorker{
+		account:    account,
+		generation: 1,
+		queue:      in,
+		restart:    make(chan struct{}, 1),
+		status: func(update func(*AccountStatus)) {
+			mu.Lock()
+			defer mu.Unlock()
+			status := statuses[account.Config.ID]
+			if status.AccountID == "" {
+				status.AccountID = account.Config.ID
+			}
+			update(&status)
+			statuses[account.Config.ID] = status
+		},
 	}
 }
 

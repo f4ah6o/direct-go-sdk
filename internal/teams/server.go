@@ -28,6 +28,7 @@ type Server struct {
 	hasChannel func(string) bool
 	account    func(string) (config.AccountConfig, bool)
 	token      func(string) (string, bool)
+	health     func() (bool, interface{})
 }
 
 func NewServer(cfg *config.Config, client *Client, st *store.Store, out chan<- model.DirectOutbound, logger *log.Logger, opts ...func(*Server)) *Server {
@@ -42,6 +43,7 @@ func NewServer(cfg *config.Config, client *Client, st *store.Store, out chan<- m
 		hasChannel: func(alias string) bool { _, ok := cfg.TeamsChannels[alias]; return ok },
 		account:    cfg.Account,
 		token:      func(accountID string) (string, bool) { return "", false },
+		health:     func() (bool, interface{}) { return true, nil },
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -50,8 +52,21 @@ func NewServer(cfg *config.Config, client *Client, st *store.Store, out chan<- m
 	mux.HandleFunc(cfg.Bot.EndpointPath, s.handleActivity)
 	mux.HandleFunc("/files/direct", s.handleDirectFile)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok\n"))
+		ok, details := s.health()
+		if details == nil {
+			if ok {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("ok\n"))
+				return
+			}
+			http.Error(w, "unhealthy", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if !ok {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": ok, "direct_accounts": details})
 	})
 	s.httpServer = &http.Server{
 		Addr:              cfg.Server.ListenAddr,
@@ -59,6 +74,12 @@ func NewServer(cfg *config.Config, client *Client, st *store.Store, out chan<- m
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return s
+}
+
+func WithHealthCheck(health func() (bool, interface{})) func(*Server) {
+	return func(s *Server) {
+		s.health = health
+	}
 }
 
 func WithRuntimeLookups(hasChannel func(string) bool, account func(string) (config.AccountConfig, bool), token func(string) (string, bool)) func(*Server) {
