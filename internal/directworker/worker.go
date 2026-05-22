@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -20,11 +21,13 @@ import (
 )
 
 type Manager struct {
-	mu      sync.Mutex
-	workers map[string]*accountWorker
-	out     chan<- model.DirectMessage
-	sent    chan<- model.DirectSent
-	logger  *log.Logger
+	mu            sync.Mutex
+	workers       map[string]*accountWorker
+	out           chan<- model.DirectMessage
+	sent          chan<- model.DirectSent
+	logger        *log.Logger
+	clientFactory directClientFactory
+	sleepBackoff  func(context.Context, *time.Duration)
 }
 
 type RuntimeAccount struct {
@@ -38,13 +41,40 @@ type accountWorker struct {
 	cancel  context.CancelFunc
 }
 
+type directClient interface {
+	Connect() error
+	Close() error
+	On(string, direct.EventHandler)
+	OnMessage(func(direct.ReceivedMessage))
+	CreateTextMessageWithContext(context.Context, string, string) (string, error)
+	CreateUploadAuth(context.Context, string, string, int64, string) (*direct.UploadAuth, error)
+	Call(string, []interface{}) (interface{}, error)
+	Done() <-chan struct{}
+}
+
+type directClientFactory func(direct.Options) directClient
+
+type productionDirectClient struct {
+	*direct.Client
+}
+
+func (c productionDirectClient) Done() <-chan struct{} {
+	return c.Client.Done
+}
+
 func NewManager(out chan<- model.DirectMessage, sent chan<- model.DirectSent, logger *log.Logger) *Manager {
 	return &Manager{
-		workers: map[string]*accountWorker{},
-		out:     out,
-		sent:    sent,
-		logger:  logger,
+		workers:       map[string]*accountWorker{},
+		out:           out,
+		sent:          sent,
+		logger:        logger,
+		clientFactory: newProductionDirectClient,
+		sleepBackoff:  sleepWithBackoff,
 	}
+}
+
+func newProductionDirectClient(opts direct.Options) directClient {
+	return productionDirectClient{Client: direct.NewClient(opts)}
 }
 
 func (m *Manager) Send(ctx context.Context, msg model.DirectOutbound) error {
@@ -94,7 +124,7 @@ func (m *Manager) Apply(ctx context.Context, accounts []RuntimeAccount) {
 		}
 		m.workers[id] = worker
 		m.logger.Printf("[%s] starting direct worker", id)
-		go runAccountWorker(workerCtx, account, worker.queue, m.out, m.sent, m.logger)
+		go runAccountWorker(workerCtx, account, worker.queue, m.out, m.sent, m.logger, m.clientFactory, m.sleepBackoff)
 	}
 }
 
@@ -106,9 +136,10 @@ func sameRuntimeAccount(a, b RuntimeAccount) bool {
 		a.Config.TeamsChannel == b.Config.TeamsChannel
 }
 
-func runAccountWorker(ctx context.Context, account RuntimeAccount, in <-chan model.DirectOutbound, out chan<- model.DirectMessage, sent chan<- model.DirectSent, logger *log.Logger) {
+func runAccountWorker(ctx context.Context, account RuntimeAccount, in <-chan model.DirectOutbound, out chan<- model.DirectMessage, sent chan<- model.DirectSent, logger *log.Logger, clientFactory directClientFactory, sleepBackoff func(context.Context, *time.Duration)) {
 	cfg := account.Config
 	backoff := time.Second
+	var pending *model.DirectOutbound
 	for {
 		select {
 		case <-ctx.Done():
@@ -119,7 +150,7 @@ func runAccountWorker(ctx context.Context, account RuntimeAccount, in <-chan mod
 		token := account.Token
 		if token == "" {
 			logger.Printf("[%s] direct token is empty; retrying", cfg.ID)
-			sleepWithBackoff(ctx, &backoff)
+			sleepBackoff(ctx, &backoff)
 			continue
 		}
 		logger.Printf("[%s] using direct token len=%d sha=%s", cfg.ID, len(token), tokenFingerprint(token))
@@ -128,7 +159,7 @@ func runAccountWorker(ctx context.Context, account RuntimeAccount, in <-chan mod
 		if endpoint == "" {
 			endpoint = direct.DefaultEndpoint
 		}
-		client := direct.NewClient(direct.Options{
+		client := clientFactory(direct.Options{
 			AccessToken: token,
 			Endpoint:    endpoint,
 			ProxyURL:    cfg.ProxyURL,
@@ -151,6 +182,7 @@ func runAccountWorker(ctx context.Context, account RuntimeAccount, in <-chan mod
 
 		client.On(direct.EventError, func(data interface{}) {
 			logger.Printf("[%s] direct error: %+v", cfg.ID, data)
+			requestReconnect()
 		})
 		client.On(direct.EventSessionError, func(data interface{}) {
 			logger.Printf("[%s] direct session error: %+v", cfg.ID, data)
@@ -196,19 +228,44 @@ func runAccountWorker(ctx context.Context, account RuntimeAccount, in <-chan mod
 		if err := client.Connect(); err != nil {
 			logger.Printf("[%s] connect failed: %v", cfg.ID, err)
 			_ = client.Close()
-			sleepWithBackoff(ctx, &backoff)
+			sleepBackoff(ctx, &backoff)
 			continue
 		}
 		logger.Printf("[%s] connected", cfg.ID)
 
 		disconnected := false
 		for !disconnected {
+			if pending != nil {
+				messageID, err := sendDirect(ctx, client, *pending)
+				if err != nil {
+					logger.Printf("[%s] direct send failed: talk=%s err=%v", cfg.ID, pending.TalkID, err)
+					if isRecoverableDirectError(err) {
+						logger.Printf("[%s] recreating client after recoverable direct send error", cfg.ID)
+						_ = client.Close()
+						disconnected = true
+						continue
+					}
+					select {
+					case sent <- model.DirectSent{Outbound: *pending, Err: err}:
+					case <-ctx.Done():
+					}
+					pending = nil
+					continue
+				}
+				select {
+				case sent <- model.DirectSent{Outbound: *pending, MessageID: messageID}:
+				case <-ctx.Done():
+				}
+				pending = nil
+				continue
+			}
+
 			select {
 			case <-ctx.Done():
 				logger.Printf("[%s] shutting down", cfg.ID)
 				_ = client.Close()
 				return
-			case <-client.Done:
+			case <-client.Done():
 				logger.Printf("[%s] disconnected; recreating client", cfg.ID)
 				_ = client.Close()
 				disconnected = true
@@ -219,22 +276,10 @@ func runAccountWorker(ctx context.Context, account RuntimeAccount, in <-chan mod
 			case <-readyNow:
 				backoff = time.Second
 			case msg := <-in:
-				messageID, err := sendDirect(ctx, client, msg)
-				if err != nil {
-					logger.Printf("[%s] direct send failed: talk=%s err=%v", cfg.ID, msg.TalkID, err)
-					select {
-					case sent <- model.DirectSent{Outbound: msg, Err: err}:
-					case <-ctx.Done():
-					}
-					continue
-				}
-				select {
-				case sent <- model.DirectSent{Outbound: msg, MessageID: messageID}:
-				case <-ctx.Done():
-				}
+				pending = &msg
 			}
 		}
-		sleepWithBackoff(ctx, &backoff)
+		sleepBackoff(ctx, &backoff)
 	}
 }
 
@@ -253,7 +298,27 @@ func isInvalidTokenError(data interface{}) bool {
 	return code == "401" && (message == "invalid token" || message == "bad token")
 }
 
-func sendDirect(ctx context.Context, client *direct.Client, msg model.DirectOutbound) (string, error) {
+func isRecoverableDirectError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var connErr *direct.ConnectionError
+	if errors.Is(err, direct.ErrNotConnected) ||
+		errors.Is(err, direct.ErrTimeout) ||
+		strings.Contains(err.Error(), direct.ErrNotConnected.Error()) ||
+		strings.Contains(err.Error(), direct.ErrTimeout.Error()) ||
+		strings.Contains(err.Error(), "not connected") ||
+		strings.Contains(err.Error(), "websocket: close") ||
+		strings.Contains(err.Error(), "use of closed network connection") ||
+		strings.Contains(err.Error(), "broken pipe") ||
+		strings.Contains(err.Error(), "connection reset") ||
+		strings.Contains(err.Error(), "i/o timeout") {
+		return true
+	}
+	return errors.As(err, &connErr)
+}
+
+func sendDirect(ctx context.Context, client directClient, msg model.DirectOutbound) (string, error) {
 	if len(msg.Attachments) == 0 {
 		return client.CreateTextMessageWithContext(ctx, msg.TalkID, msg.Text)
 	}
@@ -292,7 +357,7 @@ func directMessageID(result interface{}) string {
 	return ""
 }
 
-func uploadAttachment(ctx context.Context, client *direct.Client, att model.Attachment) (map[string]interface{}, error) {
+func uploadAttachment(ctx context.Context, client directClient, att model.Attachment) (map[string]interface{}, error) {
 	if len(att.Data) == 0 {
 		return nil, fmt.Errorf("attachment %q has no data", att.Name)
 	}
