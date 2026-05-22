@@ -18,6 +18,7 @@ type Activity struct {
 	Conversation ConversationAccount `json:"conversation,omitempty"`
 	Text         string              `json:"text,omitempty"`
 	TextFormat   string              `json:"textFormat,omitempty"`
+	TopicName    string              `json:"topicName,omitempty"`
 	ReplyToID    string              `json:"replyToId,omitempty"`
 	MembersAdded []ChannelAccount    `json:"membersAdded,omitempty"`
 	Entities     []Entity            `json:"entities,omitempty"`
@@ -35,6 +36,15 @@ type ConversationAccount struct {
 	Name             string `json:"name,omitempty"`
 	ConversationType string `json:"conversationType,omitempty"`
 	TenantID         string `json:"tenantId,omitempty"`
+}
+
+type ConversationParameters struct {
+	IsGroup      bool                `json:"isGroup,omitempty"`
+	Bot          ChannelAccount      `json:"bot,omitempty"`
+	Activity     Activity            `json:"activity,omitempty"`
+	ChannelData  ChannelData         `json:"channelData,omitempty"`
+	TenantID     string              `json:"tenantId,omitempty"`
+	Conversation ConversationAccount `json:"conversation,omitempty"`
 }
 
 type Entity struct {

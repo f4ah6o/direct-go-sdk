@@ -49,6 +49,11 @@ func (c *Client) CreateRootMessage(ctx context.Context, serviceURL, conversation
 	return c.sendActivity(ctx, serviceURL, conversationID, "", activity)
 }
 
+func (c *Client) CreateRootThread(ctx context.Context, serviceURL string, binding ChannelThreadBinding, msg model.DirectMessage) (string, error) {
+	activity := NewMessageActivity(c.formatDirectRootMessage(msg))
+	return c.createConversation(ctx, serviceURL, binding.ConversationParameters(activity))
+}
+
 func (c *Client) ReplyToThread(ctx context.Context, serviceURL, conversationID, rootID string, msg model.DirectMessage) (string, error) {
 	activity := NewMessageActivity(c.formatDirectReplyMessage(msg))
 	return c.sendActivity(ctx, serviceURL, teamsThreadConversationID(conversationID, rootID), "", activity)
@@ -56,6 +61,34 @@ func (c *Client) ReplyToThread(ctx context.Context, serviceURL, conversationID, 
 
 func (c *Client) SendText(ctx context.Context, serviceURL, conversationID, replyToID, text string) (string, error) {
 	return c.sendActivity(ctx, serviceURL, conversationID, replyToID, NewMessageActivity(text))
+}
+
+type ChannelThreadBinding struct {
+	TeamID         string
+	ChannelID      string
+	ConversationID string
+	TenantID       string
+	BotID          string
+}
+
+func (b ChannelThreadBinding) ConversationParameters(activity Activity) ConversationParameters {
+	conversationID := firstNonEmptyString(b.ChannelID, b.ConversationID)
+	return ConversationParameters{
+		IsGroup:  true,
+		Bot:      ChannelAccount{ID: b.BotID},
+		Activity: activity,
+		ChannelData: ChannelData{
+			Team:    TeamInfo{ID: b.TeamID},
+			Channel: ChannelInfo{ID: conversationID},
+			Tenant:  TenantInfo{ID: b.TenantID},
+		},
+		TenantID: b.TenantID,
+		Conversation: ConversationAccount{
+			ID:               conversationID,
+			ConversationType: "channel",
+			TenantID:         b.TenantID,
+		},
+	}
 }
 
 func (c *Client) DownloadAttachment(ctx context.Context, activity Attachment, maxBytes int64) ([]byte, string, error) {
@@ -131,6 +164,44 @@ func (c *Client) sendActivity(ctx context.Context, serviceURL, conversationID, r
 	return out.ID, nil
 }
 
+func (c *Client) createConversation(ctx context.Context, serviceURL string, params ConversationParameters) (string, error) {
+	path := fmt.Sprintf("%s/v3/conversations", strings.TrimRight(serviceURL, "/"))
+	token, err := c.accessToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	body, err := json.Marshal(params)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, path, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("bot connector create conversation status=%d body=%s", resp.StatusCode, string(b))
+	}
+	var out struct {
+		ActivityID string `json:"activityId"`
+		ID         string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if out.ActivityID != "" {
+		return out.ActivityID, nil
+	}
+	return out.ID, nil
+}
+
 func (c *Client) accessToken(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	if c.token != "" && time.Now().Before(c.expiresAt.Add(-time.Minute)) {
@@ -184,7 +255,11 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 }
 
 func (c *Client) formatDirectRootMessage(msg model.DirectMessage) string {
-	return appendAttachmentLinks(fmt.Sprintf("[direct:%s] room=%s\nuser=%s\n%s", msg.AccountID, msg.TalkID, msg.UserID, msg.Text), msg, c.cfg, c.publicBaseURL, c.fileProxyTTL)
+	return appendAttachmentLinks("# "+formatDirectRootTopic(msg)+"\n\n"+msg.Text, msg, c.cfg, c.publicBaseURL, c.fileProxyTTL)
+}
+
+func formatDirectRootTopic(msg model.DirectMessage) string {
+	return fmt.Sprintf("[direct:%s] room=%s user=%s", msg.AccountID, msg.TalkID, msg.UserID)
 }
 
 func (c *Client) formatDirectReplyMessage(msg model.DirectMessage) string {

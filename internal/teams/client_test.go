@@ -1,6 +1,9 @@
 package teams
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -37,7 +40,7 @@ func TestFormatDirectRootAndReplyMessages(t *testing.T) {
 	}
 
 	root := client.formatDirectRootMessage(msg)
-	if !strings.HasPrefix(root, "[direct:bot-trial] room=1792967566075891712\nuser=1792959268018716672\n") {
+	if !strings.HasPrefix(root, "# [direct:bot-trial] room=1792967566075891712 user=1792959268018716672\n\nこんにちは") {
 		t.Fatalf("unexpected root message: %q", root)
 	}
 	if !strings.Contains(root, "[attachment: image.png](https://bridge.example.com/files/direct?") ||
@@ -53,5 +56,76 @@ func TestFormatDirectRootAndReplyMessages(t *testing.T) {
 	}
 	if !strings.HasPrefix(reply, "user=1792959268018716672\nこんにちは") {
 		t.Fatalf("unexpected reply message: %q", reply)
+	}
+
+	if got := formatDirectRootTopic(msg); got != "[direct:bot-trial] room=1792967566075891712 user=1792959268018716672" {
+		t.Fatalf("formatDirectRootTopic() = %q", got)
+	}
+}
+
+func TestCreateRootThreadSendsHeadingInActivityText(t *testing.T) {
+	var request ConversationParameters
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"token","expires_in":3600}`))
+		case "/v3/conversations":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method = %s, want POST", r.Method)
+			}
+			if got := r.Header.Get("Authorization"); got != "Bearer token" {
+				t.Fatalf("authorization = %q", got)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"activityId":"root-message-id"}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(config.BotConfig{
+		AppID:          "app-id",
+		AppPassword:    "secret",
+		TokenURL:       server.URL + "/token",
+		ConnectorScope: "scope",
+	})
+	msg := model.DirectMessage{
+		AccountID: "bot-trial",
+		TalkID:    "1792967566075891712",
+		UserID:    "1792959268018716672",
+		Text:      "こんにちは",
+	}
+
+	rootID, err := client.CreateRootThread(t.Context(), server.URL, ChannelThreadBinding{
+		TeamID:         "team-id",
+		ChannelID:      "channel-id",
+		ConversationID: "conversation-id",
+		TenantID:       "tenant-id",
+		BotID:          "bot-id",
+	}, msg)
+	if err != nil {
+		t.Fatalf("CreateRootThread() error = %v", err)
+	}
+	if rootID != "root-message-id" {
+		t.Fatalf("rootID = %q", rootID)
+	}
+	if request.Activity.TopicName != "" {
+		t.Fatalf("topicName should not be required for display, got %q", request.Activity.TopicName)
+	}
+	if request.Activity.Text != "# [direct:bot-trial] room=1792967566075891712 user=1792959268018716672\n\nこんにちは" {
+		t.Fatalf("activity text = %q", request.Activity.Text)
+	}
+	if request.ChannelData.Team.ID != "team-id" ||
+		request.ChannelData.Channel.ID != "channel-id" ||
+		request.ChannelData.Tenant.ID != "tenant-id" ||
+		request.Bot.ID != "bot-id" ||
+		request.Conversation.ID != "channel-id" ||
+		request.Conversation.ConversationType != "channel" {
+		t.Fatalf("unexpected conversation parameters: %+v", request)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/config"
@@ -27,10 +28,12 @@ type Service struct {
 	teamsIn  <-chan model.DirectOutbound
 	sentIn   <-chan model.DirectSent
 	logger   *log.Logger
+	mu       sync.Mutex
+	pending  map[string]time.Time
 }
 
 func NewService(account AccountLookup, st *store.Store, teamsClient *teams.Client, direct DirectSender, directIn <-chan model.DirectMessage, teamsIn <-chan model.DirectOutbound, sentIn <-chan model.DirectSent, logger *log.Logger) *Service {
-	return &Service{account: account, st: st, teams: teamsClient, direct: direct, directIn: directIn, teamsIn: teamsIn, sentIn: sentIn, logger: logger}
+	return &Service{account: account, st: st, teams: teamsClient, direct: direct, directIn: directIn, teamsIn: teamsIn, sentIn: sentIn, logger: logger, pending: map[string]time.Time{}}
 }
 
 func (s *Service) Run(ctx context.Context) {
@@ -45,7 +48,7 @@ func (s *Service) runDirectToTeams(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case msg := <-s.directIn:
-			if msg.MessageID != "" && s.st.IsSentDirectMessage(msg.MessageID) {
+			if msg.MessageID != "" && s.st.IsSentDirectMessage(msg.MessageID) || s.consumePendingDirectMessage(msg) {
 				continue
 			}
 			if err := s.handleDirectMessage(ctx, msg); err != nil {
@@ -68,7 +71,13 @@ func (s *Service) handleDirectMessage(ctx context.Context, msg model.DirectMessa
 	mapping, ok := s.st.GetByTalk(msg.AccountID, msg.TalkID)
 	if !ok {
 		rootID, err := retry(ctx, func() (string, error) {
-			return s.teams.CreateRootMessage(ctx, binding.ServiceURL, binding.ConversationID, msg)
+			return s.teams.CreateRootThread(ctx, binding.ServiceURL, teams.ChannelThreadBinding{
+				TeamID:         binding.TeamID,
+				ChannelID:      binding.ChannelID,
+				ConversationID: binding.ConversationID,
+				TenantID:       binding.TenantID,
+				BotID:          binding.BotID,
+			}, msg)
 		})
 		if err != nil {
 			return err
@@ -105,7 +114,9 @@ func (s *Service) runTeamsToDirect(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case msg := <-s.teamsIn:
+			s.markPendingDirectMessage(msg)
 			if err := s.direct.Send(ctx, msg); err != nil {
+				s.clearPendingDirectMessage(msg)
 				s.logger.Printf("[bridge] teams->direct failed: account=%s talk=%s err=%v", msg.AccountID, msg.TalkID, err)
 				s.notifyTeamsSendFailure(ctx, model.DirectSent{Outbound: msg, Err: err})
 			}
@@ -119,14 +130,15 @@ func (s *Service) runDirectSent(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case sent := <-s.sentIn:
+			if sent.Err != nil {
+				s.clearPendingDirectMessage(sent.Outbound)
+				s.notifyTeamsSendFailure(ctx, sent)
+				continue
+			}
 			if sent.MessageID != "" {
 				if err := s.st.MarkDirectMessage(sent.MessageID); err != nil {
 					s.logger.Printf("[bridge] failed to mark direct message id=%s err=%v", sent.MessageID, err)
 				}
-			}
-			if sent.Err != nil {
-				s.notifyTeamsSendFailure(ctx, sent)
-				continue
 			}
 			if sent.Outbound.Echo {
 				s.echoTeamsSentMessage(ctx, sent.Outbound)
@@ -162,6 +174,54 @@ func teamsThreadConversationID(conversationID, rootID string) string {
 		return conversationID
 	}
 	return conversationID + ";messageid=" + rootID
+}
+
+func pendingDirectMessageKey(msg model.DirectOutbound) string {
+	return msg.AccountID + ":" + msg.TalkID + ":" + normalizePendingDirectMessageText(msg.Text)
+}
+
+func pendingDirectMessageKeyFromDirect(msg model.DirectMessage) string {
+	return msg.AccountID + ":" + msg.TalkID + ":" + normalizePendingDirectMessageText(msg.Text)
+}
+
+func normalizePendingDirectMessageText(text string) string {
+	return strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
+}
+
+func (s *Service) markPendingDirectMessage(msg model.DirectOutbound) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prunePendingDirectMessagesLocked(time.Now())
+	s.pending[pendingDirectMessageKey(msg)] = time.Now().Add(2 * time.Minute)
+}
+
+func (s *Service) clearPendingDirectMessage(msg model.DirectOutbound) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.pending, pendingDirectMessageKey(msg))
+}
+
+func (s *Service) consumePendingDirectMessage(msg model.DirectMessage) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	s.prunePendingDirectMessagesLocked(now)
+	key := pendingDirectMessageKeyFromDirect(msg)
+	expiry, ok := s.pending[key]
+	if !ok || now.After(expiry) {
+		delete(s.pending, key)
+		return false
+	}
+	delete(s.pending, key)
+	return true
+}
+
+func (s *Service) prunePendingDirectMessagesLocked(now time.Time) {
+	for key, expiry := range s.pending {
+		if now.After(expiry) {
+			delete(s.pending, key)
+		}
+	}
 }
 
 func retry[T any](ctx context.Context, fn func() (T, error)) (T, error) {
