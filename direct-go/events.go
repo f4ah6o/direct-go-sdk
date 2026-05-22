@@ -145,6 +145,14 @@ const (
 	MethodResetMessageReaction         = "reset_message_reaction"
 	MethodGetMessageReactionUsers      = "get_message_reaction_users"
 
+	// Notes
+	MethodGetNoteStatuses   = "get_note_statuses"
+	MethodGetNote           = "get_note"
+	MethodDeleteNote        = "delete_note"
+	MethodLockNote          = "lock_note"
+	MethodUnlockNote        = "unlock_note"
+	MethodUpdateNoteSetting = "update_note_setting"
+
 	// File & Attachment
 	MethodCreateUploadAuth  = "create_upload_auth"
 	MethodGetAttachments    = "get_attachments"
