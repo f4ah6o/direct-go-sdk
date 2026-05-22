@@ -39,6 +39,13 @@ type SearchMessagesResult struct {
 	Contents   []MessageSearchContent
 }
 
+// SearchMessagesAroundDateTimeResult contains messages around a target datetime.
+type SearchMessagesAroundDateTimeResult struct {
+	DateTime interface{}
+	Messages []ReceivedMessage
+	Raw      map[string]interface{}
+}
+
 // MessageSearchContent represents a search result item.
 type MessageSearchContent struct {
 	Message    ReceivedMessage
@@ -182,6 +189,30 @@ func (c *Client) SearchMessages(ctx context.Context, domainID, talkID interface{
 						content.MatchScore = score
 					}
 					searchResult.Contents = append(searchResult.Contents, content)
+				}
+			}
+		}
+	}
+
+	return searchResult, nil
+}
+
+// SearchMessagesAroundDateTime searches for messages around a target datetime.
+func (c *Client) SearchMessagesAroundDateTime(ctx context.Context, talkID, datetime interface{}) (*SearchMessagesAroundDateTimeResult, error) {
+	result, err := c.Call(MethodSearchMessagesAroundDateTime, []interface{}{talkID, datetime})
+	if err != nil {
+		return nil, err
+	}
+
+	searchResult := &SearchMessagesAroundDateTimeResult{DateTime: datetime}
+	if resultMap, ok := result.(map[string]interface{}); ok {
+		searchResult.Raw = resultMap
+		for _, key := range []string{"messages", "contents"} {
+			if messages, ok := resultMap[key].([]interface{}); ok {
+				for _, item := range messages {
+					if msgData, ok := item.(map[string]interface{}); ok {
+						searchResult.Messages = append(searchResult.Messages, parseMessage(msgData))
+					}
 				}
 			}
 		}
@@ -464,6 +495,20 @@ func stringSliceFromValue(v interface{}) []string {
 	out := make([]string, 0, len(arr))
 	for _, item := range arr {
 		out = append(out, stringFromValue(item))
+	}
+	return out
+}
+
+func mapSliceFromValue(v interface{}) []map[string]interface{} {
+	arr, ok := v.([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(arr))
+	for _, item := range arr {
+		if data, ok := item.(map[string]interface{}); ok {
+			out = append(out, data)
+		}
 	}
 	return out
 }

@@ -96,11 +96,18 @@ func TestResolvePathsDetectsDirectGoRootFromToolDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolvePaths returned error: %v", err)
 	}
-	if paths.goPath != root {
-		t.Fatalf("goPath = %q, want %q", paths.goPath, root)
+	want, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
 	}
-	if paths.jsPath != filepath.Join(root, "direct-js-source") {
-		t.Fatalf("jsPath = %q, want %q", paths.jsPath, filepath.Join(root, "direct-js-source"))
+	if paths.goPath != root {
+		if paths.goPath != want {
+			t.Fatalf("goPath = %q, want %q", paths.goPath, want)
+		}
+	}
+	wantJSPath := filepath.Join(want, "direct-js-source")
+	if paths.jsPath != wantJSPath {
+		t.Fatalf("jsPath = %q, want %q", paths.jsPath, wantJSPath)
 	}
 }
 

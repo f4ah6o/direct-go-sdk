@@ -90,6 +90,9 @@ func resolvePaths(jsPath, goPath string) (resolvedPaths, error) {
 	if err != nil {
 		return resolvedPaths{}, fmt.Errorf("go path: %w", err)
 	}
+	if resolved, err := filepath.EvalSymlinks(goPathAbs); err == nil {
+		goPathAbs = resolved
+	}
 
 	if jsPath == "" {
 		jsPath = filepath.Join(goPathAbs, "direct-js-source")
@@ -98,6 +101,9 @@ func resolvePaths(jsPath, goPath string) (resolvedPaths, error) {
 	jsPathAbs, err := filepath.Abs(jsPath)
 	if err != nil {
 		return resolvedPaths{}, fmt.Errorf("js path: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(jsPathAbs); err == nil {
+		jsPathAbs = resolved
 	}
 
 	return resolvedPaths{jsPath: jsPathAbs, goPath: goPathAbs}, nil

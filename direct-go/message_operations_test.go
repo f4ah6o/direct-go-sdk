@@ -299,6 +299,59 @@ func TestGetFavoriteMessages(t *testing.T) {
 	}
 }
 
+func TestSearchMessagesAroundDateTime(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+
+	mockServer.OnDynamic("search_messages_around_datetime", func(params []interface{}) (interface{}, error) {
+		assertParams(t, params, "talk123", int64(1702345678))
+		return map[string]interface{}{
+			"messages": []interface{}{
+				map[string]interface{}{
+					"id":      "msg1",
+					"talk_id": "talk123",
+					"user_id": "user1",
+					"type":    int8(1),
+					"content": "around",
+				},
+			},
+		}, nil
+	})
+
+	client := NewClient(Options{Endpoint: mockServer.URL()})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close()
+
+	result, err := client.SearchMessagesAroundDateTime(context.Background(), "talk123", int64(1702345678))
+	if err != nil {
+		t.Fatalf("SearchMessagesAroundDateTime failed: %v", err)
+	}
+	if len(result.Messages) != 1 || result.Messages[0].ID != "msg1" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if got := mockServer.GetCallCount("search_messages_around_datetime"); got != 1 {
+		t.Fatalf("search_messages_around_datetime calls = %d, want 1", got)
+	}
+}
+
+func TestSearchMessagesAroundDateTimeError(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+	mockServer.OnError("search_messages_around_datetime", "boom")
+
+	client := NewClient(Options{Endpoint: mockServer.URL()})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.SearchMessagesAroundDateTime(context.Background(), "talk123", int64(1702345678)); err == nil {
+		t.Fatalf("expected error")
+	}
+}
+
 func TestAddFavoriteMessage(t *testing.T) {
 	mockServer := testutil.NewMockServer()
 	defer mockServer.Close()

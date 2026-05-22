@@ -74,6 +74,12 @@ const (
 	MethodResetNotification = "reset_notification"
 	MethodUpdateLastUsedAt  = "update_last_used_at"
 
+	// Account control
+	MethodGetJoinedAccountControlGroup = "get_joined_account_control_group"
+	MethodGetAccountControlRequests    = "get_account_control_requests"
+	MethodAcceptAccountControlRequest  = "accept_account_control_request"
+	MethodRejectAccountControlRequest  = "reject_account_control_request"
+
 	// Authentication
 	MethodCreateAccessToken     = "create_access_token"
 	MethodCreateAccessTokenByID = "create_access_token_by_id"
@@ -168,6 +174,13 @@ const (
 	MethodJoinConference            = "join_conference"
 	MethodLeaveConference           = "leave_conference"
 	MethodRejectConference          = "reject_conference"
+
+	// Miscellaneous
+	MethodGetActions                = "get_actions"
+	MethodGetSolutions              = "get_solutions"
+	MethodGetStampsets              = "get_stampsets"
+	MethodGetDirectApps             = "get_direct_apps"
+	MethodGetFlowNotificationBadges = "get_flow_notification_badges"
 )
 
 // Message types from direct API.
