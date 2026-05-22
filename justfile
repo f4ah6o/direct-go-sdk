@@ -9,7 +9,7 @@ default:
     @just --list
 
 # Create or rotate the direct access token for an account and save it to token_ref.
-login account +extra:
+login account *extra:
     PATH="{{ env_var("HOME") }}/bin/go/bin:$PATH" {{ go }} run ./cmd/direct-teams-bridge login-direct --config {{ config }} --account {{ account }} {{ extra }}
 
 # Run the bridge directly with the current shell environment.

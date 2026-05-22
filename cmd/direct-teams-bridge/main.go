@@ -150,26 +150,25 @@ type runtimeState struct {
 	mu       sync.RWMutex
 	cfg      *config.Config
 	tokens   map[string]string
+	pending  map[string]error
 	staticID string
 }
 
 func newRuntimeState(ctx context.Context, cfg *config.Config) (*runtimeState, error) {
-	tokens, err := resolveAccountTokens(ctx, cfg)
-	if err != nil {
-		return nil, err
-	}
 	if err := resolveBotSecret(ctx, cfg); err != nil {
 		return nil, err
 	}
-	return &runtimeState{cfg: cfg, tokens: tokens, staticID: staticConfigID(cfg)}, nil
+	tokens, pending := resolveAccountTokens(ctx, cfg)
+	return &runtimeState{cfg: cfg, tokens: tokens, pending: pending, staticID: staticConfigID(cfg)}, nil
 }
 
-func (r *runtimeState) Apply(cfg *config.Config, tokens map[string]string) {
+func (r *runtimeState) Apply(cfg *config.Config, tokens map[string]string, pending map[string]error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cfg.Accounts = cfg.Accounts
 	r.cfg.TeamsChannels = cfg.TeamsChannels
 	r.tokens = tokens
+	r.pending = pending
 }
 
 func (r *runtimeState) Account(id string) (config.AccountConfig, bool) {
@@ -197,7 +196,11 @@ func (r *runtimeState) DirectAccounts() []directworker.RuntimeAccount {
 	defer r.mu.RUnlock()
 	out := make([]directworker.RuntimeAccount, 0, len(r.cfg.Accounts))
 	for _, account := range r.cfg.Accounts {
-		out = append(out, directworker.RuntimeAccount{Config: account, Token: r.tokens[account.ID]})
+		token := r.tokens[account.ID]
+		if token == "" {
+			continue
+		}
+		out = append(out, directworker.RuntimeAccount{Config: account, Token: token})
 	}
 	return out
 }
@@ -232,14 +235,13 @@ func watchConfig(ctx context.Context, path string, runtimeState *runtimeState, d
 		if id := staticConfigID(cfg); id != runtimeState.staticID {
 			logger.Printf("[config] static settings changed; restart required for bot/server/queue/state changes")
 		}
-		tokens, err := resolveAccountTokens(ctx, cfg)
-		if err != nil {
-			logger.Printf("[config] reload ignored while resolving tokens: %v", err)
-			continue
+		tokens, pending := resolveAccountTokens(ctx, cfg)
+		for accountID, err := range pending {
+			logger.Printf("[config] account pending token: account=%s err=%v", accountID, err)
 		}
-		runtimeState.Apply(cfg, tokens)
+		runtimeState.Apply(cfg, tokens, pending)
 		directManager.Apply(ctx, runtimeState.DirectAccounts())
-		logger.Printf("[config] reloaded accounts=%d channels=%d", len(cfg.Accounts), len(cfg.TeamsChannels))
+		logger.Printf("[config] reloaded accounts=%d active_accounts=%d pending_accounts=%d channels=%d", len(cfg.Accounts), len(tokens), len(pending), len(cfg.TeamsChannels))
 	}
 }
 
@@ -365,9 +367,10 @@ func resolveBotSecret(ctx context.Context, cfg *config.Config) error {
 	return nil
 }
 
-func resolveAccountTokens(ctx context.Context, cfg *config.Config) (map[string]string, error) {
+func resolveAccountTokens(ctx context.Context, cfg *config.Config) (map[string]string, map[string]error) {
 	runner := opsecret.Runner{Binary: cfg.OP.Binary}
 	tokens := map[string]string{}
+	pending := map[string]error{}
 	for i := range cfg.Accounts {
 		account := &cfg.Accounts[i]
 		if account.TokenEnv == "" {
@@ -378,18 +381,21 @@ func resolveAccountTokens(ctx context.Context, cfg *config.Config) (map[string]s
 			continue
 		}
 		if account.TokenRef == "" {
-			return nil, fmt.Errorf("account %q token env %s is empty", account.ID, account.TokenEnv)
+			pending[account.ID] = fmt.Errorf("token env %s is empty and token_ref is not set", account.TokenEnv)
+			continue
 		}
 		token, err := runner.Read(ctx, account.TokenRef)
 		if err != nil {
-			return nil, err
+			pending[account.ID] = err
+			continue
 		}
 		if token == "" {
-			return nil, fmt.Errorf("account %q token ref is empty", account.ID)
+			pending[account.ID] = fmt.Errorf("token ref is empty")
+			continue
 		}
 		tokens[account.ID] = token
 	}
-	return tokens, nil
+	return tokens, pending
 }
 
 func promptCredentials() (string, string, error) {

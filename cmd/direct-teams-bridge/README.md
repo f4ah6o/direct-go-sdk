@@ -232,7 +232,18 @@ To add a new route while the bridge is running:
 1. Add a new alias under `teams_channels`.
 2. Add a new account under `accounts` with `teams_channel` set to that alias.
 3. Save `config.yaml` and watch for `[config] reloaded ...`.
-4. In the target Teams channel, send `@direct bind <alias>`.
+4. If the direct token has not been issued yet, the account is kept pending and
+   the rest of the reload remains active.
+5. Run `just login <account-id>` to create the token in 1Password.
+6. Save or touch `config.yaml` again and watch for `[account-id] starting direct worker`.
+7. In the target Teams channel, send `@direct bind <alias>`.
+
+Pending token log example:
+
+```text
+[config] account pending token: account=account-a err=...
+[config] reloaded accounts=3 active_accounts=2 pending_accounts=1 channels=3
+```
 
 To remove a Teams binding from a channel:
 
