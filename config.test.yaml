@@ -20,6 +20,12 @@ accounts:
     endpoint: "wss://api.direct4b.com/albero-app-server/api"
     proxy_url: ""
     teams_channel: "support"
+  - id: "bot-trial2"
+    token_env: "DIRECT_TOKEN_ACCOUNT_TRIAL2"
+    token_ref: "op://path/to/direct_access_token2"
+    endpoint: "wss://api.direct4b.com/albero-app-server/api"
+    proxy_url: ""
+    teams_channel: "support"
 
 state:
   path: "./state/direct-teams-bridge.json"
