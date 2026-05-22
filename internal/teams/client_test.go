@@ -27,7 +27,7 @@ func TestTeamsThreadConversationIDAlreadyThread(t *testing.T) {
 }
 
 func TestFormatDirectRootAndReplyMessages(t *testing.T) {
-	client := NewClient(config.BotConfig{}, "https://bridge.example.com")
+	client := NewClient(config.BotConfig{AppPassword: "secret"}, "https://bridge.example.com")
 	msg := model.DirectMessage{
 		AccountID: "bot-trial",
 		TalkID:    "1792967566075891712",
@@ -60,6 +60,18 @@ func TestFormatDirectRootAndReplyMessages(t *testing.T) {
 
 	if got := formatDirectRootTopic(msg); got != "[direct:bot-trial] room=1792967566075891712 user=1792959268018716672" {
 		t.Fatalf("formatDirectRootTopic() = %q", got)
+	}
+}
+
+func TestTrustedTeamsAttachmentURL(t *testing.T) {
+	if !trustedTeamsAttachmentURL("https://smba.trafficmanager.net/amer/v3/attachments/1/views/original") {
+		t.Fatalf("expected Bot Framework attachment URL to be trusted")
+	}
+	if trustedTeamsAttachmentURL("https://example.com/file.png") {
+		t.Fatalf("expected unknown host to be rejected")
+	}
+	if trustedTeamsAttachmentURL("http://smba.trafficmanager.net/amer/v3/attachments/1") {
+		t.Fatalf("expected non-HTTPS URL to be rejected")
 	}
 }
 

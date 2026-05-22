@@ -27,7 +27,11 @@ func signedDirectFileURL(publicBaseURL string, cfg config.BotConfig, ttlText, ac
 	values.Set("account", accountID)
 	values.Set("url", fileURL)
 	values.Set("exp", strconv.FormatInt(exp, 10))
-	values.Set("sig", fileProxySignature(cfg, accountID, fileURL, exp))
+	sig, err := fileProxySignature(cfg, accountID, fileURL, exp)
+	if err != nil {
+		return "", err
+	}
+	values.Set("sig", sig)
 	return strings.TrimRight(publicBaseURL, "/") + "/files/direct?" + values.Encode(), nil
 }
 
@@ -38,25 +42,34 @@ func validateDirectFileSignature(cfg config.BotConfig, accountID, fileURL string
 	if now.Unix() > exp {
 		return fmt.Errorf("signed file proxy URL expired")
 	}
-	want := fileProxySignature(cfg, accountID, fileURL, exp)
+	want, err := fileProxySignature(cfg, accountID, fileURL, exp)
+	if err != nil {
+		return err
+	}
 	if !hmac.Equal([]byte(sig), []byte(want)) {
 		return fmt.Errorf("invalid signed file proxy signature")
 	}
 	return nil
 }
 
-func fileProxySignature(cfg config.BotConfig, accountID, fileURL string, exp int64) string {
-	mac := hmac.New(sha256.New, []byte(botSecret(cfg)))
+func fileProxySignature(cfg config.BotConfig, accountID, fileURL string, exp int64) (string, error) {
+	secret, err := botSecret(cfg)
+	if err != nil {
+		return "", err
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = fmt.Fprintf(mac, "%s\n%s\n%d", accountID, fileURL, exp)
-	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
 }
 
-func botSecret(cfg config.BotConfig) string {
+func botSecret(cfg config.BotConfig) (string, error) {
 	if cfg.AppPassword != "" {
-		return cfg.AppPassword
+		return cfg.AppPassword, nil
 	}
 	if cfg.AppPasswordEnv != "" {
-		return os.Getenv(cfg.AppPasswordEnv)
+		if secret := os.Getenv(cfg.AppPasswordEnv); secret != "" {
+			return secret, nil
+		}
 	}
-	return cfg.AppPasswordRef
+	return "", fmt.Errorf("bot app password is empty")
 }

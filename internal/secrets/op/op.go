@@ -43,9 +43,20 @@ func (r Runner) command(ctx context.Context, args ...string) ([]byte, error) {
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("%s %s failed: %w: %s", r.bin(), strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("%s %s failed: %w: %s", r.bin(), strings.Join(redactArgs(args), " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return out, nil
+}
+
+func redactArgs(args []string) []string {
+	out := make([]string, len(args))
+	copy(out, args)
+	for i, arg := range out {
+		if name, _, ok := strings.Cut(arg, "="); ok {
+			out[i] = name + "=<redacted>"
+		}
+	}
+	return out
 }
 
 func ParseSecretRef(ref string) (vault, item, field string, err error) {

@@ -95,6 +95,14 @@ func TestFileProxySignature(t *testing.T) {
 	}
 }
 
+func TestFileProxySignatureRequiresResolvedSecret(t *testing.T) {
+	cfg := config.BotConfig{AppPasswordRef: "op://path/to/app_password"}
+	_, err := signedDirectFileURL("https://bridge.example.com", cfg, "1h", "account-a", "https://api.direct4b.com/albero-app-server/files/file/token", time.Now())
+	if err == nil {
+		t.Fatalf("expected missing resolved secret error")
+	}
+}
+
 func testJWTServer(t *testing.T, kid string, endorsements []string) (*rsa.PrivateKey, string) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)

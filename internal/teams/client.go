@@ -106,6 +106,9 @@ func (c *Client) DownloadAttachment(ctx context.Context, activity Attachment, ma
 	if contentURL == "" {
 		return nil, "", fmt.Errorf("attachment has no contentUrl")
 	}
+	if !trustedTeamsAttachmentURL(contentURL) {
+		return nil, "", fmt.Errorf("attachment contentUrl host is not trusted")
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, contentURL, nil)
 	if err != nil {
 		return nil, "", err
@@ -372,4 +375,17 @@ func teamsThreadConversationID(conversationID, rootID string) string {
 		return conversationID
 	}
 	return conversationID + ";messageid=" + rootID
+}
+
+func trustedTeamsAttachmentURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme != "https" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "smba.trafficmanager.net" ||
+		strings.HasSuffix(host, ".trafficmanager.net") ||
+		strings.HasSuffix(host, ".skype.com") ||
+		strings.HasSuffix(host, ".botframework.com") ||
+		strings.HasSuffix(host, ".teams.microsoft.com")
 }

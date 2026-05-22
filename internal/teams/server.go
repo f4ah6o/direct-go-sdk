@@ -114,6 +114,7 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var activity Activity
 	if err := json.NewDecoder(r.Body).Decode(&activity); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
