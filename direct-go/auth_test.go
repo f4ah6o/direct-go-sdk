@@ -3,6 +3,7 @@ package direct
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 )
 
@@ -346,6 +347,28 @@ func TestSetTokenCreatesFileIfNotExists(t *testing.T) {
 	token := auth.GetToken()
 	if token != "new-token" {
 		t.Errorf("Expected token 'new-token', got %s", token)
+	}
+}
+
+func TestEnsureDeviceIDPersistsStableID(t *testing.T) {
+	tmpDir := t.TempDir()
+	envFile := filepath.Join(tmpDir, ".env.device")
+	os.Unsetenv(DeviceIDEnvKey)
+	auth := NewAuthWithFile(envFile)
+
+	first, err := auth.EnsureDeviceID()
+	if err != nil {
+		t.Fatalf("EnsureDeviceID failed: %v", err)
+	}
+	second, err := auth.EnsureDeviceID()
+	if err != nil {
+		t.Fatalf("EnsureDeviceID failed: %v", err)
+	}
+	if first == "" || second != first {
+		t.Fatalf("device id was not stable: first=%q second=%q", first, second)
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(first) {
+		t.Fatalf("device id is not UUID-like: %q", first)
 	}
 }
 

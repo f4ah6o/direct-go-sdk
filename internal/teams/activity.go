@@ -125,6 +125,15 @@ func ParseBindAlias(a Activity) (string, bool) {
 	return "", false
 }
 
+func ParseUnbindAlias(a Activity) (string, bool) {
+	text := strings.ToLower(StripRecipientMention(a))
+	fields := strings.Fields(text)
+	if len(fields) == 2 && fields[0] == "unbind" && fields[1] != "" {
+		return fields[1], true
+	}
+	return "", false
+}
+
 func ParseCommand(a Activity) string {
 	text := strings.ToLower(StripRecipientMention(a))
 	fields := strings.Fields(text)

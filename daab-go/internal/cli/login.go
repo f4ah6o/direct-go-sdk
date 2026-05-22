@@ -86,16 +86,11 @@ func runLogin() error {
 
 	fmt.Println("Authenticating...")
 
-	// Call create_access_token API
-	// Parameters: [email, password, device_name, device_info, ""]
-	result, err := client.Call("create_access_token", []interface{}{
-		email,
-		password,
-		"daabgo",
-		"Go Bot Client",
-		"",
-	})
-
+	deviceID, err := auth.EnsureDeviceID()
+	if err != nil {
+		return fmt.Errorf("failed to prepare direct device id: %w", err)
+	}
+	token, err := client.CreateAccessToken(email, password, deviceID, direct.DefaultBotOS)
 	if err != nil {
 		return fmt.Errorf("login failed\n\n"+
 			"Troubleshooting:\n"+
@@ -103,14 +98,6 @@ func runLogin() error {
 			"  - Make sure the account is a bot account\n"+
 			"  - Check if the account is active\n"+
 			"  Error: %v", err)
-	}
-
-	// Extract token from result
-	token := extractToken(result)
-	if token == "" {
-		return fmt.Errorf("failed to extract token from response: %v\n\n"+
-			"The server returned an unexpected response format.\n"+
-			"Please contact support if the problem persists.", result)
 	}
 
 	// Save token
@@ -148,26 +135,4 @@ func promptCredentials() (email, password string, err error) {
 	password = strings.TrimSpace(password)
 
 	return
-}
-
-func extractToken(result interface{}) string {
-	// The result could be a string or a map with access_token field
-	if token, ok := result.(string); ok {
-		return token
-	}
-
-	if m, ok := result.(map[string]interface{}); ok {
-		if token, ok := m["access_token"].(string); ok {
-			return token
-		}
-		// Try array format - result might be [access_token, ...]
-	}
-
-	if arr, ok := result.([]interface{}); ok && len(arr) > 0 {
-		if token, ok := arr[0].(string); ok {
-			return token
-		}
-	}
-
-	return ""
 }

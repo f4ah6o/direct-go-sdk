@@ -10,7 +10,9 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
 	appbridge "github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/bridge"
@@ -58,10 +60,11 @@ func runBridge(args []string, logger *log.Logger) error {
 	if err != nil {
 		return err
 	}
-	if err := resolveTokenRefs(context.Background(), cfg); err != nil {
+	st, err := store.Open(cfg.State.Path)
+	if err != nil {
 		return err
 	}
-	st, err := store.Open(cfg.State.Path)
+	runtimeState, err := newRuntimeState(context.Background(), cfg)
 	if err != nil {
 		return err
 	}
@@ -72,11 +75,12 @@ func runBridge(args []string, logger *log.Logger) error {
 	teamsToDirect := make(chan model.DirectOutbound, cfg.Queues.TeamsToDirect)
 	directSent := make(chan model.DirectSent, cfg.Queues.TeamsToDirect)
 	teamsClient := teams.NewClient(cfg.Bot, cfg.Server.PublicBaseURL, cfg.Attachments.FileProxyTTL)
-	directManager := directworker.NewManager(cfg.Accounts, directToTeams, directSent, logger)
-	service := appbridge.NewService(cfg, st, teamsClient, directManager, directToTeams, teamsToDirect, directSent, logger)
-	server := teams.NewServer(cfg, teamsClient, st, teamsToDirect, logger)
+	directManager := directworker.NewManager(directToTeams, directSent, logger)
+	service := appbridge.NewService(runtimeState.Account, st, teamsClient, directManager, directToTeams, teamsToDirect, directSent, logger)
+	server := teams.NewServer(cfg, teamsClient, st, teamsToDirect, logger, teams.WithRuntimeLookups(runtimeState.HasChannel, runtimeState.Account, runtimeState.Token))
 
-	directManager.Run(ctx)
+	directManager.Apply(ctx, runtimeState.DirectAccounts())
+	go watchConfig(ctx, *configPath, runtimeState, directManager, logger)
 	service.Run(ctx)
 	return server.Run(ctx)
 }
@@ -85,6 +89,7 @@ func loginDirect(args []string, logger *log.Logger) error {
 	fs := flag.NewFlagSet("login-direct", flag.ExitOnError)
 	configPath := fs.String("config", "config.yaml", "config file")
 	accountID := fs.String("account", "", "account id")
+	resetDeviceID := fs.Bool("reset-device-id", false, "reset the stored direct device id before login")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -102,6 +107,20 @@ func loginDirect(args []string, logger *log.Logger) error {
 	if account.TokenRef == "" {
 		return fmt.Errorf("account %q requires token_ref for login-direct", account.ID)
 	}
+	st, err := store.Open(cfg.State.Path)
+	if err != nil {
+		return err
+	}
+	deviceID, err := st.EnsureDirectDevice(account.ID)
+	if err != nil {
+		return err
+	}
+	if *resetDeviceID {
+		deviceID, err = st.ResetDirectDevice(account.ID)
+		if err != nil {
+			return err
+		}
+	}
 	email, password, err := promptCredentials()
 	if err != nil {
 		return err
@@ -115,13 +134,9 @@ func loginDirect(args []string, logger *log.Logger) error {
 		return err
 	}
 	defer client.Close()
-	result, err := client.Call(direct.MethodCreateAccessToken, []interface{}{email, password, "direct-teams-bridge", "Go bridge client", ""})
+	token, err := client.CreateAccessToken(email, password, deviceID, direct.DefaultBotOS)
 	if err != nil {
 		return err
-	}
-	token := extractToken(result)
-	if token == "" {
-		return fmt.Errorf("direct did not return an access token")
 	}
 	runner := opsecret.Runner{Binary: cfg.OP.Binary}
 	if err := runner.Write(context.Background(), account.TokenRef, token); err != nil {
@@ -129,6 +144,122 @@ func loginDirect(args []string, logger *log.Logger) error {
 	}
 	logger.Printf("[%s] direct token saved to 1Password field %s", account.ID, redactRef(account.TokenRef))
 	return nil
+}
+
+type runtimeState struct {
+	mu       sync.RWMutex
+	cfg      *config.Config
+	tokens   map[string]string
+	staticID string
+}
+
+func newRuntimeState(ctx context.Context, cfg *config.Config) (*runtimeState, error) {
+	tokens, err := resolveAccountTokens(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := resolveBotSecret(ctx, cfg); err != nil {
+		return nil, err
+	}
+	return &runtimeState{cfg: cfg, tokens: tokens, staticID: staticConfigID(cfg)}, nil
+}
+
+func (r *runtimeState) Apply(cfg *config.Config, tokens map[string]string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cfg.Accounts = cfg.Accounts
+	r.cfg.TeamsChannels = cfg.TeamsChannels
+	r.tokens = tokens
+}
+
+func (r *runtimeState) Account(id string) (config.AccountConfig, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.cfg.Account(id)
+}
+
+func (r *runtimeState) HasChannel(alias string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.cfg.TeamsChannels[alias]
+	return ok
+}
+
+func (r *runtimeState) Token(accountID string) (string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	token, ok := r.tokens[accountID]
+	return token, ok
+}
+
+func (r *runtimeState) DirectAccounts() []directworker.RuntimeAccount {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]directworker.RuntimeAccount, 0, len(r.cfg.Accounts))
+	for _, account := range r.cfg.Accounts {
+		out = append(out, directworker.RuntimeAccount{Config: account, Token: r.tokens[account.ID]})
+	}
+	return out
+}
+
+func watchConfig(ctx context.Context, path string, runtimeState *runtimeState, directManager *directworker.Manager, logger *log.Logger) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	var lastMod time.Time
+	if info, err := os.Stat(path); err == nil {
+		lastMod = info.ModTime()
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			logger.Printf("[config] stat failed: %v", err)
+			continue
+		}
+		if !info.ModTime().After(lastMod) {
+			continue
+		}
+		lastMod = info.ModTime()
+		cfg, err := config.Load(path)
+		if err != nil {
+			logger.Printf("[config] reload ignored: %v", err)
+			continue
+		}
+		if id := staticConfigID(cfg); id != runtimeState.staticID {
+			logger.Printf("[config] static settings changed; restart required for bot/server/queue/state changes")
+		}
+		tokens, err := resolveAccountTokens(ctx, cfg)
+		if err != nil {
+			logger.Printf("[config] reload ignored while resolving tokens: %v", err)
+			continue
+		}
+		runtimeState.Apply(cfg, tokens)
+		directManager.Apply(ctx, runtimeState.DirectAccounts())
+		logger.Printf("[config] reloaded accounts=%d channels=%d", len(cfg.Accounts), len(cfg.TeamsChannels))
+	}
+}
+
+func staticConfigID(cfg *config.Config) string {
+	return strings.Join([]string{
+		cfg.Bot.AppID,
+		cfg.Bot.AppPassword,
+		cfg.Bot.AppPasswordEnv,
+		cfg.Bot.AppPasswordRef,
+		cfg.Bot.TenantID,
+		cfg.Bot.EndpointPath,
+		cfg.Bot.TokenURL,
+		cfg.Bot.ConnectorScope,
+		cfg.Server.ListenAddr,
+		cfg.Server.PublicBaseURL,
+		cfg.State.Path,
+		fmt.Sprint(cfg.Queues.DirectToTeams),
+		fmt.Sprint(cfg.Queues.TeamsToDirect),
+		cfg.Attachments.FileProxyTTL,
+	}, "\x00")
 }
 
 func mappings(args []string) error {
@@ -220,7 +351,7 @@ func channels(args []string) error {
 	}
 }
 
-func resolveTokenRefs(ctx context.Context, cfg *config.Config) error {
+func resolveBotSecret(ctx context.Context, cfg *config.Config) error {
 	runner := opsecret.Runner{Binary: cfg.OP.Binary}
 	if cfg.Bot.AppPassword == "" && cfg.Bot.AppPasswordEnv != "" && os.Getenv(cfg.Bot.AppPasswordEnv) == "" && cfg.Bot.AppPasswordRef != "" {
 		secret, err := runner.Read(ctx, cfg.Bot.AppPasswordRef)
@@ -231,29 +362,34 @@ func resolveTokenRefs(ctx context.Context, cfg *config.Config) error {
 			return err
 		}
 	}
+	return nil
+}
+
+func resolveAccountTokens(ctx context.Context, cfg *config.Config) (map[string]string, error) {
+	runner := opsecret.Runner{Binary: cfg.OP.Binary}
+	tokens := map[string]string{}
 	for i := range cfg.Accounts {
 		account := &cfg.Accounts[i]
 		if account.TokenEnv == "" {
 			account.TokenEnv = "DIRECT_TOKEN_" + strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(account.ID))
 		}
-		if os.Getenv(account.TokenEnv) != "" {
+		if token := os.Getenv(account.TokenEnv); token != "" {
+			tokens[account.ID] = token
 			continue
 		}
 		if account.TokenRef == "" {
-			return fmt.Errorf("account %q token env %s is empty", account.ID, account.TokenEnv)
+			return nil, fmt.Errorf("account %q token env %s is empty", account.ID, account.TokenEnv)
 		}
 		token, err := runner.Read(ctx, account.TokenRef)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if token == "" {
-			return fmt.Errorf("account %q token ref is empty", account.ID)
+			return nil, fmt.Errorf("account %q token ref is empty", account.ID)
 		}
-		if err := os.Setenv(account.TokenEnv, token); err != nil {
-			return err
-		}
+		tokens[account.ID] = token
 	}
-	return nil
+	return tokens, nil
 }
 
 func promptCredentials() (string, string, error) {

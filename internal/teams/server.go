@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -26,11 +25,27 @@ type Server struct {
 	logger     *log.Logger
 	validator  AuthValidator
 	httpServer *http.Server
+	hasChannel func(string) bool
+	account    func(string) (config.AccountConfig, bool)
+	token      func(string) (string, bool)
 }
 
-func NewServer(cfg *config.Config, client *Client, st *store.Store, out chan<- model.DirectOutbound, logger *log.Logger) *Server {
+func NewServer(cfg *config.Config, client *Client, st *store.Store, out chan<- model.DirectOutbound, logger *log.Logger, opts ...func(*Server)) *Server {
 	validator := AuthValidator(NewBotFrameworkValidator(cfg.Bot))
-	s := &Server{cfg: cfg, client: client, store: st, out: out, logger: logger, validator: validator}
+	s := &Server{
+		cfg:        cfg,
+		client:     client,
+		store:      st,
+		out:        out,
+		logger:     logger,
+		validator:  validator,
+		hasChannel: func(alias string) bool { _, ok := cfg.TeamsChannels[alias]; return ok },
+		account:    cfg.Account,
+		token:      func(accountID string) (string, bool) { return "", false },
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc(cfg.Bot.EndpointPath, s.handleActivity)
 	mux.HandleFunc("/files/direct", s.handleDirectFile)
@@ -44,6 +59,14 @@ func NewServer(cfg *config.Config, client *Client, st *store.Store, out chan<- m
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return s
+}
+
+func WithRuntimeLookups(hasChannel func(string) bool, account func(string) (config.AccountConfig, bool), token func(string) (string, bool)) func(*Server) {
+	return func(s *Server) {
+		s.hasChannel = hasChannel
+		s.account = account
+		s.token = token
+	}
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -114,7 +137,7 @@ func (s *Server) handleDirectFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid signed file url", http.StatusForbidden)
 		return
 	}
-	account, ok := s.cfg.Account(accountID)
+	account, ok := s.account(accountID)
 	if !ok {
 		http.Error(w, "unknown account", http.StatusNotFound)
 		return
@@ -124,8 +147,8 @@ func (s *Server) handleDirectFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid direct file url", http.StatusBadRequest)
 		return
 	}
-	token := os.Getenv(account.TokenEnv)
-	if token == "" {
+	token, ok := s.token(account.ID)
+	if !ok || token == "" {
 		http.Error(w, "direct token is not available", http.StatusInternalServerError)
 		return
 	}
@@ -178,6 +201,10 @@ func (s *Server) processActivity(ctx context.Context, activity Activity) {
 	}
 	if alias, ok := ParseBindAlias(activity); ok {
 		s.bindChannel(ctx, alias, activity)
+		return
+	}
+	if alias, ok := ParseUnbindAlias(activity); ok {
+		s.unbindChannel(ctx, alias, activity)
 		return
 	}
 	if s.handleCommand(ctx, activity) {
@@ -242,6 +269,9 @@ func (s *Server) handleCommand(ctx context.Context, activity Activity) bool {
 	case "bind":
 		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "usage: @direct bind <alias>")
 		return true
+	case "unbind":
+		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "usage: @direct unbind <alias>")
+		return true
 	case "hi", "hello":
 		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "Hi. Use `@direct bind <alias>` in a channel, or reply in a bridged thread with `@direct <message>`.")
 		return true
@@ -250,6 +280,38 @@ func (s *Server) handleCommand(ctx context.Context, activity Activity) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func (s *Server) unbindChannel(ctx context.Context, alias string, activity Activity) {
+	if activity.ReplyToID != "" {
+		if _, err := s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "❌ unbind must be sent as a new channel message, not as a thread reply."); err != nil {
+			s.logger.Printf("[teams] unbind placement response failed alias=%s err=%v", alias, err)
+		}
+		return
+	}
+	if !s.hasChannel(alias) {
+		if _, err := s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "❌ unknown channel alias: "+alias); err != nil {
+			s.logger.Printf("[teams] unknown unbind alias response failed alias=%s err=%v", alias, err)
+		}
+		return
+	}
+	binding, ok := s.store.GetChannelBinding(alias)
+	conversationID := channelConversationID(activity)
+	if !ok || binding.ConversationID != conversationID {
+		if _, err := s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "❌ channel alias is not bound here: "+alias); err != nil {
+			s.logger.Printf("[teams] unbind not-bound response failed alias=%s err=%v", alias, err)
+		}
+		return
+	}
+	removed, err := s.store.UnbindChannel(alias, conversationID)
+	if err != nil {
+		s.logger.Printf("[teams] unbind failed alias=%s err=%v", alias, err)
+		return
+	}
+	text := "✅ unbound channel alias: " + alias + "; removed " + strconv.Itoa(removed) + " thread mappings"
+	if _, err := s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, text); err != nil {
+		s.logger.Printf("[teams] unbind response failed alias=%s err=%v", alias, err)
 	}
 }
 
@@ -264,7 +326,7 @@ func (s *Server) bindChannel(ctx context.Context, alias string, activity Activit
 		}
 		return
 	}
-	if _, ok := s.cfg.TeamsChannels[alias]; !ok {
+	if !s.hasChannel(alias) {
 		if _, err := s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "❌ unknown channel alias: "+alias); err != nil {
 			s.logger.Printf("[teams] unknown alias response failed alias=%s err=%v", alias, err)
 		}

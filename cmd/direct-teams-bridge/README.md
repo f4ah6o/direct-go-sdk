@@ -64,6 +64,7 @@ bot:
 
 teams_channels:
   support: {}
+  trial: {}
 
 accounts:
   - id: "account-a"
@@ -171,8 +172,15 @@ At runtime, the bridge resolves the token in this order:
 1. If `token_env` is set and the environment variable already has a value, use
    that value.
 2. Otherwise, read `token_ref` with `op read`.
-3. Put the token into `token_env` for the process before creating the
-   `direct.Client`.
+
+Each account also gets its own direct device ID in `state.direct_devices`.
+This matches direct-js/daab's IDFV behavior and prevents a later login for one
+account from invalidating another account's access token. If you need to rotate
+the device ID as well as the token, run:
+
+```bash
+PATH="$HOME/bin/go/bin:$PATH" go run ./cmd/direct-teams-bridge login-direct --config config.yaml --account account-a --reset-device-id
+```
 
 For normal startup with 1Password service account token management:
 
@@ -181,8 +189,10 @@ export OP_SERVICE_ACCOUNT_TOKEN='...'
 PATH="$HOME/bin/go/bin:$PATH" go run ./cmd/direct-teams-bridge run --config config.yaml
 ```
 
-To rotate a direct token, rerun `login-direct` for that account, then restart the
-bridge process.
+To rotate a direct token, rerun `login-direct` for that account. The running
+bridge reloads `accounts` and `teams_channels` changes from `config.yaml`; if
+only the 1Password token value changed, touch or resave `config.yaml` to trigger
+the reload, or restart the bridge.
 
 ### 4. Start the bridge
 
@@ -198,6 +208,40 @@ Expected log:
 [teams] bot endpoint listening on :5173/api/messages
 [account-a] connected
 ```
+
+### 4b. Dynamic config reload
+
+The bridge polls `config.yaml` and reloads account routes and channel aliases
+without restarting the process.
+
+Reloaded live:
+
+- `accounts` add/remove/change
+- `teams_channels` alias add/remove
+- direct token values resolved from `token_env` or `token_ref`
+
+Restart required:
+
+- Teams bot app settings
+- server listen address / public base URL
+- queue sizes
+- state path
+
+To add a new route while the bridge is running:
+
+1. Add a new alias under `teams_channels`.
+2. Add a new account under `accounts` with `teams_channel` set to that alias.
+3. Save `config.yaml` and watch for `[config] reloaded ...`.
+4. In the target Teams channel, send `@direct bind <alias>`.
+
+To remove a Teams binding from a channel:
+
+```text
+@direct unbind <alias>
+```
+
+`unbind` must be sent as a new channel message. It removes the channel binding
+and existing direct talk/thread mappings for that alias in that Teams channel.
 
 ### 5. Expose the bridge with Cloudflare Tunnel
 

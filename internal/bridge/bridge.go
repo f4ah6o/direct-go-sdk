@@ -16,8 +16,10 @@ type DirectSender interface {
 	Send(context.Context, model.DirectOutbound) error
 }
 
+type AccountLookup func(string) (config.AccountConfig, bool)
+
 type Service struct {
-	cfg      *config.Config
+	account  AccountLookup
 	st       *store.Store
 	teams    *teams.Client
 	direct   DirectSender
@@ -27,8 +29,8 @@ type Service struct {
 	logger   *log.Logger
 }
 
-func NewService(cfg *config.Config, st *store.Store, teamsClient *teams.Client, direct DirectSender, directIn <-chan model.DirectMessage, teamsIn <-chan model.DirectOutbound, sentIn <-chan model.DirectSent, logger *log.Logger) *Service {
-	return &Service{cfg: cfg, st: st, teams: teamsClient, direct: direct, directIn: directIn, teamsIn: teamsIn, sentIn: sentIn, logger: logger}
+func NewService(account AccountLookup, st *store.Store, teamsClient *teams.Client, direct DirectSender, directIn <-chan model.DirectMessage, teamsIn <-chan model.DirectOutbound, sentIn <-chan model.DirectSent, logger *log.Logger) *Service {
+	return &Service{account: account, st: st, teams: teamsClient, direct: direct, directIn: directIn, teamsIn: teamsIn, sentIn: sentIn, logger: logger}
 }
 
 func (s *Service) Run(ctx context.Context) {
@@ -54,7 +56,7 @@ func (s *Service) runDirectToTeams(ctx context.Context) {
 }
 
 func (s *Service) handleDirectMessage(ctx context.Context, msg model.DirectMessage) error {
-	account, ok := s.cfg.Account(msg.AccountID)
+	account, ok := s.account(msg.AccountID)
 	if !ok {
 		return nil
 	}

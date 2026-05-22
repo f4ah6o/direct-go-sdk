@@ -1,8 +1,10 @@
 package store
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -44,6 +46,7 @@ type State struct {
 	SentTeamsMessages    map[string]time.Time           `json:"sent_teams_messages"`
 	SentDirectMessages   map[string]time.Time           `json:"sent_direct_messages"`
 	Subscriptions        map[string]string              `json:"subscriptions"`
+	DirectDevices        map[string]string              `json:"direct_devices"`
 }
 
 type Store struct {
@@ -80,6 +83,7 @@ func newState() State {
 		SentTeamsMessages:    map[string]time.Time{},
 		SentDirectMessages:   map[string]time.Time{},
 		Subscriptions:        map[string]string{},
+		DirectDevices:        map[string]string{},
 	}
 }
 
@@ -101,6 +105,9 @@ func (s *Store) ensure() {
 	}
 	if s.state.Subscriptions == nil {
 		s.state.Subscriptions = map[string]string{}
+	}
+	if s.state.DirectDevices == nil {
+		s.state.DirectDevices = map[string]string{}
 	}
 }
 
@@ -190,6 +197,22 @@ func (s *Store) ForgetChannelBinding(alias string) error {
 	return s.saveLocked()
 }
 
+func (s *Store) UnbindChannel(alias, conversationID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.state.TeamsChannelBindings, alias)
+	removed := 0
+	for key, mapping := range s.state.TalkThreads {
+		if mapping.ChannelAlias != alias || mapping.ConversationID != conversationID {
+			continue
+		}
+		delete(s.state.TeamsThreadIndex, threadKey(mapping.ConversationID, mapping.RootID))
+		delete(s.state.TalkThreads, key)
+		removed++
+	}
+	return removed, s.saveLocked()
+}
+
 func (s *Store) ListMappings() []ThreadMapping {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -198,6 +221,38 @@ func (s *Store) ListMappings() []ThreadMapping {
 		out = append(out, m)
 	}
 	return out
+}
+
+func (s *Store) DirectDevice(accountID string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	deviceID, ok := s.state.DirectDevices[accountID]
+	return deviceID, ok
+}
+
+func (s *Store) EnsureDirectDevice(accountID string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if deviceID := s.state.DirectDevices[accountID]; deviceID != "" {
+		return deviceID, nil
+	}
+	deviceID, err := newDeviceID()
+	if err != nil {
+		return "", err
+	}
+	s.state.DirectDevices[accountID] = deviceID
+	return deviceID, s.saveLocked()
+}
+
+func (s *Store) ResetDirectDevice(accountID string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	deviceID, err := newDeviceID()
+	if err != nil {
+		return "", err
+	}
+	s.state.DirectDevices[accountID] = deviceID
+	return deviceID, s.saveLocked()
 }
 
 func (s *Store) MarkTeamsMessage(id string) error {
@@ -232,6 +287,22 @@ func (s *Store) IsSentDirectMessage(id string) bool {
 	defer s.mu.Unlock()
 	_, ok := s.state.SentDirectMessages[id]
 	return ok
+}
+
+func newDeviceID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		uint32(b[0])<<24|uint32(b[1])<<16|uint32(b[2])<<8|uint32(b[3]),
+		uint16(b[4])<<8|uint16(b[5]),
+		uint16(b[6])<<8|uint16(b[7]),
+		uint16(b[8])<<8|uint16(b[9]),
+		uint64(b[10])<<40|uint64(b[11])<<32|uint64(b[12])<<24|uint64(b[13])<<16|uint64(b[14])<<8|uint64(b[15]),
+	), nil
 }
 
 func (s *Store) saveLocked() error {

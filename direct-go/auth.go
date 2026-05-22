@@ -2,6 +2,7 @@ package direct
 
 import (
 	"bufio"
+	"crypto/rand"
 	"fmt"
 	"os"
 	"strings"
@@ -10,6 +11,9 @@ import (
 const (
 	// TokenEnvKey is the environment variable name for the access token.
 	TokenEnvKey = "HUBOT_DIRECT_TOKEN"
+
+	// DeviceIDEnvKey is the environment variable name for the direct device id.
+	DeviceIDEnvKey = "HUBOT_DIRECT_DEVICE_ID"
 
 	// EnvFile is the default .env file name.
 	EnvFile = ".env"
@@ -67,10 +71,33 @@ func (a *Auth) GetToken() string {
 	return token
 }
 
+// EnsureDeviceID retrieves or creates a stable device id in the .env file.
+func (a *Auth) EnsureDeviceID() (string, error) {
+	if deviceID := os.Getenv(DeviceIDEnvKey); deviceID != "" {
+		return deviceID, nil
+	}
+	deviceID, err := a.readValueFromFile(DeviceIDEnvKey)
+	if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	if deviceID != "" {
+		return deviceID, nil
+	}
+	deviceID, err = randomHex(16)
+	if err != nil {
+		return "", err
+	}
+	return deviceID, a.setValue(DeviceIDEnvKey, deviceID)
+}
+
 // SetToken stores the access token in the .env file.
 // If the token already exists, it updates the value.
 // If the token parameter is empty, it removes the token entry.
 func (a *Auth) SetToken(token string) error {
+	return a.setValue(TokenEnvKey, token)
+}
+
+func (a *Auth) setValue(key, value string) error {
 	content, err := a.readEnvFile()
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -82,9 +109,9 @@ func (a *Auth) SetToken(token string) error {
 	newLines := make([]string, 0, len(lines)+1)
 
 	for _, line := range lines {
-		if strings.HasPrefix(line, TokenEnvKey+"=") {
-			if token != "" {
-				newLines = append(newLines, TokenEnvKey+"="+token)
+		if strings.HasPrefix(line, key+"=") {
+			if value != "" {
+				newLines = append(newLines, key+"="+value)
 			}
 			found = true
 		} else if line != "" {
@@ -92,8 +119,8 @@ func (a *Auth) SetToken(token string) error {
 		}
 	}
 
-	if !found && token != "" {
-		newLines = append(newLines, TokenEnvKey+"="+token)
+	if !found && value != "" {
+		newLines = append(newLines, key+"="+value)
 	}
 
 	// Write back
@@ -118,6 +145,10 @@ func (a *Auth) readEnvFile() (string, error) {
 
 // readTokenFromFile reads the token from the .env file.
 func (a *Auth) readTokenFromFile() (string, error) {
+	return a.readValueFromFile(TokenEnvKey)
+}
+
+func (a *Auth) readValueFromFile(key string) (string, error) {
 	file, err := os.Open(a.envFile)
 	if err != nil {
 		return "", err
@@ -127,8 +158,8 @@ func (a *Auth) readTokenFromFile() (string, error) {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.HasPrefix(line, TokenEnvKey+"=") {
-			return strings.TrimPrefix(line, TokenEnvKey+"="), nil
+		if strings.HasPrefix(line, key+"=") {
+			return strings.TrimPrefix(line, key+"="), nil
 		}
 	}
 
@@ -191,4 +222,23 @@ func PromptCredentials() (email, password string, err error) {
 	password = strings.TrimSpace(password)
 
 	return
+}
+
+func randomHex(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	if len(b) == 16 {
+		b[6] = (b[6] & 0x0f) | 0x40
+		b[8] = (b[8] & 0x3f) | 0x80
+		return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+			uint32(b[0])<<24|uint32(b[1])<<16|uint32(b[2])<<8|uint32(b[3]),
+			uint16(b[4])<<8|uint16(b[5]),
+			uint16(b[6])<<8|uint16(b[7]),
+			uint16(b[8])<<8|uint16(b[9]),
+			uint64(b[10])<<40|uint64(b[11])<<32|uint64(b[12])<<24|uint64(b[13])<<16|uint64(b[14])<<8|uint64(b[15]),
+		), nil
+	}
+	return fmt.Sprintf("%x", b), nil
 }

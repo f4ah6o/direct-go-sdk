@@ -18,3 +18,5 @@ require (
 	golang.org/x/sys v0.30.0 // indirect
 	pgregory.net/rapid v1.2.0 // indirect
 )
+
+replace github.com/f4ah6o/direct-go-sdk/direct-go => ../direct-go

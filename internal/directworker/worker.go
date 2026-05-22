@@ -9,9 +9,9 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
@@ -20,38 +20,41 @@ import (
 )
 
 type Manager struct {
-	accounts map[string]config.AccountConfig
-	queues   map[string]chan model.DirectOutbound
-	out      chan<- model.DirectMessage
-	sent     chan<- model.DirectSent
-	logger   *log.Logger
+	mu      sync.Mutex
+	workers map[string]*accountWorker
+	out     chan<- model.DirectMessage
+	sent    chan<- model.DirectSent
+	logger  *log.Logger
 }
 
-func NewManager(accounts []config.AccountConfig, out chan<- model.DirectMessage, sent chan<- model.DirectSent, logger *log.Logger) *Manager {
-	m := &Manager{
-		accounts: map[string]config.AccountConfig{},
-		queues:   map[string]chan model.DirectOutbound{},
-		out:      out,
-		sent:     sent,
-		logger:   logger,
-	}
-	for _, account := range accounts {
-		m.accounts[account.ID] = account
-		m.queues[account.ID] = make(chan model.DirectOutbound, 100)
-	}
-	return m
+type RuntimeAccount struct {
+	Config config.AccountConfig
+	Token  string
 }
 
-func (m *Manager) Run(ctx context.Context) {
-	for _, account := range m.accounts {
-		account := account
-		queue := m.queues[account.ID]
-		go runAccountWorker(ctx, account, queue, m.out, m.sent, m.logger)
+type accountWorker struct {
+	account RuntimeAccount
+	queue   chan model.DirectOutbound
+	cancel  context.CancelFunc
+}
+
+func NewManager(out chan<- model.DirectMessage, sent chan<- model.DirectSent, logger *log.Logger) *Manager {
+	return &Manager{
+		workers: map[string]*accountWorker{},
+		out:     out,
+		sent:    sent,
+		logger:  logger,
 	}
 }
 
 func (m *Manager) Send(ctx context.Context, msg model.DirectOutbound) error {
-	ch, ok := m.queues[msg.AccountID]
+	m.mu.Lock()
+	worker, ok := m.workers[msg.AccountID]
+	var ch chan model.DirectOutbound
+	if ok {
+		ch = worker.queue
+	}
+	m.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("unknown account %q", msg.AccountID)
 	}
@@ -63,7 +66,48 @@ func (m *Manager) Send(ctx context.Context, msg model.DirectOutbound) error {
 	}
 }
 
-func runAccountWorker(ctx context.Context, cfg config.AccountConfig, in <-chan model.DirectOutbound, out chan<- model.DirectMessage, sent chan<- model.DirectSent, logger *log.Logger) {
+func (m *Manager) Apply(ctx context.Context, accounts []RuntimeAccount) {
+	next := map[string]RuntimeAccount{}
+	for _, account := range accounts {
+		next[account.Config.ID] = account
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, worker := range m.workers {
+		account, ok := next[id]
+		if !ok || !sameRuntimeAccount(worker.account, account) {
+			m.logger.Printf("[%s] stopping direct worker", id)
+			worker.cancel()
+			delete(m.workers, id)
+		}
+	}
+	for id, account := range next {
+		if _, ok := m.workers[id]; ok {
+			continue
+		}
+		workerCtx, cancel := context.WithCancel(ctx)
+		worker := &accountWorker{
+			account: account,
+			queue:   make(chan model.DirectOutbound, 100),
+			cancel:  cancel,
+		}
+		m.workers[id] = worker
+		m.logger.Printf("[%s] starting direct worker", id)
+		go runAccountWorker(workerCtx, account, worker.queue, m.out, m.sent, m.logger)
+	}
+}
+
+func sameRuntimeAccount(a, b RuntimeAccount) bool {
+	return a.Token == b.Token &&
+		a.Config.ID == b.Config.ID &&
+		a.Config.Endpoint == b.Config.Endpoint &&
+		a.Config.ProxyURL == b.Config.ProxyURL &&
+		a.Config.TeamsChannel == b.Config.TeamsChannel
+}
+
+func runAccountWorker(ctx context.Context, account RuntimeAccount, in <-chan model.DirectOutbound, out chan<- model.DirectMessage, sent chan<- model.DirectSent, logger *log.Logger) {
+	cfg := account.Config
 	backoff := time.Second
 	for {
 		select {
@@ -72,13 +116,13 @@ func runAccountWorker(ctx context.Context, cfg config.AccountConfig, in <-chan m
 		default:
 		}
 
-		token := os.Getenv(cfg.TokenEnv)
+		token := account.Token
 		if token == "" {
-			logger.Printf("[%s] token env %s is empty; retrying", cfg.ID, cfg.TokenEnv)
+			logger.Printf("[%s] direct token is empty; retrying", cfg.ID)
 			sleepWithBackoff(ctx, &backoff)
 			continue
 		}
-		logger.Printf("[%s] using direct token env=%s len=%d sha=%s", cfg.ID, cfg.TokenEnv, len(token), tokenFingerprint(token))
+		logger.Printf("[%s] using direct token len=%d sha=%s", cfg.ID, len(token), tokenFingerprint(token))
 
 		endpoint := cfg.Endpoint
 		if endpoint == "" {

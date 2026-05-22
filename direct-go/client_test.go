@@ -107,6 +107,33 @@ func TestClientCallRPC(t *testing.T) {
 	}
 }
 
+func TestCreateAccessTokenUsesDeviceIDAndBotOS(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+	var got []interface{}
+	mockServer.On(MethodCreateAccessToken, func(params []interface{}) (interface{}, error) {
+		got = params
+		return "token-123", nil
+	})
+	client := NewClient(Options{Endpoint: mockServer.URL()})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close()
+
+	token, err := client.CreateAccessToken("user@example.com", "password", "device-id", DefaultBotOS)
+	if err != nil {
+		t.Fatalf("CreateAccessToken failed: %v", err)
+	}
+	if token != "token-123" {
+		t.Fatalf("token = %q", token)
+	}
+	want := []interface{}{"user@example.com", "password", "device-id", "bot", ""}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("params = %#v, want %#v", got, want)
+	}
+}
+
 func TestClientRPCError(t *testing.T) {
 	// Create mock server
 	mockServer := testutil.NewMockServer()

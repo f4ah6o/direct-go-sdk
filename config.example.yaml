@@ -13,6 +13,9 @@ bot:
 
 teams_channels:
   support: {}
+  # Add aliases here while the bridge is running, then bind them in Teams with:
+  # @direct bind <alias>
+  # trial: {}
 
 accounts:
   - id: "account-a"
@@ -23,6 +26,7 @@ accounts:
     teams_channel: "support"
 
 state:
+  # Stores Teams bindings, direct talk/thread mappings, and per-account direct device IDs.
   path: "/state/direct-teams-bridge.json"
 
 server:
