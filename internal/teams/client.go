@@ -333,7 +333,7 @@ func formatDirectRootTopic(msg model.DirectMessage) string {
 }
 
 func (c *Client) formatDirectReplyMessage(msg model.DirectMessage) string {
-	return appendAttachmentLinks(fmt.Sprintf("user=%s\n%s", msg.UserID, msg.Text), msg, c.cfg, c.publicBaseURL, c.fileProxyTTL)
+	return appendAttachmentLinks(fmt.Sprintf("user=%s  \n%s", msg.UserID, msg.Text), msg, c.cfg, c.publicBaseURL, c.fileProxyTTL)
 }
 
 func appendAttachmentLinks(text string, msg model.DirectMessage, cfg config.BotConfig, publicBaseURL, fileProxyTTL string) string {

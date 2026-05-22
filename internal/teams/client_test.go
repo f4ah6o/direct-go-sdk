@@ -54,12 +54,63 @@ func TestFormatDirectRootAndReplyMessages(t *testing.T) {
 	if strings.Contains(reply, "[direct:") || strings.Contains(reply, "room=") {
 		t.Fatalf("reply should not repeat thread title details: %q", reply)
 	}
-	if !strings.HasPrefix(reply, "user=1792959268018716672\nこんにちは") {
+	if !strings.HasPrefix(reply, "user=1792959268018716672  \nこんにちは") {
 		t.Fatalf("unexpected reply message: %q", reply)
 	}
 
 	if got := formatDirectRootTopic(msg); got != "[direct:bot-trial] room=1792967566075891712 user=1792959268018716672" {
 		t.Fatalf("formatDirectRootTopic() = %q", got)
+	}
+}
+
+func TestReplyToThreadSendsUserHeaderAsMarkdownHardBreak(t *testing.T) {
+	var request Activity
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"token","expires_in":3600}`))
+		case "/v3/conversations/19:channel@thread.tacv2;messageid=root-id/activities":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method = %s, want POST", r.Method)
+			}
+			if got := r.Header.Get("Authorization"); got != "Bearer token" {
+				t.Fatalf("authorization = %q", got)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"reply-message-id"}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(config.BotConfig{
+		AppID:          "app-id",
+		AppPassword:    "secret",
+		TokenURL:       server.URL + "/token",
+		ConnectorScope: "scope",
+	})
+	msg := model.DirectMessage{
+		UserID: "1792959268018716672",
+		Text:   "こんにちは",
+	}
+
+	replyID, err := client.ReplyToThread(t.Context(), server.URL, "19:channel@thread.tacv2", "root-id", msg)
+	if err != nil {
+		t.Fatalf("ReplyToThread() error = %v", err)
+	}
+	if replyID != "reply-message-id" {
+		t.Fatalf("replyID = %q", replyID)
+	}
+	if request.TextFormat != "markdown" {
+		t.Fatalf("textFormat = %q, want markdown", request.TextFormat)
+	}
+	if request.Text != "user=1792959268018716672  \nこんにちは" {
+		t.Fatalf("activity text = %q", request.Text)
 	}
 }
 
