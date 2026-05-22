@@ -54,7 +54,9 @@ const (
 	EventNotifyDeleteAnnouncement = "notify_delete_announcement"
 
 	// Read status notifications
-	EventNotifyUpdateReadStatus = "notify_update_read_status"
+	EventNotifyUpdateReadStatuses = "notify_update_read_statuses"
+	// Deprecated: use EventNotifyUpdateReadStatuses.
+	EventNotifyUpdateReadStatus = EventNotifyUpdateReadStatuses
 	EventNotifyUpdateTalkStatus = "notify_update_talk_status"
 
 	// Conference notifications
@@ -146,7 +148,8 @@ const (
 	MethodGetFilePreview    = "get_file_preview"
 
 	// Read status
-	MethodGetReadStatus = "get_read_status"
+	MethodGetReadStatus      = "get_read_status"
+	MethodUpdateReadStatuses = "update_read_statuses"
 
 	// Push notifications
 	MethodDisablePushNotification = "disable_push_notification"

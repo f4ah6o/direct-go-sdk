@@ -129,3 +129,39 @@ func TestCreateRootThreadSendsHeadingInActivityText(t *testing.T) {
 		t.Fatalf("unexpected conversation parameters: %+v", request)
 	}
 }
+
+func TestAddReactionUsesBotConnectorReactionEndpoint(t *testing.T) {
+	var reactionPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"token","expires_in":3600}`))
+		default:
+			if r.Method != http.MethodPut {
+				t.Fatalf("method = %s, want PUT", r.Method)
+			}
+			if got := r.Header.Get("Authorization"); got != "Bearer token" {
+				t.Fatalf("authorization = %q", got)
+			}
+			reactionPath = r.URL.EscapedPath()
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(config.BotConfig{
+		AppID:          "app-id",
+		AppPassword:    "secret",
+		TokenURL:       server.URL + "/token",
+		ConnectorScope: "scope",
+	})
+	err := client.AddReaction(t.Context(), server.URL, "conversation;messageid=root", "activity/id", ReactionEyes)
+	if err != nil {
+		t.Fatalf("AddReaction() error = %v", err)
+	}
+	want := "/v3/conversations/conversation%3Bmessageid=root/activities/activity%2Fid/reactions/1f440_eyes"
+	if reactionPath != want {
+		t.Fatalf("reaction path = %q, want %q", reactionPath, want)
+	}
+}

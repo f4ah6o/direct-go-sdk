@@ -259,6 +259,11 @@ func (s *Server) processActivity(ctx context.Context, activity Activity) {
 		Text:        text,
 		Attachments: attachments,
 		Echo:        echo,
+		TeamsSource: &model.TeamsSource{
+			ServiceURL:     activity.ServiceURL,
+			ConversationID: activity.Conversation.ID,
+			ActivityID:     activity.ID,
+		},
 	}
 	select {
 	case s.out <- out:

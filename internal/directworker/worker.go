@@ -26,6 +26,7 @@ type Manager struct {
 	statuses       map[string]AccountStatus
 	nextGeneration uint64
 	out            chan<- model.DirectMessage
+	readOut        chan<- model.DirectReadReceipt
 	sent           chan<- model.DirectSent
 	logger         *log.Logger
 	clientFactory  directClientFactory
@@ -84,10 +85,11 @@ func (c productionDirectClient) Done() <-chan struct{} {
 	return c.Client.Done
 }
 
-func NewManager(out chan<- model.DirectMessage, sent chan<- model.DirectSent, logger *log.Logger) *Manager {
+func NewManager(out chan<- model.DirectMessage, readOut chan<- model.DirectReadReceipt, sent chan<- model.DirectSent, logger *log.Logger) *Manager {
 	return &Manager{
 		workers:       map[string]*accountWorker{},
 		out:           out,
+		readOut:       readOut,
 		sent:          sent,
 		logger:        logger,
 		clientFactory: newProductionDirectClient,
@@ -197,7 +199,7 @@ func (m *Manager) Apply(ctx context.Context, accounts []RuntimeAccount) {
 		now := m.now()
 		m.statuses[id] = AccountStatus{AccountID: id, Generation: generation, StartedAt: now, UnreadySince: now, UpdatedAt: now}
 		m.logger.Printf("[%s] starting direct worker", id)
-		go runAccountWorker(workerCtx, worker, m.out, m.sent, m.logger, m.clientFactory, m.sleepBackoff, m.now)
+		go runAccountWorker(workerCtx, worker, m.out, m.readOut, m.sent, m.logger, m.clientFactory, m.sleepBackoff, m.now)
 	}
 }
 
@@ -263,7 +265,7 @@ func markUnready(status *AccountStatus, now time.Time) {
 	}
 }
 
-func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- model.DirectMessage, sent chan<- model.DirectSent, logger *log.Logger, clientFactory directClientFactory, sleepBackoff func(context.Context, *time.Duration), now func() time.Time) {
+func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- model.DirectMessage, readOut chan<- model.DirectReadReceipt, sent chan<- model.DirectSent, logger *log.Logger, clientFactory directClientFactory, sleepBackoff func(context.Context, *time.Duration), now func() time.Time) {
 	account := worker.account
 	in := worker.queue
 	cfg := account.Config
@@ -402,6 +404,26 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 			case <-ctx.Done():
 			}
 		})
+		client.On(direct.EventNotifyUpdateReadStatuses, func(data interface{}) {
+			update := direct.ParseReadStatusesUpdate(data)
+			if update.TalkID == "" || len(update.MessageIDs) == 0 {
+				return
+			}
+			receipt := model.DirectReadReceipt{
+				AccountID:   cfg.ID,
+				TalkID:      update.TalkID,
+				MessageIDs:  update.MessageIDs,
+				ReadUserIDs: update.ReadUserIDs,
+			}
+			logger.Printf("[%s] direct read status updated: talk=%s messages=%d read_users=%d", cfg.ID, receipt.TalkID, len(receipt.MessageIDs), len(receipt.ReadUserIDs))
+			if readOut == nil {
+				return
+			}
+			select {
+			case readOut <- receipt:
+			case <-ctx.Done():
+			}
+		})
 
 		if err := client.Connect(); err != nil {
 			logger.Printf("[%s] connect failed: %v", cfg.ID, err)
@@ -416,6 +438,10 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 			continue
 		}
 		logger.Printf("[%s] connected", cfg.ID)
+		selfUserID := directSelfUserID(client)
+		if selfUserID == "" {
+			logger.Printf("[%s] direct self user id unavailable; read reactions will ignore self-read filtering", cfg.ID)
+		}
 		worker.status(func(status *AccountStatus) {
 			status.Connected = true
 			status.LastError = ""
@@ -424,6 +450,9 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 		disconnected := false
 		for !disconnected {
 			if pending != nil {
+				if selfUserID == "" {
+					selfUserID = directSelfUserID(client)
+				}
 				messageID, err := sendDirect(ctx, client, *pending)
 				if err != nil {
 					logger.Printf("[%s] direct send failed: talk=%s err=%v", cfg.ID, pending.TalkID, err)
@@ -437,7 +466,7 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 						continue
 					}
 					select {
-					case sent <- model.DirectSent{Outbound: *pending, Err: err}:
+					case sent <- model.DirectSent{Outbound: *pending, SenderID: selfUserID, Err: err}:
 					case <-ctx.Done():
 					}
 					pending = nil
@@ -447,7 +476,7 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 					status.LastError = ""
 				})
 				select {
-				case sent <- model.DirectSent{Outbound: *pending, MessageID: messageID}:
+				case sent <- model.DirectSent{Outbound: *pending, MessageID: messageID, SenderID: selfUserID}:
 				case <-ctx.Done():
 				}
 				pending = nil
@@ -490,6 +519,9 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 				_ = client.Close()
 				disconnected = true
 			case <-readyNow:
+				if selfUserID == "" {
+					selfUserID = directSelfUserID(client)
+				}
 				backoff = time.Second
 			case msg := <-in:
 				pending = &msg
@@ -532,6 +564,24 @@ func isRecoverableDirectError(err error) bool {
 		return true
 	}
 	return errors.As(err, &connErr)
+}
+
+func directSelfUserID(client directClient) string {
+	result, err := client.Call(direct.MethodGetMe, []interface{}{})
+	if err != nil {
+		return ""
+	}
+	m, ok := result.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	if id, ok := m["id"]; ok {
+		return fmt.Sprint(id)
+	}
+	if id, ok := m["user_id"]; ok {
+		return fmt.Sprint(id)
+	}
+	return ""
 }
 
 func sendDirect(ctx context.Context, client directClient, msg model.DirectOutbound) (string, error) {

@@ -44,10 +44,25 @@ type DirectOutbound struct {
 	Text        string
 	Attachments []Attachment
 	Echo        bool
+	TeamsSource *TeamsSource
 }
 
 type DirectSent struct {
 	Outbound  DirectOutbound
 	MessageID string
+	SenderID  string
 	Err       error
+}
+
+type TeamsSource struct {
+	ServiceURL     string
+	ConversationID string
+	ActivityID     string
+}
+
+type DirectReadReceipt struct {
+	AccountID   string
+	TalkID      string
+	MessageIDs  []string
+	ReadUserIDs []string
 }

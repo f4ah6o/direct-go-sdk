@@ -2,6 +2,7 @@ package direct
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -44,6 +45,43 @@ type MessageSearchContent struct {
 	TalkID     interface{}
 	DomainID   interface{}
 	MatchScore float64
+}
+
+// ReadStatus represents per-message read state.
+type ReadStatus struct {
+	MessageID     string
+	TalkID        string
+	ReadUserIDs   []string
+	UnreadUserIDs []string
+}
+
+// ReadStatusesUpdate represents a read-status notification from direct.
+type ReadStatusesUpdate struct {
+	TalkID                                string
+	MessageIDs                            []string
+	MentionMessageIDs                     []string
+	ReadUserIDs                           []string
+	MessageIDsExcludingUnreadCountTargets []string
+}
+
+// GetReadStatus retrieves read status for a message in a talk.
+func (c *Client) GetReadStatus(ctx context.Context, talkID, messageID interface{}) (*ReadStatus, error) {
+	result, err := c.Call(MethodGetReadStatus, []interface{}{talkID, messageID})
+	if err != nil {
+		return nil, err
+	}
+	return parseReadStatus(result), nil
+}
+
+// UpdateReadStatuses marks messages through maxReadMessageID as read in a talk.
+func (c *Client) UpdateReadStatuses(ctx context.Context, talkID, maxReadMessageID interface{}) error {
+	_, err := c.Call(MethodUpdateReadStatuses, []interface{}{talkID, maxReadMessageID})
+	return err
+}
+
+// ParseReadStatusesUpdate parses notify_update_read_statuses payloads.
+func ParseReadStatusesUpdate(data interface{}) ReadStatusesUpdate {
+	return parseReadStatusesUpdate(data)
 }
 
 // GetMessages retrieves messages from a talk room.
@@ -373,4 +411,59 @@ func (c *Client) GetMessageReactionUsers(ctx context.Context, messageID interfac
 	}
 
 	return users, nil
+}
+
+func parseReadStatus(data interface{}) *ReadStatus {
+	status := &ReadStatus{}
+	m, ok := data.(map[string]interface{})
+	if !ok {
+		return status
+	}
+	status.MessageID = stringFromMap(m, "message_id", "id")
+	status.TalkID = stringFromMap(m, "talk_id")
+	status.ReadUserIDs = stringSliceFromValue(m["read_user_ids"])
+	status.UnreadUserIDs = stringSliceFromValue(m["unread_user_ids"])
+	return status
+}
+
+func parseReadStatusesUpdate(data interface{}) ReadStatusesUpdate {
+	update := ReadStatusesUpdate{}
+	m, ok := data.(map[string]interface{})
+	if !ok {
+		return update
+	}
+	update.TalkID = stringFromMap(m, "talk_id")
+	update.MessageIDs = stringSliceFromValue(m["message_ids"])
+	update.MentionMessageIDs = stringSliceFromValue(m["mention_message_ids"])
+	update.ReadUserIDs = stringSliceFromValue(m["read_user_ids"])
+	update.MessageIDsExcludingUnreadCountTargets = stringSliceFromValue(m["message_ids_excluding_unread_count_targets"])
+	return update
+}
+
+func stringFromMap(m map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if v, ok := m[key]; ok {
+			return stringFromValue(v)
+		}
+	}
+	return ""
+}
+
+func stringFromValue(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+func stringSliceFromValue(v interface{}) []string {
+	arr, ok := v.([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, item := range arr {
+		out = append(out, stringFromValue(item))
+	}
+	return out
 }

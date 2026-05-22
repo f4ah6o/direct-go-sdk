@@ -39,14 +39,28 @@ type TeamsChannelBinding struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
+type TeamsMessageRef struct {
+	AccountID       string    `json:"account_id"`
+	TalkID          string    `json:"talk_id"`
+	DirectMessageID string    `json:"direct_message_id"`
+	ServiceURL      string    `json:"service_url"`
+	ConversationID  string    `json:"conversation_id"`
+	ActivityID      string    `json:"activity_id"`
+	DirectSenderID  string    `json:"direct_sender_id,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	ReactedAt       time.Time `json:"reacted_at,omitempty"`
+}
+
 type State struct {
-	TalkThreads          map[string]ThreadMapping       `json:"talk_threads"`
-	TeamsThreadIndex     map[string]string              `json:"teams_thread_index"`
-	TeamsChannelBindings map[string]TeamsChannelBinding `json:"teams_channel_bindings"`
-	SentTeamsMessages    map[string]time.Time           `json:"sent_teams_messages"`
-	SentDirectMessages   map[string]time.Time           `json:"sent_direct_messages"`
-	Subscriptions        map[string]string              `json:"subscriptions"`
-	DirectDevices        map[string]string              `json:"direct_devices"`
+	TalkThreads           map[string]ThreadMapping       `json:"talk_threads"`
+	TeamsThreadIndex      map[string]string              `json:"teams_thread_index"`
+	TeamsChannelBindings  map[string]TeamsChannelBinding `json:"teams_channel_bindings"`
+	SentTeamsMessages     map[string]time.Time           `json:"sent_teams_messages"`
+	SentDirectMessages    map[string]time.Time           `json:"sent_direct_messages"`
+	DirectToTeamsMessages map[string]TeamsMessageRef     `json:"direct_to_teams_messages"`
+	Subscriptions         map[string]string              `json:"subscriptions"`
+	DirectDevices         map[string]string              `json:"direct_devices"`
 }
 
 type Store struct {
@@ -77,13 +91,14 @@ func Open(path string) (*Store, error) {
 
 func newState() State {
 	return State{
-		TalkThreads:          map[string]ThreadMapping{},
-		TeamsThreadIndex:     map[string]string{},
-		TeamsChannelBindings: map[string]TeamsChannelBinding{},
-		SentTeamsMessages:    map[string]time.Time{},
-		SentDirectMessages:   map[string]time.Time{},
-		Subscriptions:        map[string]string{},
-		DirectDevices:        map[string]string{},
+		TalkThreads:           map[string]ThreadMapping{},
+		TeamsThreadIndex:      map[string]string{},
+		TeamsChannelBindings:  map[string]TeamsChannelBinding{},
+		SentTeamsMessages:     map[string]time.Time{},
+		SentDirectMessages:    map[string]time.Time{},
+		DirectToTeamsMessages: map[string]TeamsMessageRef{},
+		Subscriptions:         map[string]string{},
+		DirectDevices:         map[string]string{},
 	}
 }
 
@@ -103,6 +118,9 @@ func (s *Store) ensure() {
 	if s.state.SentDirectMessages == nil {
 		s.state.SentDirectMessages = map[string]time.Time{}
 	}
+	if s.state.DirectToTeamsMessages == nil {
+		s.state.DirectToTeamsMessages = map[string]TeamsMessageRef{}
+	}
 	if s.state.Subscriptions == nil {
 		s.state.Subscriptions = map[string]string{}
 	}
@@ -117,6 +135,10 @@ func talkKey(accountID, talkID string) string {
 
 func threadKey(conversationID, rootID string) string {
 	return conversationID + ":" + rootID
+}
+
+func directMessageKey(accountID, messageID string) string {
+	return accountID + ":" + messageID
 }
 
 func (s *Store) GetByTalk(accountID, talkID string) (ThreadMapping, bool) {
@@ -287,6 +309,54 @@ func (s *Store) IsSentDirectMessage(id string) bool {
 	defer s.mu.Unlock()
 	_, ok := s.state.SentDirectMessages[id]
 	return ok
+}
+
+func (s *Store) PutTeamsMessageRef(ref TeamsMessageRef) error {
+	if ref.AccountID == "" || ref.DirectMessageID == "" || ref.ActivityID == "" || ref.ConversationID == "" || ref.ServiceURL == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	key := directMessageKey(ref.AccountID, ref.DirectMessageID)
+	if existing, ok := s.state.DirectToTeamsMessages[key]; ok {
+		if ref.CreatedAt.IsZero() {
+			ref.CreatedAt = existing.CreatedAt
+		}
+		if ref.ReactedAt.IsZero() {
+			ref.ReactedAt = existing.ReactedAt
+		}
+	}
+	if ref.CreatedAt.IsZero() {
+		ref.CreatedAt = now
+	}
+	ref.UpdatedAt = now
+	s.state.DirectToTeamsMessages[key] = ref
+	return s.saveLocked()
+}
+
+func (s *Store) GetTeamsMessageRef(accountID, directMessageID string) (TeamsMessageRef, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ref, ok := s.state.DirectToTeamsMessages[directMessageKey(accountID, directMessageID)]
+	return ref, ok
+}
+
+func (s *Store) MarkTeamsReadReaction(accountID, directMessageID string) (TeamsMessageRef, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := directMessageKey(accountID, directMessageID)
+	ref, ok := s.state.DirectToTeamsMessages[key]
+	if !ok {
+		return TeamsMessageRef{}, false, nil
+	}
+	if !ref.ReactedAt.IsZero() {
+		return ref, false, nil
+	}
+	ref.ReactedAt = time.Now().UTC()
+	ref.UpdatedAt = ref.ReactedAt
+	s.state.DirectToTeamsMessages[key] = ref
+	return ref, true, s.saveLocked()
 }
 
 func newDeviceID() (string, error) {

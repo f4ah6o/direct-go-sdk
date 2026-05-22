@@ -25,7 +25,7 @@ func TestAccountWorkerRecreatesClientOnDirectError(t *testing.T) {
 	sent := make(chan model.DirectSent, 1)
 
 	worker := testAccountWorker(runtimeAccount(), in)
-	go runAccountWorker(ctx, worker, out, sent, discardLogger(), factory.New, noBackoff, time.Now)
+	go runAccountWorker(ctx, worker, out, nil, sent, discardLogger(), factory.New, noBackoff, time.Now)
 
 	first := factory.waitForClient(t, 1)
 	first.emit(direct.EventError, map[string]string{"error": "read failed"})
@@ -58,7 +58,7 @@ func TestAccountWorkerRecreatesClientOnDone(t *testing.T) {
 	sent := make(chan model.DirectSent, 1)
 
 	worker := testAccountWorker(runtimeAccount(), in)
-	go runAccountWorker(ctx, worker, out, sent, discardLogger(), factory.New, noBackoff, time.Now)
+	go runAccountWorker(ctx, worker, out, nil, sent, discardLogger(), factory.New, noBackoff, time.Now)
 
 	first := factory.waitForClient(t, 1)
 	if err := first.Close(); err != nil {
@@ -98,7 +98,7 @@ func TestAccountWorkerRetriesOutboundAfterRecoverableSendError(t *testing.T) {
 	sent := make(chan model.DirectSent, 1)
 
 	worker := testAccountWorker(runtimeAccount(), in)
-	go runAccountWorker(ctx, worker, out, sent, discardLogger(), factory.New, noBackoff, time.Now)
+	go runAccountWorker(ctx, worker, out, nil, sent, discardLogger(), factory.New, noBackoff, time.Now)
 
 	first := factory.waitForClient(t, 1)
 	in <- model.DirectOutbound{AccountID: "account-a", TalkID: "talk-a", Text: "retry me"}
@@ -133,7 +133,7 @@ func TestAccountWorkerDoesNotRetryNonRecoverableSendError(t *testing.T) {
 	sent := make(chan model.DirectSent, 1)
 
 	worker := testAccountWorker(runtimeAccount(), in)
-	go runAccountWorker(ctx, worker, out, sent, discardLogger(), factory.New, noBackoff, time.Now)
+	go runAccountWorker(ctx, worker, out, nil, sent, discardLogger(), factory.New, noBackoff, time.Now)
 
 	first := factory.waitForClient(t, 1)
 	in <- model.DirectOutbound{AccountID: "account-a", TalkID: "talk-a", Text: "fail"}
@@ -149,6 +149,36 @@ func TestAccountWorkerDoesNotRetryNonRecoverableSendError(t *testing.T) {
 	}
 }
 
+func TestAccountWorkerEmitsReadReceipts(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	factory := &fakeDirectClientFactory{}
+	in := make(chan model.DirectOutbound)
+	out := make(chan model.DirectMessage)
+	readOut := make(chan model.DirectReadReceipt, 1)
+	sent := make(chan model.DirectSent, 1)
+
+	worker := testAccountWorker(runtimeAccount(), in)
+	go runAccountWorker(ctx, worker, out, readOut, sent, discardLogger(), factory.New, noBackoff, time.Now)
+
+	client := factory.waitForClient(t, 1)
+	client.emit(direct.EventNotifyUpdateReadStatuses, map[string]interface{}{
+		"talk_id":       "talk-a",
+		"message_ids":   []interface{}{"msg-a"},
+		"read_user_ids": []interface{}{"user-a"},
+	})
+
+	select {
+	case got := <-readOut:
+		if got.AccountID != "account-a" || got.TalkID != "talk-a" || got.MessageIDs[0] != "msg-a" || got.ReadUserIDs[0] != "user-a" {
+			t.Fatalf("unexpected read receipt: %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for read receipt")
+	}
+}
+
 func TestManagerWatchdogRestartsWorkerThatNeverBecomesReady(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -156,7 +186,7 @@ func TestManagerWatchdogRestartsWorkerThatNeverBecomesReady(t *testing.T) {
 	out := make(chan model.DirectMessage)
 	sent := make(chan model.DirectSent, 1)
 	factory := &fakeDirectClientFactory{}
-	manager := NewManager(out, sent, discardLogger())
+	manager := NewManager(out, nil, sent, discardLogger())
 	manager.clientFactory = factory.New
 	manager.sleepBackoff = noBackoff
 
@@ -196,7 +226,7 @@ func TestManagerWatchdogDoesNotRestartInvalidTokenWorker(t *testing.T) {
 	out := make(chan model.DirectMessage)
 	sent := make(chan model.DirectSent, 1)
 	factory := &fakeDirectClientFactory{}
-	manager := NewManager(out, sent, discardLogger())
+	manager := NewManager(out, nil, sent, discardLogger())
 	manager.clientFactory = factory.New
 	manager.sleepBackoff = noBackoff
 
@@ -221,7 +251,7 @@ func TestManagerWatchdogDoesNotRestartInvalidTokenWorker(t *testing.T) {
 func TestManagerIgnoresStatusUpdatesFromOldWorkerGeneration(t *testing.T) {
 	out := make(chan model.DirectMessage)
 	sent := make(chan model.DirectSent, 1)
-	manager := NewManager(out, sent, discardLogger())
+	manager := NewManager(out, nil, sent, discardLogger())
 
 	manager.mu.Lock()
 	manager.workers["account-a"] = &accountWorker{generation: 2}
@@ -246,7 +276,7 @@ func TestManagerIgnoresStatusUpdatesFromOldWorkerGeneration(t *testing.T) {
 func TestManagerDoesNotResurrectStatusAfterWorkerRemoval(t *testing.T) {
 	out := make(chan model.DirectMessage)
 	sent := make(chan model.DirectSent, 1)
-	manager := NewManager(out, sent, discardLogger())
+	manager := NewManager(out, nil, sent, discardLogger())
 
 	manager.updateStatus("account-a", 1, func(status *AccountStatus) {
 		status.Running = false
@@ -401,7 +431,10 @@ func (c *fakeDirectClient) CreateUploadAuth(context.Context, string, string, int
 	return nil, errors.New("not implemented")
 }
 
-func (c *fakeDirectClient) Call(string, []interface{}) (interface{}, error) {
+func (c *fakeDirectClient) Call(method string, _ []interface{}) (interface{}, error) {
+	if method == direct.MethodGetMe {
+		return map[string]interface{}{"id": "direct-self"}, nil
+	}
 	return nil, errors.New("not implemented")
 }
 

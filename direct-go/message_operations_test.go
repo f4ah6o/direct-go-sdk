@@ -96,6 +96,73 @@ func TestGetMessagesWithOptions(t *testing.T) {
 	}
 }
 
+func TestGetReadStatus(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+
+	mockServer.OnSimple("get_read_status", map[string]interface{}{
+		"message_id":      "msg123",
+		"talk_id":         "talk123",
+		"read_user_ids":   []interface{}{"user1", "user2"},
+		"unread_user_ids": []interface{}{"user3"},
+	})
+
+	client := NewClient(Options{Endpoint: mockServer.URL()})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close()
+
+	status, err := client.GetReadStatus(context.Background(), "talk123", "msg123")
+	if err != nil {
+		t.Fatalf("GetReadStatus failed: %v", err)
+	}
+	if status.MessageID != "msg123" || status.TalkID != "talk123" {
+		t.Fatalf("unexpected status: %+v", status)
+	}
+	if len(status.ReadUserIDs) != 2 || status.ReadUserIDs[0] != "user1" || len(status.UnreadUserIDs) != 1 {
+		t.Fatalf("unexpected users: %+v", status)
+	}
+	if got := mockServer.GetCallCount("get_read_status"); got != 1 {
+		t.Fatalf("get_read_status calls = %d, want 1", got)
+	}
+}
+
+func TestUpdateReadStatuses(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+	mockServer.OnSimple("update_read_statuses", true)
+
+	client := NewClient(Options{Endpoint: mockServer.URL()})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close()
+
+	if err := client.UpdateReadStatuses(context.Background(), "talk123", "msg123"); err != nil {
+		t.Fatalf("UpdateReadStatuses failed: %v", err)
+	}
+	if got := mockServer.GetCallCount("update_read_statuses"); got != 1 {
+		t.Fatalf("update_read_statuses calls = %d, want 1", got)
+	}
+}
+
+func TestParseReadStatusesUpdate(t *testing.T) {
+	update := ParseReadStatusesUpdate(map[string]interface{}{
+		"talk_id":             "talk123",
+		"message_ids":         []interface{}{"msg1", int64(2)},
+		"mention_message_ids": []interface{}{"msg1"},
+		"read_user_ids":       []interface{}{"user1"},
+		"message_ids_excluding_unread_count_targets": []interface{}{"msg2"},
+	})
+	if update.TalkID != "talk123" || len(update.MessageIDs) != 2 || update.MessageIDs[1] != "2" {
+		t.Fatalf("unexpected update: %+v", update)
+	}
+	if len(update.ReadUserIDs) != 1 || update.ReadUserIDs[0] != "user1" {
+		t.Fatalf("unexpected read users: %+v", update)
+	}
+}
+
 func TestDeleteMessage(t *testing.T) {
 	mockServer := testutil.NewMockServer()
 	defer mockServer.Close()

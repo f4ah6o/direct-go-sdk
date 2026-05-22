@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,8 @@ type Client struct {
 	token         string
 	expiresAt     time.Time
 }
+
+const ReactionEyes = "1f440_eyes"
 
 func NewClient(cfg config.BotConfig, publicBaseURL ...string) *Client {
 	baseURL := ""
@@ -61,6 +64,13 @@ func (c *Client) ReplyToThread(ctx context.Context, serviceURL, conversationID, 
 
 func (c *Client) SendText(ctx context.Context, serviceURL, conversationID, replyToID, text string) (string, error) {
 	return c.sendActivity(ctx, serviceURL, conversationID, replyToID, NewMessageActivity(text))
+}
+
+func (c *Client) AddReaction(ctx context.Context, serviceURL, conversationID, activityID, reactionType string) error {
+	if reactionType == "" {
+		reactionType = ReactionEyes
+	}
+	return c.addReaction(ctx, serviceURL, conversationID, activityID, reactionType, 3)
 }
 
 type ChannelThreadBinding struct {
@@ -162,6 +172,63 @@ func (c *Client) sendActivity(ctx context.Context, serviceURL, conversationID, r
 		return "", err
 	}
 	return out.ID, nil
+}
+
+func (c *Client) addReaction(ctx context.Context, serviceURL, conversationID, activityID, reactionType string, attempts int) error {
+	path := fmt.Sprintf("%s/v3/conversations/%s/activities/%s/reactions/%s",
+		strings.TrimRight(serviceURL, "/"),
+		url.PathEscape(conversationID),
+		url.PathEscape(activityID),
+		url.PathEscape(reactionType),
+	)
+	token, err := c.accessToken(ctx)
+	if err != nil {
+		return err
+	}
+	for attempt := 0; attempt < attempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, path, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return nil
+		}
+		if resp.StatusCode == http.StatusTooManyRequests && attempt+1 < attempts {
+			delay := retryAfter(resp.Header.Get("Retry-After"))
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+			continue
+		}
+		return fmt.Errorf("bot connector reaction status=%d body=%s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
+func retryAfter(value string) time.Duration {
+	if value == "" {
+		return time.Second
+	}
+	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if when, err := http.ParseTime(value); err == nil {
+		if delay := time.Until(when); delay > 0 {
+			return delay
+		}
+	}
+	return time.Second
 }
 
 func (c *Client) createConversation(ctx context.Context, serviceURL string, params ConversationParameters) (string, error) {

@@ -72,11 +72,12 @@ func runBridge(args []string, logger *log.Logger) error {
 	defer stop()
 
 	directToTeams := make(chan model.DirectMessage, cfg.Queues.DirectToTeams)
+	directReads := make(chan model.DirectReadReceipt, cfg.Queues.DirectToTeams)
 	teamsToDirect := make(chan model.DirectOutbound, cfg.Queues.TeamsToDirect)
 	directSent := make(chan model.DirectSent, cfg.Queues.TeamsToDirect)
 	teamsClient := teams.NewClient(cfg.Bot, cfg.Server.PublicBaseURL, cfg.Attachments.FileProxyTTL)
-	directManager := directworker.NewManager(directToTeams, directSent, logger)
-	service := appbridge.NewService(runtimeState.Account, st, teamsClient, directManager, directToTeams, teamsToDirect, directSent, logger)
+	directManager := directworker.NewManager(directToTeams, directReads, directSent, logger)
+	service := appbridge.NewService(runtimeState.Account, st, teamsClient, directManager, directToTeams, directReads, teamsToDirect, directSent, logger)
 	server := teams.NewServer(cfg, teamsClient, st, teamsToDirect, logger,
 		teams.WithRuntimeLookups(runtimeState.HasChannel, runtimeState.Account, runtimeState.Token),
 		teams.WithHealthCheck(func() (bool, interface{}) { return directManager.Healthy() }),
