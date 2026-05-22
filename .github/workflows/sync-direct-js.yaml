@@ -107,7 +107,8 @@ jobs:
         run: |
           echo "Running coverage analysis tool..."
           cd direct-go/tools/coverage
-          go run . > ../../COVERAGE.md
+          go run . -format markdown -output ../../COVERAGE.md
+          go run . -format badge -output ../../../.github/badges/direct-go-porting-coverage.json
           echo "Coverage report updated"
 
       - name: Commit changes
@@ -118,6 +119,7 @@ jobs:
 
           git add direct-go/direct-js-source/
           git add direct-go/COVERAGE.md
+          git add .github/badges/direct-go-porting-coverage.json
 
           if git diff --staged --quiet; then
             echo "No changes to commit"

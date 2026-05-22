@@ -3,6 +3,7 @@
 Go言語版の direct クライアントライブラリ
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/f4ah6o/direct-go-sdk/direct-go.svg)](https://pkg.go.dev/github.com/f4ah6o/direct-go-sdk/direct-go)
+[![direct-go porting coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/f4ah6o/direct-go-sdk/main/.github/badges/direct-go-porting-coverage.json)](./COVERAGE.md)
 
 ## バージョン
 

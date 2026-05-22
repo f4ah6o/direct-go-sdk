@@ -125,6 +125,45 @@ jobs:
             exit 1
           fi
 
+  porting-coverage:
+    name: Porting Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Generate porting coverage reports
+        working-directory: ./direct-go
+        run: |
+          go run ./tools/coverage -format markdown -output COVERAGE.md
+          go run ./tools/coverage -format json -output ../coverage-direct-go-porting.json
+          go run ./tools/coverage -format badge -output ../.github/badges/direct-go-porting-coverage.json
+
+      - name: Check generated reports are current
+        run: git diff --exit-code -- direct-go/COVERAGE.md .github/badges/direct-go-porting-coverage.json
+
+      - name: Add porting coverage summary
+        working-directory: ./direct-go
+        run: |
+          echo "## direct-go Porting Coverage" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          go run ./tools/coverage -format text >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload porting coverage reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: direct-go-porting-coverage
+          path: |
+            direct-go/COVERAGE.md
+            coverage-direct-go-porting.json
+            .github/badges/direct-go-porting-coverage.json
+          retention-days: 7
+
   coverage-report:
     name: Coverage Report
     runs-on: ubuntu-latest

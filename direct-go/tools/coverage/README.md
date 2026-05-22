@@ -6,7 +6,7 @@
 
 - **RPC メソッドレベルでの比較**: direct-jsとdirect-goのRPCメソッド呼び出しを比較
 - **カテゴリ別の分析**: 13のカテゴリに分類して詳細な分析
-- **複数の出力形式**: Markdown、JSON、テキスト形式に対応
+- **複数の出力形式**: Markdown、JSON、テキスト、Shields badge形式に対応
 - **CI統合準備済み**: GitHub Actionsなどで簡単に利用可能
 
 ## インストール
@@ -45,6 +45,9 @@ go run ./tools/coverage -output COVERAGE.md
 # JSON形式で出力
 go run ./tools/coverage -format json -output coverage.json
 
+# Shields endpoint badge JSONを出力
+go run ./tools/coverage -format badge -output ../.github/badges/direct-go-porting-coverage.json
+
 # テキストサマリーを表示
 go run ./tools/coverage -format text
 
@@ -62,10 +65,10 @@ go run ./tools/coverage -use-baseline
 
 | オプション | デフォルト | 説明 |
 |-----------|-----------|------|
-| `-js-path` | `../direct-js` | direct-jsディレクトリへのパス |
-| `-go-path` | `../..` | direct-goディレクトリへのパス |
+| `-js-path` | 自動検出 | direct-jsソースディレクトリへのパス |
+| `-go-path` | 自動検出 | direct-goディレクトリへのパス |
 | `-output` | (stdout) | 出力ファイルパス。指定しない場合は標準出力 |
-| `-format` | `markdown` | 出力形式: `json`, `markdown`, `text` |
+| `-format` | `markdown` | 出力形式: `json`, `markdown`, `text`, `badge` |
 | `-verbose` | `false` | 詳細なログを表示 |
 | `-use-baseline` | `false` | JSソースを読まずにハードコードされたベースラインを使用 |
 | `-version` | - | バージョン情報を表示 |
@@ -116,6 +119,19 @@ Top 3 Categories by Coverage:
   🟡 Session & Auth: 57.1%
   🟠 Domain Management: 28.6%
   🟠 Talk/Room Management: 22.2%
+```
+
+### Badge
+
+README badgeで使えるShields endpoint JSONです：
+
+```json
+{
+  "schemaVersion": 1,
+  "label": "direct-go porting",
+  "message": "76.8% (63/82)",
+  "color": "yellow"
+}
 ```
 
 ## カテゴリ分類

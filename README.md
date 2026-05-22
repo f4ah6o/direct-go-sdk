@@ -1,6 +1,7 @@
 # direct-go-sdk
 
 [![CI](https://github.com/f4ah6o/direct-go-sdk/actions/workflows/ci.yaml/badge.svg)](https://github.com/f4ah6o/direct-go-sdk/actions/workflows/ci.yaml)
+[![direct-go porting coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/f4ah6o/direct-go-sdk/main/.github/badges/direct-go-porting-coverage.json)](./direct-go/COVERAGE.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 > [!IMPORTANT]
