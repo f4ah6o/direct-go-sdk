@@ -1,3 +1,5 @@
 *.exe
 .env
 daab-go/daabgo
+config.yaml
+state/
