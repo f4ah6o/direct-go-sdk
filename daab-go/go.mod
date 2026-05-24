@@ -6,7 +6,7 @@ require (
 	github.com/f4ah6o/direct-go-sdk/direct-go v0.0.0-20251215153455-bd7b7d48fdd6
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/term v0.29.0
-	pgregory.net/rapid v1.2.0
+	pgregory.net/rapid v1.3.0
 )
 
 require (
