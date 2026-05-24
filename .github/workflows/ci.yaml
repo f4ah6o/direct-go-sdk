@@ -41,7 +41,7 @@ jobs:
         run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
 
       - name: Upload coverage to artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-direct-go-${{ matrix.go }}
           path: direct-go/coverage.txt
@@ -81,7 +81,7 @@ jobs:
         run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
 
       - name: Upload coverage to artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-daab-go-${{ matrix.go }}
           path: daab-go/coverage.txt
@@ -155,7 +155,7 @@ jobs:
           go run ./tools/coverage -format text >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload porting coverage reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: direct-go-porting-coverage
           path: |
