@@ -5,7 +5,7 @@
 ## Summary
 
 - **JavaScript Methods**: 82
-- **Go Methods**: 85
+- **Go Methods**: 87
 - **Coverage**: 100.00% (82/82)
 - **Missing**: 0 methods
 
