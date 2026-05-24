@@ -20,6 +20,11 @@ run config=config:
 run-op item=op_item config=config:
     opz run {{ item }} -- go run ./cmd/direct-teams-bridge run --config {{ config }}
 
+# Build the bridge, then run the binary through opz with 1Password secrets.
+run-op-bin item=op_item config=config:
+    PATH="{{ env_var("HOME") }}/bin/go/bin:$PATH" {{ go }} build -o ./bin/direct-teams-bridge ./cmd/direct-teams-bridge
+    opz run {{ item }} -- ./bin/direct-teams-bridge run --config {{ config }}
+
 # List Teams channel bindings.
 channels config=config:
     PATH="{{ env_var("HOME") }}/bin/go/bin:$PATH" {{ go }} run ./cmd/direct-teams-bridge channels list --config {{ config }}

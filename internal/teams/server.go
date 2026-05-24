@@ -386,14 +386,14 @@ func channelConversationID(activity Activity) string {
 
 func threadReference(activity Activity) (conversationID, rootID string) {
 	conversationID = channelConversationID(activity)
+	_, rootID, ok := strings.Cut(activity.Conversation.ID, ";messageid=")
+	if ok {
+		return conversationID, rootID
+	}
 	if activity.ReplyToID != "" {
 		return conversationID, activity.ReplyToID
 	}
-	_, rootID, ok := strings.Cut(activity.Conversation.ID, ";messageid=")
-	if !ok {
-		return conversationID, ""
-	}
-	return conversationID, rootID
+	return conversationID, ""
 }
 
 func (s *Server) attachmentsFromActivity(ctx context.Context, activity Activity) []model.Attachment {

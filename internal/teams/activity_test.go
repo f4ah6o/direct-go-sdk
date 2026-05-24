@@ -67,6 +67,30 @@ func TestThreadReferenceUsesConversationMessageID(t *testing.T) {
 	}
 }
 
+func TestThreadReferencePrefersConversationMessageIDOverReplyToID(t *testing.T) {
+	a := Activity{
+		Conversation: ConversationAccount{ID: "19:channel@thread.tacv2;messageid=root-a"},
+		ChannelData:  ChannelData{Channel: ChannelInfo{ID: "19:channel@thread.tacv2"}},
+		ReplyToID:    "reply-b",
+	}
+	conversationID, rootID := threadReference(a)
+	if conversationID != "19:channel@thread.tacv2" || rootID != "root-a" {
+		t.Fatalf("threadReference() = %q, %q", conversationID, rootID)
+	}
+}
+
+func TestThreadReferenceFallsBackToReplyToID(t *testing.T) {
+	a := Activity{
+		Conversation: ConversationAccount{ID: "19:channel@thread.tacv2"},
+		ChannelData:  ChannelData{Channel: ChannelInfo{ID: "19:channel@thread.tacv2"}},
+		ReplyToID:    "root-a",
+	}
+	conversationID, rootID := threadReference(a)
+	if conversationID != "19:channel@thread.tacv2" || rootID != "root-a" {
+		t.Fatalf("threadReference() = %q, %q", conversationID, rootID)
+	}
+}
+
 func TestAttachmentDownloadURL(t *testing.T) {
 	a := Attachment{Content: map[string]interface{}{"downloadUrl": "https://example.com/file.png"}}
 	if got := a.DownloadURL(); got != "https://example.com/file.png" {
