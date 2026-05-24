@@ -15,7 +15,7 @@ Source context: direct-go-sdk note-management porting completion on 2026-05-22.
 
 ## Acceptance criteria
 
-- [ ] Note content compression and decompression behavior is documented with fixture evidence.
-- [ ] `create_note` and `update_note` parity work is scoped separately from raw note read/delete/lock APIs.
-- [ ] Tests cover compressed content round trips without requiring live credentials.
-- [ ] Public APIs make raw passthrough versus high-level rich-text behavior explicit.
+- [x] Note content compression and decompression behavior is documented with fixture evidence.
+- [x] `create_note` and `update_note` parity work is scoped separately from raw note read/delete/lock APIs.
+- [x] Tests cover compressed content round trips without requiring live credentials.
+- [x] Public APIs make raw passthrough versus high-level rich-text behavior explicit.

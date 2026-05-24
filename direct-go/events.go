@@ -148,6 +148,8 @@ const (
 	// Notes
 	MethodGetNoteStatuses   = "get_note_statuses"
 	MethodGetNote           = "get_note"
+	MethodCreateNote        = "create_note"
+	MethodUpdateNote        = "update_note"
 	MethodDeleteNote        = "delete_note"
 	MethodLockNote          = "lock_note"
 	MethodUnlockNote        = "unlock_note"
