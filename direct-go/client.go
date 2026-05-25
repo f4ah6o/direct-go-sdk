@@ -294,6 +294,8 @@ func (c *Client) startNotification() {
 						var talkID, domainID string
 						if id, ok := talkMap["talk_id"]; ok {
 							talkID = fmt.Sprintf("%v", id)
+						} else if id, ok := talkMap["id"]; ok {
+							talkID = fmt.Sprintf("%v", id)
 						}
 						if domID, ok := talkMap["domain_id"]; ok {
 							domainID = fmt.Sprintf("%v", domID)

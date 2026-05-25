@@ -49,6 +49,7 @@ type TeamsMessageRef struct {
 	DirectSenderID  string    `json:"direct_sender_id,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
+	SentReactedAt   time.Time `json:"sent_reacted_at,omitempty"`
 	ReactedAt       time.Time `json:"reacted_at,omitempty"`
 }
 
@@ -163,11 +164,18 @@ func (s *Store) PutMapping(m ThreadMapping) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now().UTC()
+	key := talkKey(m.AccountID, m.TalkID)
+	if existing, ok := s.state.TalkThreads[key]; ok {
+		delete(s.state.TeamsThreadIndex, threadKey(existing.ConversationID, existing.RootID))
+		if m.CreatedAt.IsZero() {
+			m.CreatedAt = existing.CreatedAt
+		}
+	}
 	if m.CreatedAt.IsZero() {
 		m.CreatedAt = now
 	}
 	m.UpdatedAt = now
-	s.state.TalkThreads[talkKey(m.AccountID, m.TalkID)] = m
+	s.state.TalkThreads[key] = m
 	s.state.TeamsThreadIndex[threadKey(m.ConversationID, m.RootID)] = talkKey(m.AccountID, m.TalkID)
 	return s.saveLocked()
 }
@@ -326,6 +334,9 @@ func (s *Store) PutTeamsMessageRef(ref TeamsMessageRef) error {
 		if ref.ReactedAt.IsZero() {
 			ref.ReactedAt = existing.ReactedAt
 		}
+		if ref.SentReactedAt.IsZero() {
+			ref.SentReactedAt = existing.SentReactedAt
+		}
 	}
 	if ref.CreatedAt.IsZero() {
 		ref.CreatedAt = now
@@ -340,6 +351,23 @@ func (s *Store) GetTeamsMessageRef(accountID, directMessageID string) (TeamsMess
 	defer s.mu.Unlock()
 	ref, ok := s.state.DirectToTeamsMessages[directMessageKey(accountID, directMessageID)]
 	return ref, ok
+}
+
+func (s *Store) MarkTeamsSentReaction(accountID, directMessageID string) (TeamsMessageRef, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := directMessageKey(accountID, directMessageID)
+	ref, ok := s.state.DirectToTeamsMessages[key]
+	if !ok {
+		return TeamsMessageRef{}, false, nil
+	}
+	if !ref.SentReactedAt.IsZero() {
+		return ref, false, nil
+	}
+	ref.SentReactedAt = time.Now().UTC()
+	ref.UpdatedAt = ref.SentReactedAt
+	s.state.DirectToTeamsMessages[key] = ref
+	return ref, true, s.saveLocked()
 }
 
 func (s *Store) MarkTeamsReadReaction(accountID, directMessageID string) (TeamsMessageRef, bool, error) {

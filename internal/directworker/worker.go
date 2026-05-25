@@ -46,6 +46,7 @@ type accountWorker struct {
 	cancel     context.CancelFunc
 	restart    chan struct{}
 	status     func(func(*AccountStatus))
+	names      *nameResolver
 }
 
 type AccountStatus struct {
@@ -271,6 +272,9 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 	cfg := account.Config
 	backoff := time.Second
 	var pending *model.DirectOutbound
+	if worker.names == nil {
+		worker.names = newNameResolver()
+	}
 	worker.status(func(status *AccountStatus) {
 		status.Running = true
 		status.StartedAt = now()
@@ -392,6 +396,8 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 				AccountID: cfg.ID,
 				TalkID:    msg.TalkID,
 				UserID:    msg.UserID,
+				UserName:  worker.names.userName(client, msg.DomainID, msg.UserID, msg.TalkID, logger, cfg.ID),
+				RoomName:  worker.names.roomName(client, msg.TalkID, logger, cfg.ID),
 				Text:      msg.Text,
 				MessageID: msg.ID,
 				CreatedAt: messageTime(msg),
@@ -529,6 +535,190 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 		}
 		sleepBackoff(ctx, &backoff)
 	}
+}
+
+type nameResolver struct {
+	mu    sync.Mutex
+	users map[string]string
+	rooms map[string]directRoomInfo
+}
+
+type directRoomInfo struct {
+	name     string
+	domainID string
+}
+
+func newNameResolver() *nameResolver {
+	return &nameResolver{
+		users: map[string]string{},
+		rooms: map[string]directRoomInfo{},
+	}
+}
+
+func (r *nameResolver) userName(client directClient, domainID, userID, talkID string, logger *log.Logger, accountID string) string {
+	if userID == "" {
+		return ""
+	}
+	if domainID == "" && talkID != "" {
+		domainID = r.roomInfo(client, talkID, logger, accountID).domainID
+	}
+	if domainID == "" {
+		logger.Printf("[%s] direct user name lookup skipped without domain: talk=%s user=%s", accountID, talkID, userID)
+		return ""
+	}
+	key := domainID + ":" + userID
+	r.mu.Lock()
+	name, ok := r.users[key]
+	r.mu.Unlock()
+	if ok {
+		return name
+	}
+
+	result, err := client.Call(direct.MethodGetUsers, []interface{}{normalizeRPCID(domainID), []interface{}{normalizeRPCID(userID)}})
+	if err != nil {
+		logger.Printf("[%s] direct user name lookup failed: domain=%s user=%s err=%v", accountID, domainID, userID, err)
+		return ""
+	}
+	name = displayNameFromGetUsers(result, userID)
+	r.mu.Lock()
+	r.users[key] = name
+	r.mu.Unlock()
+	return name
+}
+
+func (r *nameResolver) roomName(client directClient, talkID string, logger *log.Logger, accountID string) string {
+	return r.roomInfo(client, talkID, logger, accountID).name
+}
+
+func (r *nameResolver) roomInfo(client directClient, talkID string, logger *log.Logger, accountID string) directRoomInfo {
+	if talkID == "" {
+		return directRoomInfo{}
+	}
+	r.mu.Lock()
+	info, ok := r.rooms[talkID]
+	r.mu.Unlock()
+	if ok {
+		return info
+	}
+
+	result, err := client.Call(direct.MethodGetTalks, []interface{}{})
+	if err != nil {
+		logger.Printf("[%s] direct room name lookup failed: talk=%s err=%v", accountID, talkID, err)
+		return directRoomInfo{}
+	}
+	rooms := roomInfoFromGetTalks(result)
+	r.mu.Lock()
+	for id, room := range rooms {
+		r.rooms[id] = room
+	}
+	info = r.rooms[talkID]
+	if _, ok := r.rooms[talkID]; !ok {
+		r.rooms[talkID] = directRoomInfo{}
+	}
+	r.mu.Unlock()
+	if info.name == "" && info.domainID == "" {
+		logger.Printf("[%s] direct room lookup returned no match: talk=%s talks=%d", accountID, talkID, len(rooms))
+	}
+	return info
+}
+
+func displayNameFromGetUsers(result interface{}, userID string) string {
+	arr, ok := result.([]interface{})
+	if !ok {
+		return ""
+	}
+	for _, item := range arr {
+		user, ok := stringKeyMap(item)
+		if !ok {
+			continue
+		}
+		if id, ok := user["id"]; ok && normalizeID(id) != userID {
+			continue
+		}
+		if id, ok := user["user_id"]; ok && normalizeID(id) != userID {
+			continue
+		}
+		if name := stringMapValue(user, "display_name"); name != "" {
+			return name
+		}
+		if name := stringMapValue(user, "name"); name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+func roomInfoFromGetTalks(result interface{}) map[string]directRoomInfo {
+	out := map[string]directRoomInfo{}
+	arr, ok := result.([]interface{})
+	if !ok {
+		return out
+	}
+	for _, item := range arr {
+		talk, ok := stringKeyMap(item)
+		if !ok {
+			continue
+		}
+		id := firstStringMapValue(talk, "id", "talk_id", "talkId")
+		if id == "" {
+			continue
+		}
+		out[id] = directRoomInfo{
+			name:     firstStringMapValue(talk, "name", "display_name", "displayName"),
+			domainID: firstStringMapValue(talk, "domain_id", "domainId"),
+		}
+	}
+	return out
+}
+
+func stringKeyMap(value interface{}) (map[string]interface{}, bool) {
+	switch m := value.(type) {
+	case map[string]interface{}:
+		return m, true
+	case map[interface{}]interface{}:
+		out := make(map[string]interface{}, len(m))
+		for key, value := range m {
+			out[fmt.Sprint(key)] = value
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+func stringMapValue(m map[string]interface{}, key string) string {
+	value, ok := m[key]
+	if !ok || value == nil {
+		return ""
+	}
+	return strings.TrimSpace(normalizeID(value))
+}
+
+func firstStringMapValue(m map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if value := stringMapValue(m, key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func normalizeID(value interface{}) string {
+	switch v := value.(type) {
+	case float32:
+		return strconv.FormatInt(int64(v), 10)
+	case float64:
+		return strconv.FormatInt(int64(v), 10)
+	default:
+		return fmt.Sprint(v)
+	}
+}
+
+func normalizeRPCID(value string) interface{} {
+	if id, err := strconv.ParseUint(value, 10, 64); err == nil {
+		return id
+	}
+	return value
 }
 
 func tokenFingerprint(token string) string {

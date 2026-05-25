@@ -153,6 +153,15 @@ func ParseCommand(a Activity) string {
 	return fields[0]
 }
 
+func IsNewThreadCommand(command string) bool {
+	switch strings.ToLower(command) {
+	case "new-thread", "newthread", "reset-thread", "reset":
+		return true
+	default:
+		return false
+	}
+}
+
 func BotWasAdded(a Activity) bool {
 	if len(a.MembersAdded) == 0 {
 		return false

@@ -71,6 +71,29 @@ bench/runtime/.generated/go/direct-post-stripped \
   --text ping
 ```
 
+## Live lookup test
+
+Use the Go test below to verify Direct API lookup behavior against the real
+service. It resolves:
+
+- `talk_id -> room name + domain_id` through `get_talks`
+- `domain_id + user_id -> display_name/name` through `get_users`
+
+The test uses the same account config and token resolution as `direct-post`.
+It is skipped unless `DIRECT_LOOKUP_LIVE=1` is set.
+
+```bash
+cd bench/runtime/go-ping
+DIRECT_LOOKUP_LIVE=1 \
+DIRECT_LOOKUP_CONFIG=../../../config.yaml \
+DIRECT_LOOKUP_ACCOUNT=bot-trial2 \
+DIRECT_LOOKUP_TALK_ID="$DIRECT_BENCH_TALK_ID" \
+go test -run TestLiveDirectLookupResolvesUserAndRoomNames -v
+```
+
+If `DIRECT_LOOKUP_USER_ID` is omitted, the test tries to choose a non-self user
+from the target talk's `user_ids`.
+
 ## Memory, CPU, and startup measurement
 
 Run both processes from `bench/runtime/.generated/node-daab` so they read the

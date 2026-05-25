@@ -189,10 +189,8 @@ func (s *Service) runDirectSent(ctx context.Context) {
 						DirectSenderID:  sent.SenderID,
 					}
 					s.storeDirectToTeamsMessageRef(ctx, ref)
+					s.reactToDirectSent(ctx, ref)
 				}
-			}
-			if sent.Outbound.Echo {
-				s.echoTeamsSentMessage(ctx, sent.Outbound)
 			}
 		}
 	}
@@ -315,6 +313,25 @@ func (s *Service) storeDirectToTeamsMessageRef(ctx context.Context, ref store.Te
 	}
 }
 
+func (s *Service) reactToDirectSent(ctx context.Context, ref store.TeamsMessageRef) {
+	if s.teams == nil || s.st == nil {
+		return
+	}
+	stored, ok := s.st.GetTeamsMessageRef(ref.AccountID, ref.DirectMessageID)
+	if !ok || !stored.SentReactedAt.IsZero() {
+		return
+	}
+	if err := s.teams.AddReaction(ctx, stored.ServiceURL, stored.ConversationID, stored.ActivityID, teams.ReactionBallotBoxWithBallot); err != nil {
+		s.logger.Printf("[bridge] failed to add teams sent reaction: account=%s direct_message=%s teams_activity=%s err=%v", stored.AccountID, stored.DirectMessageID, stored.ActivityID, err)
+		return
+	}
+	if _, _, err := s.st.MarkTeamsSentReaction(ref.AccountID, ref.DirectMessageID); err != nil {
+		s.logger.Printf("[bridge] failed to mark teams sent reaction: account=%s direct_message=%s err=%v", ref.AccountID, ref.DirectMessageID, err)
+		return
+	}
+	s.logger.Printf("[bridge] added teams sent reaction: account=%s direct_message=%s teams_activity=%s", stored.AccountID, stored.DirectMessageID, stored.ActivityID)
+}
+
 func hasReaderOtherThan(readUserIDs []string, senderID string) bool {
 	for _, userID := range readUserIDs {
 		if userID != "" && userID != senderID {
@@ -332,17 +349,6 @@ func (s *Service) notifyTeamsSendFailure(ctx context.Context, sent model.DirectS
 	text := "❌ failed to send to direct: " + sent.Err.Error()
 	if _, err := s.teams.SendText(ctx, mapping.ServiceURL, teamsThreadConversationID(mapping.ConversationID, mapping.RootID), "", text); err != nil {
 		s.logger.Printf("[bridge] failed to notify teams send failure: account=%s talk=%s err=%v", sent.Outbound.AccountID, sent.Outbound.TalkID, err)
-	}
-}
-
-func (s *Service) echoTeamsSentMessage(ctx context.Context, msg model.DirectOutbound) {
-	mapping, ok := s.st.GetByTalk(msg.AccountID, msg.TalkID)
-	if !ok {
-		return
-	}
-	text := "echo: " + msg.Text
-	if _, err := s.teams.SendText(ctx, mapping.ServiceURL, teamsThreadConversationID(mapping.ConversationID, mapping.RootID), "", text); err != nil {
-		s.logger.Printf("[bridge] failed to echo teams sent message: account=%s talk=%s err=%v", msg.AccountID, msg.TalkID, err)
 	}
 }
 
@@ -412,7 +418,7 @@ func (s *Service) storeTeamsToDirectMessageRef(ctx context.Context, outbound mod
 		s.logger.Printf("[bridge] pending direct message has no teams source: account=%s direct_message=%s", msg.AccountID, msg.MessageID)
 		return
 	}
-	s.storeDirectToTeamsMessageRef(ctx, store.TeamsMessageRef{
+	ref := store.TeamsMessageRef{
 		AccountID:       outbound.AccountID,
 		TalkID:          outbound.TalkID,
 		DirectMessageID: msg.MessageID,
@@ -420,7 +426,9 @@ func (s *Service) storeTeamsToDirectMessageRef(ctx context.Context, outbound mod
 		ConversationID:  outbound.TeamsSource.ConversationID,
 		ActivityID:      outbound.TeamsSource.ActivityID,
 		DirectSenderID:  msg.UserID,
-	})
+	}
+	s.storeDirectToTeamsMessageRef(ctx, ref)
+	s.reactToDirectSent(ctx, ref)
 }
 
 func retry[T any](ctx context.Context, fn func() (T, error)) (T, error) {

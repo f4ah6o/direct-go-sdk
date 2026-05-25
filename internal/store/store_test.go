@@ -6,6 +6,15 @@ import (
 	"testing"
 )
 
+func openTempStore(t *testing.T) *Store {
+	t.Helper()
+	st, err := Open(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
 func TestStorePersistsMappingsAndIndexesThread(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	st, err := Open(path)
@@ -32,6 +41,27 @@ func TestStorePersistsMappingsAndIndexesThread(t *testing.T) {
 	}
 	if _, ok := reopened.GetByThread("conversation", "root"); ok {
 		t.Fatalf("thread index remained after forget")
+	}
+}
+
+func TestPutMappingReplacesThreadIndexForSameTalk(t *testing.T) {
+	st := openTempStore(t)
+
+	if err := st.PutMapping(ThreadMapping{AccountID: "a", TalkID: "t", ConversationID: "conversation-old", RootID: "root-old"}); err != nil {
+		t.Fatalf("PutMapping old: %v", err)
+	}
+	if err := st.PutMapping(ThreadMapping{AccountID: "a", TalkID: "t", ConversationID: "conversation-new", RootID: "root-new"}); err != nil {
+		t.Fatalf("PutMapping new: %v", err)
+	}
+	if _, ok := st.GetByThread("conversation-old", "root-old"); ok {
+		t.Fatalf("old thread index remained after replacing mapping")
+	}
+	got, ok := st.GetByThread("conversation-new", "root-new")
+	if !ok {
+		t.Fatalf("new thread index missing")
+	}
+	if got.AccountID != "a" || got.TalkID != "t" {
+		t.Fatalf("unexpected mapping: %+v", got)
 	}
 }
 

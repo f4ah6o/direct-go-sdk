@@ -18,6 +18,8 @@ type DirectMessage struct {
 	AccountID   string
 	TalkID      string
 	UserID      string
+	UserName    string
+	RoomName    string
 	Text        string
 	MessageID   string
 	CreatedAt   time.Time
@@ -43,7 +45,6 @@ type DirectOutbound struct {
 	TalkID      string
 	Text        string
 	Attachments []Attachment
-	Echo        bool
 	TeamsSource *TeamsSource
 }
 

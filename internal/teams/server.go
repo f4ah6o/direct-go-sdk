@@ -246,11 +246,22 @@ func (s *Server) processActivity(ctx context.Context, activity Activity) {
 		return
 	}
 	text := StripRecipientMention(activity)
-	echo := false
 	trimmedText := strings.TrimSpace(text)
-	if fields := strings.Fields(trimmedText); len(fields) > 0 && strings.EqualFold(fields[0], "echo") {
-		echo = true
+	fields := strings.Fields(trimmedText)
+	if len(fields) == 0 {
+		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, threadReplyUsageText())
+		return
+	}
+	switch strings.ToLower(fields[0]) {
+	case "reply":
 		text = strings.TrimSpace(trimmedText[len(fields[0]):])
+	default:
+		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, threadReplyUsageText())
+		return
+	}
+	if strings.TrimSpace(text) == "" && len(activity.Attachments) == 0 {
+		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, threadReplyUsageText())
+		return
 	}
 	text = appendTeamsSenderName(text, activity.From.Name)
 	attachments := s.attachmentsFromActivity(ctx, activity)
@@ -259,7 +270,6 @@ func (s *Server) processActivity(ctx context.Context, activity Activity) {
 		TalkID:      mapping.TalkID,
 		Text:        text,
 		Attachments: attachments,
-		Echo:        echo,
 		TeamsSource: &model.TeamsSource{
 			ServiceURL:     activity.ServiceURL,
 			ConversationID: activity.Conversation.ID,
@@ -284,7 +294,7 @@ func appendTeamsSenderName(text, displayName string) string {
 }
 
 func (s *Server) sendWelcome(ctx context.Context, activity Activity) {
-	text := "direct bridge is ready. In the target channel, mention me with `bind <alias>` to connect this Teams channel to a configured direct account route."
+	text := "direct bridge は利用可能です。対象チャネルで `@direct bind <alias>` を送ると、この Teams チャネルを Direct アカウントの転送先に紐付けます。"
 	if _, err := s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, "", text); err != nil {
 		s.logger.Printf("[teams] welcome message failed conversation=%s err=%v", activity.Conversation.ID, err)
 	}
@@ -294,19 +304,45 @@ func (s *Server) handleCommand(ctx context.Context, activity Activity) bool {
 	command := ParseCommand(activity)
 	switch command {
 	case "bind":
-		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "usage: @direct bind <alias>")
+		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "使い方: `@direct bind <alias>`")
 		return true
 	case "unbind":
-		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "usage: @direct unbind <alias>")
+		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "使い方: `@direct unbind <alias>`")
 		return true
 	case "hi", "hello":
-		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "Hi. Use `@direct bind <alias>` in a channel, or reply in a bridged thread with `@direct <message>`.")
+		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, rootOnlyHelpText())
 		return true
 	case "help":
 		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, rootOnlyHelpText())
 		return true
 	default:
+		if IsNewThreadCommand(command) {
+			s.resetThreadMapping(ctx, activity)
+			return true
+		}
 		return false
+	}
+}
+
+func (s *Server) resetThreadMapping(ctx context.Context, activity Activity) {
+	conversationID, rootID := threadReference(activity)
+	if rootID == "" {
+		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "❌ new-thread must be sent as a reply in a bridged thread.")
+		return
+	}
+	mapping, ok := s.store.GetByThread(conversationID, rootID)
+	if !ok {
+		s.logger.Printf("[teams] new-thread ignored for unmapped thread conversation=%s root=%s", conversationID, rootID)
+		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "❌ this thread is not mapped to a Direct room.")
+		return
+	}
+	if err := s.store.Forget(mapping.AccountID, mapping.TalkID); err != nil {
+		s.logger.Printf("[teams] new-thread failed account=%s talk=%s err=%v", mapping.AccountID, mapping.TalkID, err)
+		return
+	}
+	text := "✅ reset thread mapping. The next Direct message for this room will start a new Teams thread."
+	if _, err := s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, text); err != nil {
+		s.logger.Printf("[teams] new-thread response failed account=%s talk=%s err=%v", mapping.AccountID, mapping.TalkID, err)
 	}
 }
 
@@ -343,7 +379,23 @@ func (s *Server) unbindChannel(ctx context.Context, alias string, activity Activ
 }
 
 func rootOnlyHelpText() string {
-	return "This bridge accepts `@direct bind <alias>` in a Teams channel. To send a Teams reply back to direct, reply inside a thread created from direct and mention `@direct`."
+	return strings.Join([]string{
+		"Direct と Teams をつなぐブリッジです。",
+		"",
+		"チャネルで使うコマンド:",
+		"- `@direct bind <alias>`: この Teams チャネルを設定済みの Direct 転送先に紐付けます。",
+		"- `@direct unbind <alias>`: この Teams チャネルの紐付けを解除します。",
+		"",
+		"Direct から作られた thread の返信で使うコマンド:",
+		"- `@direct reply <本文>`: Direct の同じトークルームへ返信します。",
+		"- `@direct new-thread`: この Direct トークルームとの紐付けをリセットし、次の Direct メッセージから新しい Teams thread を作ります。",
+		"",
+		"使い方をもう一度見るには `@direct help` を送ってください。",
+	}, "\n")
+}
+
+func threadReplyUsageText() string {
+	return "Direct に返信するには `@direct reply <本文>` を使ってください。"
 }
 
 func (s *Server) bindChannel(ctx context.Context, alias string, activity Activity) {

@@ -28,7 +28,10 @@ type Client struct {
 	expiresAt     time.Time
 }
 
-const ReactionEyes = "1f440_eyes"
+const (
+	ReactionEyes                = "1f440_eyes"
+	ReactionBallotBoxWithBallot = "1f5f3_ballotboxwithballot"
+)
 
 func NewClient(cfg config.BotConfig, publicBaseURL ...string) *Client {
 	baseURL := ""
@@ -329,11 +332,23 @@ func (c *Client) formatDirectRootMessage(msg model.DirectMessage) string {
 }
 
 func formatDirectRootTopic(msg model.DirectMessage) string {
-	return fmt.Sprintf("[direct:%s] room=%s user=%s", msg.AccountID, msg.TalkID, msg.UserID)
+	user := strings.TrimSpace(msg.UserName)
+	if user == "" {
+		user = msg.UserID
+	}
+	room := strings.TrimSpace(msg.RoomName)
+	if room == "" {
+		return user
+	}
+	return fmt.Sprintf("%s / %s", user, room)
 }
 
 func (c *Client) formatDirectReplyMessage(msg model.DirectMessage) string {
-	return appendAttachmentLinks(fmt.Sprintf("user=%s  \n%s", msg.UserID, msg.Text), msg, c.cfg, c.publicBaseURL, c.fileProxyTTL)
+	sender := strings.TrimSpace(msg.UserName)
+	if sender == "" {
+		sender = msg.UserID
+	}
+	return appendAttachmentLinks(fmt.Sprintf("送信: %s  \n%s", sender, msg.Text), msg, c.cfg, c.publicBaseURL, c.fileProxyTTL)
 }
 
 func appendAttachmentLinks(text string, msg model.DirectMessage, cfg config.BotConfig, publicBaseURL, fileProxyTTL string) string {

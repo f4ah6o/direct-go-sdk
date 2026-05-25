@@ -32,6 +32,8 @@ func TestFormatDirectRootAndReplyMessages(t *testing.T) {
 		AccountID: "bot-trial",
 		TalkID:    "1792967566075891712",
 		UserID:    "1792959268018716672",
+		UserName:  "Taro Yamada",
+		RoomName:  "Support Room",
 		Text:      "こんにちは",
 		Attachments: []model.Attachment{{
 			Name: "image.png",
@@ -40,7 +42,7 @@ func TestFormatDirectRootAndReplyMessages(t *testing.T) {
 	}
 
 	root := client.formatDirectRootMessage(msg)
-	if !strings.HasPrefix(root, "# [direct:bot-trial] room=1792967566075891712 user=1792959268018716672\n\nこんにちは") {
+	if !strings.HasPrefix(root, "# Taro Yamada / Support Room\n\nこんにちは") {
 		t.Fatalf("unexpected root message: %q", root)
 	}
 	if !strings.Contains(root, "[attachment: image.png](https://bridge.example.com/files/direct?") ||
@@ -54,16 +56,37 @@ func TestFormatDirectRootAndReplyMessages(t *testing.T) {
 	if strings.Contains(reply, "[direct:") || strings.Contains(reply, "room=") {
 		t.Fatalf("reply should not repeat thread title details: %q", reply)
 	}
-	if !strings.HasPrefix(reply, "user=1792959268018716672  \nこんにちは") {
+	if !strings.HasPrefix(reply, "送信: Taro Yamada  \nこんにちは") {
 		t.Fatalf("unexpected reply message: %q", reply)
 	}
 
-	if got := formatDirectRootTopic(msg); got != "[direct:bot-trial] room=1792967566075891712 user=1792959268018716672" {
+	if got := formatDirectRootTopic(msg); got != "Taro Yamada / Support Room" {
 		t.Fatalf("formatDirectRootTopic() = %q", got)
 	}
 }
 
-func TestReplyToThreadSendsUserHeaderAsMarkdownHardBreak(t *testing.T) {
+func TestFormatDirectRootTopicFallsBackToIDs(t *testing.T) {
+	msg := model.DirectMessage{
+		TalkID: "1792967566075891712",
+		UserID: "1792959268018716672",
+	}
+	if got := formatDirectRootTopic(msg); got != "1792959268018716672" {
+		t.Fatalf("formatDirectRootTopic() = %q", got)
+	}
+}
+
+func TestFormatDirectRootTopicOmitsEmptyRoomName(t *testing.T) {
+	msg := model.DirectMessage{
+		TalkID:   "1613568776152809472",
+		UserID:   "1792959268018716672",
+		UserName: "藤田洋人",
+	}
+	if got := formatDirectRootTopic(msg); got != "藤田洋人" {
+		t.Fatalf("formatDirectRootTopic() = %q", got)
+	}
+}
+
+func TestReplyToThreadSendsSenderNameAsMarkdownHardBreak(t *testing.T) {
 	var request Activity
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -95,8 +118,9 @@ func TestReplyToThreadSendsUserHeaderAsMarkdownHardBreak(t *testing.T) {
 		ConnectorScope: "scope",
 	})
 	msg := model.DirectMessage{
-		UserID: "1792959268018716672",
-		Text:   "こんにちは",
+		UserID:   "1792959268018716672",
+		UserName: "Taro Yamada",
+		Text:     "こんにちは",
 	}
 
 	replyID, err := client.ReplyToThread(t.Context(), server.URL, "19:channel@thread.tacv2", "root-id", msg)
@@ -109,8 +133,19 @@ func TestReplyToThreadSendsUserHeaderAsMarkdownHardBreak(t *testing.T) {
 	if request.TextFormat != "markdown" {
 		t.Fatalf("textFormat = %q, want markdown", request.TextFormat)
 	}
-	if request.Text != "user=1792959268018716672  \nこんにちは" {
+	if request.Text != "送信: Taro Yamada  \nこんにちは" {
 		t.Fatalf("activity text = %q", request.Text)
+	}
+}
+
+func TestReplyToThreadFallsBackToUserIDWhenNameEmpty(t *testing.T) {
+	client := NewClient(config.BotConfig{AppPassword: "secret"}, "https://bridge.example.com")
+	msg := model.DirectMessage{
+		UserID: "1792959268018716672",
+		Text:   "こんにちは",
+	}
+	if got := client.formatDirectReplyMessage(msg); got != "送信: 1792959268018716672  \nこんにちは" {
+		t.Fatalf("formatDirectReplyMessage() = %q", got)
 	}
 }
 
@@ -161,6 +196,8 @@ func TestCreateRootThreadSendsHeadingInActivityText(t *testing.T) {
 		AccountID: "bot-trial",
 		TalkID:    "1792967566075891712",
 		UserID:    "1792959268018716672",
+		UserName:  "Taro Yamada",
+		RoomName:  "Support Room",
 		Text:      "こんにちは",
 	}
 
@@ -180,7 +217,7 @@ func TestCreateRootThreadSendsHeadingInActivityText(t *testing.T) {
 	if request.Activity.TopicName != "" {
 		t.Fatalf("topicName should not be required for display, got %q", request.Activity.TopicName)
 	}
-	if request.Activity.Text != "# [direct:bot-trial] room=1792967566075891712 user=1792959268018716672\n\nこんにちは" {
+	if request.Activity.Text != "# Taro Yamada / Support Room\n\nこんにちは" {
 		t.Fatalf("activity text = %q", request.Activity.Text)
 	}
 	if request.ChannelData.Team.ID != "team-id" ||

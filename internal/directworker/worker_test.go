@@ -179,6 +179,145 @@ func TestAccountWorkerEmitsReadReceipts(t *testing.T) {
 	}
 }
 
+func TestAccountWorkerResolvesDirectDisplayNames(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	factory := &fakeDirectClientFactory{
+		configure: func(index int, c *fakeDirectClient) {
+			c.usersResult = []interface{}{
+				map[string]interface{}{"id": "user-a", "display_name": "Taro Yamada", "name": "taro"},
+			}
+			c.talksResult = []interface{}{
+				map[string]interface{}{"talk_id": "talk-a", "domain_id": "domain-a", "name": "Support Room"},
+			}
+		},
+	}
+	in := make(chan model.DirectOutbound)
+	out := make(chan model.DirectMessage, 2)
+	sent := make(chan model.DirectSent, 1)
+
+	worker := testAccountWorker(runtimeAccount(), in)
+	go runAccountWorker(ctx, worker, out, nil, sent, discardLogger(), factory.New, noBackoff, time.Now)
+
+	client := factory.waitForClient(t, 1)
+	client.emitMessage(direct.ReceivedMessage{ID: "msg-a", TalkID: "talk-a", UserID: "user-a", Text: "hello"})
+	got := waitForDirectMessage(t, out)
+	if got.UserName != "Taro Yamada" || got.RoomName != "Support Room" {
+		t.Fatalf("resolved names = user:%q room:%q", got.UserName, got.RoomName)
+	}
+
+	client.emitMessage(direct.ReceivedMessage{ID: "msg-b", TalkID: "talk-a", UserID: "user-a", DomainID: "domain-a", Text: "again"})
+	_ = waitForDirectMessage(t, out)
+	if got := client.callCount(direct.MethodGetUsers); got != 1 {
+		t.Fatalf("get_users calls = %d, want 1", got)
+	}
+	if got := client.callCount(direct.MethodGetTalks); got != 1 {
+		t.Fatalf("get_talks calls = %d, want 1", got)
+	}
+}
+
+func TestAccountWorkerResolvesNamesFromMsgpackStyleMapsAndNumericIDs(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	factory := &fakeDirectClientFactory{
+		configure: func(index int, c *fakeDirectClient) {
+			c.usersResult = []interface{}{
+				map[interface{}]interface{}{
+					"id":           uint64(1792959268018716672),
+					"display_name": "山田 太郎",
+					"name":         "yamada",
+				},
+			}
+			c.talksResult = []interface{}{
+				map[interface{}]interface{}{
+					"talk_id":   uint64(1792967566075891712),
+					"domain_id": uint64(1792000000000000000),
+					"name":      "問い合わせルーム",
+				},
+			}
+		},
+	}
+	in := make(chan model.DirectOutbound)
+	out := make(chan model.DirectMessage, 1)
+	sent := make(chan model.DirectSent, 1)
+
+	worker := testAccountWorker(runtimeAccount(), in)
+	go runAccountWorker(ctx, worker, out, nil, sent, discardLogger(), factory.New, noBackoff, time.Now)
+
+	client := factory.waitForClient(t, 1)
+	client.emitMessage(direct.ReceivedMessage{
+		ID:     "msg-a",
+		TalkID: "1792967566075891712",
+		UserID: "1792959268018716672",
+		Text:   "hello",
+	})
+	got := waitForDirectMessage(t, out)
+	if got.UserName != "山田 太郎" || got.RoomName != "問い合わせルーム" {
+		t.Fatalf("resolved names = user:%q room:%q", got.UserName, got.RoomName)
+	}
+}
+
+func TestAccountWorkerUsesUserNameWhenDisplayNameEmpty(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	factory := &fakeDirectClientFactory{
+		configure: func(index int, c *fakeDirectClient) {
+			c.usersResult = []interface{}{
+				map[string]interface{}{"id": "user-a", "display_name": "", "name": "taro"},
+			}
+			c.talksResult = []interface{}{
+				map[string]interface{}{"id": "talk-a", "name": "Support Room"},
+			}
+		},
+	}
+	in := make(chan model.DirectOutbound)
+	out := make(chan model.DirectMessage, 1)
+	sent := make(chan model.DirectSent, 1)
+
+	worker := testAccountWorker(runtimeAccount(), in)
+	go runAccountWorker(ctx, worker, out, nil, sent, discardLogger(), factory.New, noBackoff, time.Now)
+
+	client := factory.waitForClient(t, 1)
+	client.emitMessage(direct.ReceivedMessage{ID: "msg-a", TalkID: "talk-a", UserID: "user-a", DomainID: "domain-a", Text: "hello"})
+	got := waitForDirectMessage(t, out)
+	if got.UserName != "taro" {
+		t.Fatalf("UserName = %q, want taro", got.UserName)
+	}
+}
+
+func TestAccountWorkerContinuesWhenNameLookupFails(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	factory := &fakeDirectClientFactory{
+		configure: func(index int, c *fakeDirectClient) {
+			c.callErrs = map[string]error{
+				direct.MethodGetUsers: errors.New("users unavailable"),
+				direct.MethodGetTalks: errors.New("talks unavailable"),
+			}
+		},
+	}
+	in := make(chan model.DirectOutbound)
+	out := make(chan model.DirectMessage, 1)
+	sent := make(chan model.DirectSent, 1)
+
+	worker := testAccountWorker(runtimeAccount(), in)
+	go runAccountWorker(ctx, worker, out, nil, sent, discardLogger(), factory.New, noBackoff, time.Now)
+
+	client := factory.waitForClient(t, 1)
+	client.emitMessage(direct.ReceivedMessage{ID: "msg-a", TalkID: "talk-a", UserID: "user-a", DomainID: "domain-a", Text: "hello"})
+	got := waitForDirectMessage(t, out)
+	if got.MessageID != "msg-a" {
+		t.Fatalf("message id = %q, want msg-a", got.MessageID)
+	}
+	if got.UserName != "" || got.RoomName != "" {
+		t.Fatalf("names should be empty on lookup failure: user=%q room=%q", got.UserName, got.RoomName)
+	}
+}
+
 func TestManagerWatchdogRestartsWorkerThatNeverBecomesReady(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -333,6 +472,17 @@ func waitForSent(t *testing.T, sent <-chan model.DirectSent) model.DirectSent {
 	return model.DirectSent{}
 }
 
+func waitForDirectMessage(t *testing.T, out <-chan model.DirectMessage) model.DirectMessage {
+	t.Helper()
+	select {
+	case got := <-out:
+		return got
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for direct message")
+	}
+	return model.DirectMessage{}
+}
+
 type fakeDirectClientFactory struct {
 	mu        sync.Mutex
 	clients   []*fakeDirectClient
@@ -378,13 +528,18 @@ func (f *fakeDirectClientFactory) clientCount() int {
 }
 
 type fakeDirectClient struct {
-	mu        sync.Mutex
-	done      chan struct{}
-	handlers  map[string][]direct.EventHandler
-	closed    bool
-	sendErr   error
-	messageID string
-	sends     int
+	mu              sync.Mutex
+	done            chan struct{}
+	handlers        map[string][]direct.EventHandler
+	messageHandlers []func(direct.ReceivedMessage)
+	closed          bool
+	sendErr         error
+	messageID       string
+	sends           int
+	usersResult     interface{}
+	talksResult     interface{}
+	callErrs        map[string]error
+	calls           map[string]int
 }
 
 func newFakeDirectClient(index int) *fakeDirectClient {
@@ -392,6 +547,7 @@ func newFakeDirectClient(index int) *fakeDirectClient {
 		done:      make(chan struct{}),
 		handlers:  map[string][]direct.EventHandler{},
 		messageID: "msg-" + strconv.Itoa(index),
+		calls:     map[string]int{},
 	}
 }
 
@@ -415,7 +571,11 @@ func (c *fakeDirectClient) On(event string, handler direct.EventHandler) {
 	c.handlers[event] = append(c.handlers[event], handler)
 }
 
-func (c *fakeDirectClient) OnMessage(func(direct.ReceivedMessage)) {}
+func (c *fakeDirectClient) OnMessage(handler func(direct.ReceivedMessage)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.messageHandlers = append(c.messageHandlers, handler)
+}
 
 func (c *fakeDirectClient) CreateTextMessageWithContext(context.Context, string, string) (string, error) {
 	c.mu.Lock()
@@ -432,8 +592,22 @@ func (c *fakeDirectClient) CreateUploadAuth(context.Context, string, string, int
 }
 
 func (c *fakeDirectClient) Call(method string, _ []interface{}) (interface{}, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls[method]++
+	if c.callErrs != nil {
+		if err := c.callErrs[method]; err != nil {
+			return nil, err
+		}
+	}
 	if method == direct.MethodGetMe {
 		return map[string]interface{}{"id": "direct-self"}, nil
+	}
+	if method == direct.MethodGetUsers {
+		return c.usersResult, nil
+	}
+	if method == direct.MethodGetTalks {
+		return c.talksResult, nil
 	}
 	return nil, errors.New("not implemented")
 }
@@ -451,6 +625,15 @@ func (c *fakeDirectClient) emit(event string, data interface{}) {
 	}
 }
 
+func (c *fakeDirectClient) emitMessage(msg direct.ReceivedMessage) {
+	c.mu.Lock()
+	handlers := append([]func(direct.ReceivedMessage){}, c.messageHandlers...)
+	c.mu.Unlock()
+	for _, handler := range handlers {
+		handler(msg)
+	}
+}
+
 func (c *fakeDirectClient) isClosed() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -461,4 +644,10 @@ func (c *fakeDirectClient) sendCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.sends
+}
+
+func (c *fakeDirectClient) callCount(method string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls[method]
 }

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/config"
@@ -115,6 +116,62 @@ func TestConsumedPendingDirectMessageStoresTeamsSourceRef(t *testing.T) {
 	}
 }
 
+func TestConsumedPendingDirectMessageAddsSentReaction(t *testing.T) {
+	reactions := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"token","expires_in":3600}`))
+		default:
+			if r.Method != http.MethodPut {
+				t.Fatalf("method = %s, want PUT", r.Method)
+			}
+			reactions = append(reactions, r.URL.Path)
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := teams.NewClient(config.BotConfig{
+		AppID:          "app-id",
+		AppPassword:    "secret",
+		TokenURL:       server.URL + "/token",
+		ConnectorScope: "scope",
+	})
+	s := NewService(nil, st, client, nil, nil, nil, nil, nil, log.Default())
+	outbound := model.DirectOutbound{
+		AccountID: "bot-trial",
+		TalkID:    "talk-a",
+		Text:      "hello",
+		TeamsSource: &model.TeamsSource{
+			ServiceURL:     server.URL,
+			ConversationID: "conversation-id",
+			ActivityID:     "teams-activity-id",
+		},
+	}
+	inbound := model.DirectMessage{
+		AccountID: "bot-trial",
+		TalkID:    "talk-a",
+		UserID:    "direct-self",
+		Text:      "hello",
+		MessageID: "direct-message-id",
+	}
+
+	s.storeTeamsToDirectMessageRef(t.Context(), outbound, inbound)
+
+	if len(reactions) != 1 {
+		t.Fatalf("reactions = %d, want 1: %v", len(reactions), reactions)
+	}
+	if !strings.Contains(reactions[0], teams.ReactionBallotBoxWithBallot) {
+		t.Fatalf("reaction path = %q, want ballot box reaction", reactions[0])
+	}
+}
+
 func TestHandleDirectReadReceiptAddsTeamsReactionOnce(t *testing.T) {
 	reactions := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -168,6 +225,61 @@ func TestHandleDirectReadReceiptAddsTeamsReactionOnce(t *testing.T) {
 	}
 	if reactions != 1 {
 		t.Fatalf("reactions = %d, want 1", reactions)
+	}
+}
+
+func TestReactToDirectSentAddsBallotBoxReactionOnce(t *testing.T) {
+	reactions := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"token","expires_in":3600}`))
+		default:
+			if r.Method != http.MethodPut {
+				t.Fatalf("method = %s, want PUT", r.Method)
+			}
+			reactions = append(reactions, r.URL.Path)
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := store.TeamsMessageRef{
+		AccountID:       "account-a",
+		TalkID:          "talk-a",
+		DirectMessageID: "direct-msg",
+		ServiceURL:      server.URL,
+		ConversationID:  "conversation-id",
+		ActivityID:      "teams-activity",
+		DirectSenderID:  "direct-self",
+	}
+	if err := st.PutTeamsMessageRef(ref); err != nil {
+		t.Fatal(err)
+	}
+	client := teams.NewClient(config.BotConfig{
+		AppID:          "app-id",
+		AppPassword:    "secret",
+		TokenURL:       server.URL + "/token",
+		ConnectorScope: "scope",
+	})
+	s := NewService(nil, st, client, nil, nil, nil, nil, nil, log.Default())
+	s.reactToDirectSent(t.Context(), ref)
+	s.reactToDirectSent(t.Context(), ref)
+
+	if len(reactions) != 1 {
+		t.Fatalf("reactions = %d, want 1: %v", len(reactions), reactions)
+	}
+	if !strings.Contains(reactions[0], teams.ReactionBallotBoxWithBallot) {
+		t.Fatalf("reaction path = %q, want ballot box reaction", reactions[0])
+	}
+	stored, ok := st.GetTeamsMessageRef("account-a", "direct-msg")
+	if !ok || stored.SentReactedAt.IsZero() || !stored.ReactedAt.IsZero() {
+		t.Fatalf("unexpected stored ref after sent reaction: %+v ok=%v", stored, ok)
 	}
 }
 
