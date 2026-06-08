@@ -1,0 +1,21 @@
+op:
+  binary: "op"
+
+mcp:
+  listen_addr: ":8090"
+  endpoint_path: "/mcp"
+  public_base_url: "https://mcp.example.com"
+  authorization_servers:
+    - "https://auth.example.com"
+  jwt_issuer: "https://auth.example.com"
+  jwt_audience: "https://mcp.example.com/mcp"
+  jwks_url: "https://auth.example.com/.well-known/jwks.json"
+  read_scope: "direct:read"
+  write_scope: "direct:write"
+
+accounts:
+  - id: "account-a"
+    token_env: "DIRECT_TOKEN_ACCOUNT_A"
+    token_ref: "op://path/to/direct_access_token"
+    endpoint: "wss://api.direct4b.com/albero-app-server/api"
+    proxy_url: ""
