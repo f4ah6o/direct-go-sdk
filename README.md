@@ -14,6 +14,7 @@ This is an **unofficial** SDK for the direct (direct4b.com) chat service. It pro
 - **[direct-go](./direct-go)**: Go SDK for Direct4B WebSocket/MessagePack RPC API
 - **[daab-go](./daab-go)**: Bot framework and CLI tools built on direct-go
 - **[direct-teams-bridge](./cmd/direct-teams-bridge)**: Multi-account direct4b ⇄ Microsoft Teams bridge
+- **[direct-mcp-server](./cmd/direct-mcp-server)**: OAuth-protected MCP server for Direct4B read and send tools
 
 ## Reference Repositories
 
@@ -164,6 +165,25 @@ daabgo run
 
 # Show available commands
 daabgo --help
+```
+
+### Running the MCP Server
+
+`direct-mcp-server` exposes Direct4B read/send tools over MCP Streamable HTTP.
+OAuth login and token issuance are expected to be handled by an upstream OAuth
+gateway or identity provider. The Go server validates incoming Bearer JWTs with
+the configured JWKS URL and enforces `direct:read` / `direct:write` scopes.
+
+```bash
+cp mcp.config.example.yaml mcp.config.yaml
+# Edit mcp.config.yaml for your gateway, JWKS URL, public resource URL, and Direct accounts.
+go run ./cmd/direct-mcp-server --config mcp.config.yaml
+```
+
+Protected resource metadata is served at:
+
+```text
+/.well-known/oauth-protected-resource
 ```
 
 ## Environment Variables
