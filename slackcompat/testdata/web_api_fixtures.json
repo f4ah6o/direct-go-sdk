@@ -1,0 +1,28 @@
+[
+  {
+    "name": "auth_test",
+    "method": "auth.test",
+    "expect": {
+      "ok": true,
+      "team_id": "Tdirect"
+    }
+  },
+  {
+    "name": "chat_post_message_text",
+    "method": "chat.postMessage",
+    "request": {
+      "text": "hello"
+    },
+    "expect": {
+      "ok": true,
+      "message.text": "hello"
+    }
+  },
+  {
+    "name": "message_event",
+    "event": {
+      "type": "event_callback",
+      "event.type": "message"
+    }
+  }
+]

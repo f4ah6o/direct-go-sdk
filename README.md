@@ -15,6 +15,7 @@ This is an **unofficial** SDK for the direct (direct4b.com) chat service. It pro
 - **[daab-go](./daab-go)**: Bot framework and CLI tools built on direct-go
 - **[direct-teams-bridge](./cmd/direct-teams-bridge)**: Multi-account direct4b ⇄ Microsoft Teams bridge
 - **[direct-mcp-server](./cmd/direct-mcp-server)**: OAuth-protected MCP server for Direct4B read and send tools
+- **[direct-slack-compat](./cmd/direct-slack-compat)**: Minimal Slack-compatible Web API and Events API adapter for Direct4B
 
 ## Reference Repositories
 
@@ -185,6 +186,21 @@ Protected resource metadata is served at:
 ```text
 /.well-known/oauth-protected-resource
 ```
+
+### Running the Slack-Compatible Adapter
+
+`direct-slack-compat` exposes a small Slack-compatible subset for simple bots:
+`auth.test`, `chat.postMessage`, `conversations.list`, `conversations.history`,
+and `users.list`.
+
+```bash
+cp slackcompat.config.example.yaml slackcompat.config.yaml
+# Edit slackcompat.config.yaml for Direct accounts and token refs.
+go run ./cmd/direct-slack-compat --config slackcompat.config.yaml
+```
+
+The adapter intentionally does not implement Slack OAuth, Socket Mode, Block Kit,
+modals, full threads, or interactive components.
 
 ## Environment Variables
 
