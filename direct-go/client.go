@@ -18,6 +18,10 @@ import (
 	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 	"github.com/gorilla/websocket"
 	"github.com/vmihailenco/msgpack/v5"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // EnableDebugServer enables sending logs to a debug WebSocket server.
@@ -73,6 +77,10 @@ type Options struct {
 
 	// Name is the bot name, used in log messages for debugging.
 	Name string
+
+	// TracerProvider is an optional OpenTelemetry tracer provider used to create
+	// spans for RPC calls. If nil, the global OpenTelemetry tracer provider is used.
+	TracerProvider trace.TracerProvider
 }
 
 // ResponseHandler handles RPC responses for async requests.
@@ -112,6 +120,9 @@ type Client struct {
 
 	// Metrics records observability metrics. Use SetMetrics to set a custom implementation.
 	metrics Metrics
+
+	// tracer records OpenTelemetry spans for RPC calls.
+	tracer trace.Tracer
 }
 
 // EventHandler is a callback for events.
@@ -141,6 +152,11 @@ func NewClient(opts Options) *Client {
 		}
 	}
 
+	tracerProvider := opts.TracerProvider
+	if tracerProvider == nil {
+		tracerProvider = otel.GetTracerProvider()
+	}
+
 	return &Client{
 		options:          opts,
 		handlers:         make(map[string][]EventHandler),
@@ -149,6 +165,7 @@ func NewClient(opts Options) *Client {
 		Messages:         make(chan ReceivedMessage, DefaultMessageChannelSize),
 		Done:             make(chan struct{}),
 		metrics:          &NoopMetrics{},
+		tracer:           tracerProvider.Tracer(instrumentationName),
 	}
 }
 
@@ -439,7 +456,21 @@ func (c *Client) Close() error {
 func (c *Client) SetMetrics(m Metrics) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if m == nil {
+		m = &NoopMetrics{}
+	}
 	c.metrics = m
+}
+
+// SetTracerProvider sets the OpenTelemetry tracer provider for this client.
+// Passing nil resets the client to the global OpenTelemetry tracer provider.
+func (c *Client) SetTracerProvider(provider trace.TracerProvider) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if provider == nil {
+		provider = otel.GetTracerProvider()
+	}
+	c.tracer = provider.Tracer(instrumentationName)
 }
 
 // Health checks the health status of the client connection.
@@ -550,6 +581,11 @@ func (c *Client) call(method string, params []interface{}, onSuccess func(interf
 // Returns ErrTimeout if the request times out.
 func (c *Client) Call(method string, params []interface{}) (interface{}, error) {
 	start := time.Now()
+	c.mu.RLock()
+	tracer := c.tracer
+	c.mu.RUnlock()
+	_, span := tracer.Start(context.Background(), "direct.rpc", trace.WithAttributes(attribute.String("rpc.system", "direct"), attribute.String("rpc.method", method)))
+	defer span.End()
 	resultCh := make(chan interface{}, DefaultResultChannelSize)
 	errCh := make(chan interface{}, DefaultResultChannelSize)
 
@@ -562,10 +598,14 @@ func (c *Client) Call(method string, params []interface{}) (interface{}, error) 
 	select {
 	case result := <-resultCh:
 		c.metrics.RecordRequest(method, time.Since(start))
+		span.SetStatus(codes.Ok, "")
 		return result, nil
 	case err := <-errCh:
-		c.metrics.RecordError(method, fmt.Errorf("RPC error: %v", err))
-		return nil, fmt.Errorf("RPC error: %v", err)
+		rpcErr := fmt.Errorf("RPC error: %v", err)
+		c.metrics.RecordError(method, rpcErr)
+		span.RecordError(rpcErr)
+		span.SetStatus(codes.Error, rpcErr.Error())
+		return nil, rpcErr
 	case <-time.After(DefaultRequestTimeout):
 		// Clean up the handler on timeout
 		if msgID != 0 {
@@ -573,8 +613,11 @@ func (c *Client) Call(method string, params []interface{}) (interface{}, error) 
 			delete(c.responseHandlers, msgID)
 			c.mu.Unlock()
 		}
+		rpcErr := fmt.Errorf("RPC error: %w", ErrTimeout)
 		c.metrics.RecordError(method, ErrTimeout)
-		return nil, fmt.Errorf("RPC error: %w", ErrTimeout)
+		span.RecordError(rpcErr)
+		span.SetStatus(codes.Error, rpcErr.Error())
+		return nil, rpcErr
 	}
 }
 
