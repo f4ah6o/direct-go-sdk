@@ -10,13 +10,14 @@ import (
 	"syscall"
 
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
+	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 )
 
 func main() {
 	// Load .env file
 	auth := direct.NewAuth()
 	if err := auth.LoadEnv(); err != nil {
-		log.Printf("Warning: could not load .env: %v", err)
+		log.Printf("Warning: could not load .env: %s", debuglog.SummarizePayload(err))
 	}
 
 	// Get token from environment or .env
@@ -40,18 +41,18 @@ func main() {
 	})
 
 	client.On(direct.EventError, func(data interface{}) {
-		fmt.Printf("Error: %v\n", data)
+		fmt.Printf("Error: %s\n", debuglog.SummarizePayload(data))
 	})
 
 	// Register message handler
 	client.OnMessage(func(msg direct.ReceivedMessage) {
-		fmt.Printf("[%s] User %s: %s\n", msg.TalkID, msg.UserID, msg.Text)
+		fmt.Printf("[talk=%s] user=%s text=%s\n", debuglog.RedactID(msg.TalkID), debuglog.RedactID(msg.UserID), debuglog.SummarizePayload(msg.Text))
 	})
 
 	// Connect
 	fmt.Println("Connecting to direct...")
 	if err := client.ConnectWithContext(context.Background()); err != nil {
-		log.Fatalf("Failed to connect: %v", err)
+		log.Fatalf("Failed to connect: %s", debuglog.SummarizePayload(err))
 	}
 	defer client.Close()
 

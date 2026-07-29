@@ -15,6 +15,7 @@ import (
 	"time"
 
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
+	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 	appbridge "github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/bridge"
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/codex"
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/codexbridge"
@@ -157,7 +158,7 @@ func loginDirect(args []string, logger *log.Logger) error {
 	if err := runner.Write(context.Background(), account.TokenRef, token); err != nil {
 		return err
 	}
-	logger.Printf("[%s] direct token saved to 1Password field %s", account.ID, redactRef(account.TokenRef))
+	logger.Printf("[%s] direct token saved to configured secret store", debuglog.RedactID(account.ID))
 	return nil
 }
 
@@ -235,7 +236,7 @@ func watchConfig(ctx context.Context, path string, runtimeState *runtimeState, d
 		}
 		info, err := os.Stat(path)
 		if err != nil {
-			logger.Printf("[config] stat failed: %v", err)
+			logger.Printf("[config] stat failed: %s", debuglog.SummarizePayload(err))
 			continue
 		}
 		if !info.ModTime().After(lastMod) {
@@ -244,7 +245,7 @@ func watchConfig(ctx context.Context, path string, runtimeState *runtimeState, d
 		lastMod = info.ModTime()
 		cfg, err := config.Load(path)
 		if err != nil {
-			logger.Printf("[config] reload ignored: %v", err)
+			logger.Printf("[config] reload ignored: %s", debuglog.SummarizePayload(err))
 			continue
 		}
 		if id := staticConfigID(cfg); id != runtimeState.staticID {
@@ -252,7 +253,7 @@ func watchConfig(ctx context.Context, path string, runtimeState *runtimeState, d
 		}
 		tokens, pending := resolveAccountTokens(ctx, cfg)
 		for accountID, err := range pending {
-			logger.Printf("[config] account pending token: account=%s err=%v", accountID, err)
+			logger.Printf("[config] account pending token: account=%s err=%s", debuglog.RedactID(accountID), debuglog.SummarizePayload(err))
 		}
 		runtimeState.Apply(cfg, tokens, pending)
 		directManager.Apply(ctx, runtimeState.DirectAccounts())
@@ -452,14 +453,6 @@ func extractToken(result interface{}) string {
 		}
 	}
 	return ""
-}
-
-func redactRef(ref string) string {
-	parts := strings.Split(ref, "/")
-	if len(parts) <= 1 {
-		return "op://..."
-	}
-	return strings.Join(parts[:len(parts)-1], "/") + "/..."
 }
 
 func usage() error {

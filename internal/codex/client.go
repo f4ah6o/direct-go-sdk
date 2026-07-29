@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/config"
 )
 
@@ -230,7 +231,7 @@ func (c *Client) readLoop(r io.Reader) {
 	for scanner.Scan() {
 		var msg rpcMessage
 		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-			c.logger.Printf("[codex] invalid json-rpc message: %v", err)
+			c.logger.Printf("[codex] invalid json-rpc message: %s", debuglog.SummarizePayload(err))
 			continue
 		}
 		if len(msg.ID) > 0 && msg.Method == "" {
@@ -291,7 +292,7 @@ func (c *Client) failPending(err error) {
 func (c *Client) logStderr(r io.Reader) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
-		c.logger.Printf("[codex] %s", scanner.Text())
+		c.logger.Printf("[codex] stderr line=%s", debuglog.SummarizePayload(scanner.Text()))
 	}
 }
 

@@ -115,8 +115,8 @@ func TestRecoveryMiddleware(t *testing.T) {
 	if !strings.Contains(logOutput, "RECOVER") {
 		t.Errorf("Expected recovery log, got: %s", logOutput)
 	}
-	if !strings.Contains(logOutput, "test panic") {
-		t.Errorf("Expected panic message in log, got: %s", logOutput)
+	if strings.Contains(logOutput, "test panic") {
+		t.Errorf("Panic payload leaked in log, got: %s", logOutput)
 	}
 }
 
@@ -160,11 +160,11 @@ func TestLoggingMiddleware(t *testing.T) {
 	if !strings.Contains(logStr, "[END]") {
 		t.Errorf("Expected [END] in log, got: %s", logStr)
 	}
-	if !strings.Contains(logStr, "test message") {
-		t.Errorf("Expected message text in log, got: %s", logStr)
+	if strings.Contains(logStr, "test message") {
+		t.Errorf("Message text leaked in log, got: %s", logStr)
 	}
-	if !strings.Contains(logStr, "user123") {
-		t.Errorf("Expected user ID in log, got: %s", logStr)
+	if strings.Contains(logStr, "user123") || strings.Contains(logStr, "room456") {
+		t.Errorf("Raw identifier leaked in log, got: %s", logStr)
 	}
 }
 

@@ -25,21 +25,28 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// EnableDebugServer enables sending logs to a debug WebSocket server.
-// The debug server receives all WebSocket messages for debugging purposes.
+// EnableDebugServer enables metadata-safe logs to an HTTP debug server through
+// the process-wide compatibility logger. Prefer Options.DebugLogger when
+// multiple clients need independent diagnostic configuration.
 //
-// The url parameter should be a WebSocket server URL (e.g., "ws://localhost:8080").
+// The url parameter should be an HTTP server URL (e.g., "http://localhost:3939").
 // Use the direct-logserver tool to start a debug server.
 func EnableDebugServer(url string) {
 	debuglog.SetServer(url)
 }
 
 // dlog is a helper for debug logging (level 1 = normal)
-func dlog(format string, v ...interface{}) {
-	debuglog.Printf(format, v...)
+func (c *Client) dlog(format string, v ...interface{}) {
+	c.debugLogger.Printf(format, v...)
 }
 
 // vlog is a helper for verbose debug logging (level 2 = verbose, includes ping/pong)
+func (c *Client) vlog(format string, v ...interface{}) {
+	c.debugLogger.Verbose(format, v...)
+}
+
+// vlog keeps the legacy package-level helper used by authentication file
+// diagnostics. Client traffic uses the client-scoped method above.
 func vlog(format string, v ...interface{}) {
 	debuglog.Verbose(format, v...)
 }
@@ -91,6 +98,13 @@ type Options struct {
 	// TracerProvider is an optional OpenTelemetry tracer provider used to create
 	// spans for RPC calls. If nil, the global OpenTelemetry tracer provider is used.
 	TracerProvider trace.TracerProvider
+
+	// DebugLogger optionally scopes diagnostics to this client. If nil, the
+	// process-wide debuglog.Default logger is used for compatibility.
+	// Safe metadata-only logging is the default. Use the logger's explicit
+	// EnableUnsafePayloadTracing method only in an isolated troubleshooting
+	// environment; the client itself never logs payloads through the safe API.
+	DebugLogger *debuglog.Logger
 }
 
 // ResponseHandler handles RPC responses for async requests.
@@ -149,6 +163,9 @@ type Client struct {
 
 	// tracer records OpenTelemetry spans for RPC calls.
 	tracer trace.Tracer
+
+	// debugLogger records metadata-safe client diagnostics.
+	debugLogger *debuglog.Logger
 }
 
 // EventHandler is a callback for events.
@@ -186,6 +203,10 @@ func NewClient(opts Options) *Client {
 	if tracerProvider == nil {
 		tracerProvider = otel.GetTracerProvider()
 	}
+	debugLogger := opts.DebugLogger
+	if debugLogger == nil {
+		debugLogger = debuglog.Default()
+	}
 
 	return &Client{
 		options:          opts,
@@ -196,6 +217,7 @@ func NewClient(opts Options) *Client {
 		Done:             make(chan struct{}),
 		metrics:          &NoopMetrics{},
 		tracer:           tracerProvider.Tracer(instrumentationName),
+		debugLogger:      debugLogger,
 	}
 }
 
@@ -320,7 +342,7 @@ func (c *Client) connect(ctx context.Context) error {
 
 	// Set up pong handler
 	conn.SetPongHandler(func(appData string) error {
-		vlog("[DEBUG] Received pong: %s", appData)
+		c.vlog("[DEBUG] Received pong: app_data=%s", debuglog.SummarizePayload(appData))
 		return nil
 	})
 
@@ -352,9 +374,9 @@ func (c *Client) pingLoop(conn *websocket.Conn, done <-chan struct{}, writeMu *s
 				return
 			}
 
-			vlog("[DEBUG] Sending ping...")
+			c.vlog("[DEBUG] Sending ping...")
 			if err := writeMessage(conn, writeMu, writeTimeout, websocket.PingMessage, []byte("PING")); err != nil {
-				vlog("[DEBUG] Ping error: %v", err)
+				c.vlog("[DEBUG] Ping error: %s", debuglog.SummarizePayload(err))
 				// Close this connection to trigger proper cleanup.
 				_ = c.closeConnection(conn, newConnectionWriteError(err))
 				return
@@ -511,7 +533,7 @@ func (c *Client) isCurrentConnection(conn *websocket.Conn) bool {
 
 // createSession authenticates with the server.
 func (c *Client) createSession(conn *websocket.Conn) {
-	dlog("[DEBUG] Creating session with token: ***...")
+	c.dlog("[DEBUG] Creating session: access_token=configured")
 	osString := DefaultBotOS
 	params := []interface{}{c.options.AccessToken, APIVersion, osString}
 
@@ -519,7 +541,7 @@ func (c *Client) createSession(conn *websocket.Conn) {
 		if !c.isCurrentConnection(conn) {
 			return
 		}
-		dlog("[DEBUG] Session created successfully: %+v", result)
+		c.dlog("[DEBUG] Session created successfully: result=%s", debuglog.SummarizePayload(result))
 		c.mu.Lock()
 		if c.conn != conn || c.closed {
 			c.mu.Unlock()
@@ -536,7 +558,7 @@ func (c *Client) createSession(conn *websocket.Conn) {
 		if !c.isCurrentConnection(conn) {
 			return
 		}
-		dlog("[DEBUG] Session error: %+v", err)
+		c.dlog("[DEBUG] Session error: %s", debuglog.SummarizePayload(err))
 		c.emit("session_error", err)
 		c.failReady(conn, fmt.Errorf("direct: session authentication failed: %v", err))
 	})
@@ -544,21 +566,21 @@ func (c *Client) createSession(conn *websocket.Conn) {
 
 // startNotification tells the server to start sending notifications.
 func (c *Client) startNotification(conn *websocket.Conn) {
-	dlog("[DEBUG] Starting notification...")
+	c.dlog("[DEBUG] Starting notification...")
 
 	// First, get domains to initialize data
 	c.callOnConnection(conn, "get_domains", []interface{}{}, func(result interface{}) {
 		if !c.isCurrentConnection(conn) {
 			return
 		}
-		dlog("[DEBUG] get_domains success: %d domains", countItems(result))
+		c.dlog("[DEBUG] get_domains success: %d domains", countItems(result))
 
 		// Then get talks
 		c.callOnConnection(conn, "get_talks", []interface{}{}, func(result interface{}) {
 			if !c.isCurrentConnection(conn) {
 				return
 			}
-			dlog("[DEBUG] get_talks success: %d talks", countItems(result))
+			c.dlog("[DEBUG] get_talks success: %d talks", countItems(result))
 
 			// Cache talk->domain mappings needed by notification parsing.
 			if talks, ok := result.([]interface{}); ok {
@@ -580,12 +602,12 @@ func (c *Client) startNotification(conn *websocket.Conn) {
 								c.talkDomains[talkID] = domainID
 							}
 							c.mu.Unlock()
-							dlog("[DEBUG] Cached talk->domain: %s -> %s", talkID, domainID)
+							c.dlog("[DEBUG] Cached talk->domain: talk=%s domain=%s", debuglog.RedactID(talkID), debuglog.RedactID(domainID))
 						}
 					}
 				}
 			} else {
-				dlog("[DEBUG] get_talks result is not []interface{}, type=%T", result)
+				c.dlog("[DEBUG] get_talks result is not []interface{}, type=%T", result)
 			}
 
 			// Then get talk statuses
@@ -593,44 +615,44 @@ func (c *Client) startNotification(conn *websocket.Conn) {
 				if !c.isCurrentConnection(conn) {
 					return
 				}
-				dlog("[DEBUG] get_talk_statuses success")
+				c.dlog("[DEBUG] get_talk_statuses success")
 
 				// Try start_notification first
 				c.callOnConnection(conn, "start_notification", []interface{}{}, func(result interface{}) {
 					if !c.isCurrentConnection(conn) {
 						return
 					}
-					dlog("[DEBUG] start_notification result: %+v", result)
+					c.dlog("[DEBUG] start_notification result: %s", debuglog.SummarizePayload(result))
 
 					// If false, try reset_notification and then start_notification again
 					if result == false {
-						dlog("[DEBUG] start_notification returned false, trying reset_notification...")
+						c.dlog("[DEBUG] start_notification returned false, trying reset_notification...")
 						c.callOnConnection(conn, "reset_notification", []interface{}{}, func(result interface{}) {
 							if !c.isCurrentConnection(conn) {
 								return
 							}
-							dlog("[DEBUG] reset_notification result: %+v", result)
+							c.dlog("[DEBUG] reset_notification result: %s", debuglog.SummarizePayload(result))
 
 							// After reset, call start_notification again
 							c.callOnConnection(conn, "start_notification", []interface{}{}, func(result interface{}) {
 								if !c.isCurrentConnection(conn) {
 									return
 								}
-								dlog("[DEBUG] start_notification (after reset) result: %+v", result)
+								c.dlog("[DEBUG] start_notification (after reset) result: %s", debuglog.SummarizePayload(result))
 
 								// Call update_last_used_at to mark session as active
 								c.callOnConnection(conn, "update_last_used_at", []interface{}{}, func(result interface{}) {
 									if !c.isCurrentConnection(conn) {
 										return
 									}
-									dlog("[DEBUG] update_last_used_at result: %+v", result)
+									c.dlog("[DEBUG] update_last_used_at result: %s", debuglog.SummarizePayload(result))
 									c.completeReady(conn, nil)
 									c.emit("data_recovered", result)
 								}, func(err interface{}) {
 									if !c.isCurrentConnection(conn) {
 										return
 									}
-									dlog("[DEBUG] update_last_used_at error: %+v", err)
+									c.dlog("[DEBUG] update_last_used_at error: %s", debuglog.SummarizePayload(err))
 									c.completeReady(conn, nil)
 									c.emit("data_recovered", nil)
 								})
@@ -638,7 +660,7 @@ func (c *Client) startNotification(conn *websocket.Conn) {
 								if !c.isCurrentConnection(conn) {
 									return
 								}
-								dlog("[DEBUG] start_notification (after reset) error: %+v", err)
+								c.dlog("[DEBUG] start_notification (after reset) error: %s", debuglog.SummarizePayload(err))
 								c.emit("notification_error", err)
 								c.failReady(conn, fmt.Errorf("direct: notification initialization failed: %v", err))
 							})
@@ -646,7 +668,7 @@ func (c *Client) startNotification(conn *websocket.Conn) {
 							if !c.isCurrentConnection(conn) {
 								return
 							}
-							dlog("[DEBUG] reset_notification error: %+v", err)
+							c.dlog("[DEBUG] reset_notification error: %s", debuglog.SummarizePayload(err))
 							c.emit("notification_error", err)
 							c.failReady(conn, fmt.Errorf("direct: notification initialization failed: %v", err))
 						})
@@ -658,7 +680,7 @@ func (c *Client) startNotification(conn *websocket.Conn) {
 					if !c.isCurrentConnection(conn) {
 						return
 					}
-					dlog("[DEBUG] start_notification error: %+v", err)
+					c.dlog("[DEBUG] start_notification error: %s", debuglog.SummarizePayload(err))
 					c.emit("notification_error", err)
 					c.failReady(conn, fmt.Errorf("direct: notification initialization failed: %v", err))
 				})
@@ -666,7 +688,7 @@ func (c *Client) startNotification(conn *websocket.Conn) {
 				if !c.isCurrentConnection(conn) {
 					return
 				}
-				dlog("[DEBUG] get_talk_statuses error: %+v", err)
+				c.dlog("[DEBUG] get_talk_statuses error: %s", debuglog.SummarizePayload(err))
 				c.emit("notification_error", err)
 				c.failReady(conn, fmt.Errorf("direct: notification initialization failed: %v", err))
 			})
@@ -674,7 +696,7 @@ func (c *Client) startNotification(conn *websocket.Conn) {
 			if !c.isCurrentConnection(conn) {
 				return
 			}
-			dlog("[DEBUG] get_talks error: %+v", err)
+			c.dlog("[DEBUG] get_talks error: %s", debuglog.SummarizePayload(err))
 			c.emit("notification_error", err)
 			c.failReady(conn, fmt.Errorf("direct: notification initialization failed: %v", err))
 		})
@@ -682,7 +704,7 @@ func (c *Client) startNotification(conn *websocket.Conn) {
 		if !c.isCurrentConnection(conn) {
 			return
 		}
-		dlog("[DEBUG] get_domains error: %+v", err)
+		c.dlog("[DEBUG] get_domains error: %s", debuglog.SummarizePayload(err))
 		c.emit("notification_error", err)
 		c.failReady(conn, fmt.Errorf("direct: notification initialization failed: %v", err))
 	})
@@ -1057,7 +1079,7 @@ func (c *Client) readLoop(conn *websocket.Conn) {
 		msgType, data, err := conn.ReadMessage()
 		if err != nil {
 			if c.isCurrentConnection(conn) {
-				dlog("[DEBUG] ReadMessage error: %v", err)
+				c.dlog("[DEBUG] ReadMessage error: %s", debuglog.SummarizePayload(err))
 				c.emit("error", map[string]string{"error": err.Error()})
 				// Close only this connection. A newer connection may already be active.
 				_ = c.closeConnection(conn, fmt.Errorf("%w: %v", ErrConnectionClosed, err))
@@ -1065,7 +1087,7 @@ func (c *Client) readLoop(conn *websocket.Conn) {
 			return
 		}
 
-		dlog("[DEBUG] Raw WebSocket message: type=%d len=%d", msgType, len(data))
+		c.dlog("[DEBUG] Raw WebSocket message: type=%d len=%d", msgType, len(data))
 
 		c.handleMessage(conn, data)
 	}
@@ -1080,26 +1102,26 @@ func (c *Client) handleMessage(conn *websocket.Conn, data []byte) {
 	// Decode MessagePack
 	var message []interface{}
 	if err := msgpack.Unmarshal(data, &message); err != nil {
-		dlog("[DEBUG] msgpack decode error: %v", err)
+		c.dlog("[DEBUG] msgpack decode error: %s", debuglog.SummarizePayload(err))
 		c.emit("decode_error", map[string]string{"error": err.Error()})
 		return
 	}
 
-	dlog("[DEBUG] Received message: len=%d type=%T", len(message), message)
+	c.dlog("[DEBUG] Received message: len=%d type=%T", len(message), message)
 
 	if len(message) < 4 {
-		dlog("[DEBUG] Message too short: %v", message)
+		c.dlog("[DEBUG] Message too short: type=%s len=%d", debuglog.SummarizePayload(message), len(message))
 		return
 	}
 
 	// Get message type
 	msgType, ok := toInt64(message[0])
 	if !ok {
-		dlog("[DEBUG] Could not get message type: %v", message[0])
+		c.dlog("[DEBUG] Could not get message type: value=%s", debuglog.SummarizePayload(message[0]))
 		return
 	}
 
-	dlog("[DEBUG] Message type: %d", msgType)
+	c.dlog("[DEBUG] Message type: %d", msgType)
 
 	switch msgType {
 	case RpcResponse:
@@ -1149,26 +1171,26 @@ func (c *Client) handleNotification(conn *websocket.Conn, message []interface{})
 	}
 
 	if len(message) < 4 {
-		dlog("[DEBUG] Notification too short: %v", message)
+		c.dlog("[DEBUG] Notification too short: type=%s len=%d", debuglog.SummarizePayload(message), len(message))
 		return
 	}
 
 	msgID, _ := toInt64(message[1])
 	method, ok := message[2].(string)
 	if !ok {
-		dlog("[DEBUG] Method not a string: %v", message[2])
+		c.dlog("[DEBUG] Method not a string: type=%s", debuglog.SummarizePayload(message[2]))
 		return
 	}
 
-	dlog("[DEBUG] <<< SERVER NOTIFICATION: method=%s, msgID=%d", method, msgID)
+	c.dlog("[DEBUG] <<< SERVER NOTIFICATION: method=%s, msgID=%s", method, debuglog.RedactID(msgID))
 
 	params, ok := message[3].([]interface{})
 	if !ok || len(params) == 0 {
-		dlog("[DEBUG] %s: params invalid or empty: %T %v", method, message[3], message[3])
+		c.dlog("[DEBUG] %s: params invalid or empty: type=%s", method, debuglog.SummarizePayload(message[3]))
 		return
 	}
 
-	dlog("[DEBUG] Received notification: %s, params count: %d", method, len(params))
+	c.dlog("[DEBUG] Received notification: %s, params count: %d", method, len(params))
 	if !c.isCurrentConnection(conn) {
 		return
 	}
@@ -1178,8 +1200,8 @@ func (c *Client) handleNotification(conn *websocket.Conn, message []interface{})
 
 	// Handle message notifications specially
 	if method == "notify_create_message" || method == "create_message" {
-		dlog("[DEBUG] Message notification received: %s", method)
-		dlog("[DEBUG] Data: %+v", params[0])
+		c.dlog("[DEBUG] Message notification received: %s", method)
+		c.dlog("[DEBUG] Notification data: %s", debuglog.SummarizePayload(params[0]))
 		c.handleMessageNotification(conn, params[0])
 	}
 
@@ -1187,7 +1209,7 @@ func (c *Client) handleNotification(conn *websocket.Conn, message []interface{})
 	response := []interface{}{RpcResponse, msgID, nil, true}
 	data, err := msgpack.Marshal(response)
 	if err != nil {
-		dlog("[DEBUG] Could not encode notification acknowledgment: %v", err)
+		c.dlog("[DEBUG] Could not encode notification acknowledgment: %s", debuglog.SummarizePayload(err))
 		return
 	}
 	writeMu, writeTimeout := c.connectionWriter(conn)
@@ -1195,7 +1217,7 @@ func (c *Client) handleNotification(conn *websocket.Conn, message []interface{})
 		return
 	}
 	if err := writeMessage(conn, writeMu, writeTimeout, websocket.BinaryMessage, data); err != nil {
-		dlog("[DEBUG] Notification acknowledgment write failed: %v", err)
+		c.dlog("[DEBUG] Notification acknowledgment write failed: %s", debuglog.SummarizePayload(err))
 		_ = c.closeConnection(conn, newConnectionWriteError(err))
 	}
 }
@@ -1206,28 +1228,24 @@ func (c *Client) handleMessageNotification(conn *websocket.Conn, data interface{
 		return
 	}
 
-	dlog("[DEBUG] handleMessageNotification: raw data: %+v", data)
-	msg := parseMessage(data)
+	c.dlog("[DEBUG] handleMessageNotification: data=%s", debuglog.SummarizePayload(data))
+	msg := parseMessage(data, c.debugLogger)
 
 	// If DomainID is not in the message, look it up from cached talks
 	if msg.DomainID == "" && msg.TalkID != "" {
 		c.mu.RLock()
-		dlog("[DEBUG] Looking up domain for talk_id=%s, cached talks count=%d", msg.TalkID, len(c.talkDomains))
-		// Log all cached talk IDs for debugging
-		for tid := range c.talkDomains {
-			dlog("[DEBUG] Cached talk_id: %s", tid)
-		}
+		c.dlog("[DEBUG] Looking up domain for talk_id=%s, cached talks count=%d", debuglog.RedactID(msg.TalkID), len(c.talkDomains))
 		if domID, ok := c.talkDomains[msg.TalkID]; ok {
 			msg.DomainID = domID
-			dlog("[DEBUG] Resolved DomainID from talkDomains: %s", domID)
+			c.dlog("[DEBUG] Resolved DomainID from talkDomains: %s", debuglog.RedactID(domID))
 		} else {
-			dlog("[DEBUG] talk_id %s not found in cache", msg.TalkID)
+			c.dlog("[DEBUG] talk_id %s not found in cache", debuglog.RedactID(msg.TalkID))
 		}
 		c.mu.RUnlock()
 	}
 
-	dlog("[DEBUG] handleMessageNotification: parsed msg: ID=%s UserID=%s TalkID=%s DomainID=%s Text=%s",
-		msg.ID, msg.UserID, msg.TalkID, msg.DomainID, msg.Text)
+	c.dlog("[DEBUG] handleMessageNotification: parsed msg: id=%s user=%s talk=%s domain=%s text=%s",
+		debuglog.RedactID(msg.ID), debuglog.RedactID(msg.UserID), debuglog.RedactID(msg.TalkID), debuglog.RedactID(msg.DomainID), debuglog.SummarizePayload(msg.Text))
 	if msg.ID != "" {
 		c.mu.RLock()
 		handlers := append([]func(ReceivedMessage){}, c.messageHandlers...)
@@ -1239,14 +1257,14 @@ func (c *Client) handleMessageNotification(conn *websocket.Conn, data interface{
 		done := c.connectionDone(conn)
 		if done == nil {
 			c.recordMessageDrop("connection_closed")
-			dlog("[DEBUG] Message delivery canceled: connection is no longer active")
+			c.dlog("[DEBUG] Message delivery canceled: connection is no longer active")
 			return
 		}
 		select {
 		case c.Messages <- msg:
 		case <-done:
 			c.recordMessageDrop("connection_closed")
-			dlog("[DEBUG] Message delivery canceled during connection shutdown")
+			c.dlog("[DEBUG] Message delivery canceled during connection shutdown")
 		}
 	}
 }
@@ -1281,23 +1299,27 @@ func (c *Client) recordMessageDrop(reason string) {
 func (c *Client) runMessageHandler(handler func(ReceivedMessage), msg ReceivedMessage) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			dlog("[DEBUG] OnMessage handler panicked: %v", recovered)
+			c.dlog("[DEBUG] OnMessage handler panicked: %s", debuglog.SummarizePayload(recovered))
 		}
 	}()
 	handler(msg)
 }
 
 // parseMessage converts a raw notification to a ReceivedMessage.
-func parseMessage(data interface{}) ReceivedMessage {
+func parseMessage(data interface{}, loggers ...*debuglog.Logger) ReceivedMessage {
 	msg := ReceivedMessage{}
+	logger := debuglog.Default()
+	if len(loggers) > 0 && loggers[0] != nil {
+		logger = loggers[0]
+	}
 
 	m, ok := data.(map[string]interface{})
 	if !ok {
-		dlog("[DEBUG] parseMessage: data not a map, type=%T", data)
+		logger.Printf("[DEBUG] parseMessage: data not a map, type=%s", debuglog.SummarizePayload(data))
 		return msg
 	}
 
-	dlog("[DEBUG] parseMessage: keys = %v", getMapKeys(m))
+	logger.Printf("[DEBUG] parseMessage: key_count=%d", len(m))
 
 	if id, ok := m["message_id"]; ok {
 		msg.ID = fmt.Sprintf("%v", id)
@@ -1315,7 +1337,7 @@ func parseMessage(data interface{}) ReceivedMessage {
 		msg.DomainID = fmt.Sprintf("%v", domainId)
 	}
 	if content, ok := m["content"]; ok {
-		dlog("[DEBUG] content type=%T value=%v", content, content)
+		logger.Printf("[DEBUG] content: %s", debuglog.SummarizePayload(content))
 		msg.Content = content
 		if text, ok := content.(string); ok {
 			msg.Text = text
@@ -1331,7 +1353,7 @@ func parseMessage(data interface{}) ReceivedMessage {
 		}
 	}
 
-	dlog("[DEBUG] parsed: ID=%s TalkID=%s Text=%s", msg.ID, msg.TalkID, msg.Text)
+	logger.Printf("[DEBUG] parsed: id=%s talk=%s text=%s", debuglog.RedactID(msg.ID), debuglog.RedactID(msg.TalkID), debuglog.SummarizePayload(msg.Text))
 
 	// Store raw data for custom parsing
 	if rawData, err := json.Marshal(m); err == nil {

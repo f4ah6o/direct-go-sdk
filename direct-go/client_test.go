@@ -1,6 +1,7 @@
 package direct
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"pgregory.net/rapid"
 
+	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 	"github.com/f4ah6o/direct-go-sdk/direct-go/testutil"
 )
 
@@ -87,6 +89,80 @@ func TestClientConnect(t *testing.T) {
 	if domainID != "domain-1" {
 		t.Fatalf("talk-domain cache = %q, want domain-1", domainID)
 	}
+}
+
+func TestClientDiagnosticsRedactCredentialsAndMessages(t *testing.T) {
+	const (
+		accessToken = "access-token-secret"
+		messageBody = "private message body"
+	)
+
+	for _, level := range []int{debuglog.LevelNormal, debuglog.LevelVerbose} {
+		t.Run(fmt.Sprintf("level-%d", level), func(t *testing.T) {
+			mockServer := testutil.NewMockServer()
+			defer mockServer.Close()
+			mockServer.OnSimple("create_session", map[string]interface{}{
+				"user_id": "user-1",
+				"token":   accessToken,
+			})
+			mockServer.OnSimple("get_domains", []interface{}{})
+			mockServer.OnSimple("get_talks", []interface{}{})
+			mockServer.OnSimple("get_talk_statuses", []interface{}{})
+			mockServer.OnSimple("start_notification", true)
+
+			var output synchronizedBuffer
+			logger := debuglog.NewLogger(debuglog.LoggerOptions{Level: level, Writer: &output})
+			client := NewClient(Options{
+				Endpoint:    mockServer.URL(),
+				AccessToken: accessToken,
+				DebugLogger: logger,
+			})
+			if err := client.ConnectWithContext(context.Background()); err != nil {
+				t.Fatalf("ConnectWithContext failed: %v", err)
+			}
+			defer client.Close()
+
+			if err := mockServer.SendNotification("notify_create_message", map[string]interface{}{
+				"message_id": "message-1",
+				"talk_id":    "talk-1",
+				"user_id":    "user-1",
+				"content":    messageBody,
+			}); err != nil {
+				t.Fatalf("SendNotification failed: %v", err)
+			}
+
+			deadline := time.Now().Add(time.Second)
+			for !strings.Contains(output.String(), "parsed msg") && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			got := output.String()
+			for _, unwanted := range []string{accessToken, messageBody} {
+				if strings.Contains(got, unwanted) {
+					t.Fatalf("client diagnostics leaked %q: %q", unwanted, got)
+				}
+			}
+			if !strings.Contains(got, "access_token=configured") || !strings.Contains(got, "text=string(len=") {
+				t.Fatalf("client diagnostics did not preserve safe metadata: %q", got)
+			}
+		})
+	}
+}
+
+type synchronizedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func configureSessionStartup(mockServer *testutil.MockServer) {

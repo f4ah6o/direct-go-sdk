@@ -28,6 +28,7 @@ type MockServer struct {
 	mu         sync.RWMutex
 	conn       *websocket.Conn
 	connMu     sync.Mutex
+	writeMu    sync.Mutex
 	messages   [][]interface{} // Stores received RPC requests for assertions
 	messagesMu sync.Mutex
 }
@@ -189,7 +190,9 @@ func (ms *MockServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		conn.WriteMessage(websocket.BinaryMessage, responseData)
+		ms.writeMu.Lock()
+		_ = conn.WriteMessage(websocket.BinaryMessage, responseData)
+		ms.writeMu.Unlock()
 	}
 }
 
@@ -211,6 +214,8 @@ func (ms *MockServer) SendNotification(method string, params interface{}) error 
 		return err
 	}
 
+	ms.writeMu.Lock()
+	defer ms.writeMu.Unlock()
 	return conn.WriteMessage(websocket.BinaryMessage, data)
 }
 

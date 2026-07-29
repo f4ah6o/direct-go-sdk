@@ -7,6 +7,7 @@ import (
 
 	"github.com/f4ah6o/direct-go-sdk/daab-go/bot"
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
+	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 	"github.com/spf13/cobra"
 )
 
@@ -24,7 +25,7 @@ func runBot() error {
 
 	// Load environment
 	if err := auth.LoadEnv(); err != nil {
-		log.Printf("Warning: could not load .env: %v", err)
+		log.Printf("Warning: could not load .env: %s", debuglog.SummarizePayload(err))
 	}
 
 	// Check if logged in
@@ -41,18 +42,18 @@ func runBot() error {
 	// Register a handler that responds when the bot is directly mentioned with "ping"
 	robot.Respond("ping", func(ctx context.Context, res bot.Response) {
 		if err := res.Send("PONG"); err != nil {
-			log.Printf("Failed to send response: %v", err)
+			log.Printf("Failed to send response: %s", debuglog.SummarizePayload(err))
 		}
 	})
 
 	// Register a handler that logs all messages
 	robot.Hear(".*", func(ctx context.Context, res bot.Response) {
-		log.Printf("[%s] %s: %s", res.RoomID(), res.UserID(), res.Text())
+		log.Printf("[room=%s] user=%s text=%s", debuglog.RedactID(res.RoomID()), debuglog.RedactID(res.UserID()), debuglog.SummarizePayload(res.Text()))
 	})
 
 	// Run the bot
 	if err := robot.Run(context.Background()); err != nil {
-		return fmt.Errorf("failed to run bot: %v", err)
+		return fmt.Errorf("failed to run bot: %w", err)
 	}
 
 	return nil

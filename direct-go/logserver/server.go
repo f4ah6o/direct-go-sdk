@@ -48,15 +48,16 @@ func (s *Server) routes() {
 
 // handleLogPost receives logs from other processes via HTTP POST
 func (s *Server) handleLogPost(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
+	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	// Log entries are small metadata records. Bound the request before parsing
+	// so the unauthenticated collector cannot be used for an oversized body.
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var entry debuglog.LogEntry
 	if err := json.NewDecoder(r.Body).Decode(&entry); err != nil {
-		// Fallback for legacy plain text logs if needed, but we prefer JSON now
-		// For now, strict JSON
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
@@ -86,7 +87,7 @@ func (s *Server) ListenAndServe(addr string) error {
 
 // handleLogs returns logs as JSON
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" {
+	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}

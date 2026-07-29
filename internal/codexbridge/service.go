@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/config"
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/store"
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/teams"
@@ -77,7 +78,7 @@ func (s *Service) handleQuestion(ctx context.Context, in teams.CodexActivity) {
 		return
 	}
 	if _, err := s.teams.SendText(ctx, in.ServiceURL, teamsThreadConversationID(in.ConversationID, in.RootID), "", strings.TrimSpace(answer)); err != nil {
-		s.logger.Printf("[codex-bridge] failed to reply question: %v", err)
+		s.logger.Printf("[codex-bridge] failed to reply question: %s", debuglog.SummarizePayload(err))
 	}
 	mapping.Status = "answered"
 	_ = s.store.PutCodexMapping(mapping)
@@ -101,7 +102,7 @@ func (s *Service) handleAnswer(ctx context.Context, in teams.CodexActivity) {
 		return
 	}
 	if _, err := s.teams.SendText(ctx, mapping.QuestionServiceURL, teamsThreadConversationID(mapping.QuestionConversationID, mapping.QuestionRootID), "", strings.TrimSpace(answer)); err != nil {
-		s.logger.Printf("[codex-bridge] failed to post final answer: %v", err)
+		s.logger.Printf("[codex-bridge] failed to post final answer: %s", debuglog.SummarizePayload(err))
 		return
 	}
 	_, _ = s.teams.SendText(ctx, in.ServiceURL, teamsThreadConversationID(in.ConversationID, in.RootID), in.ActivityID, "質問 channel へ回答しました。")
@@ -147,7 +148,7 @@ func (s *Service) escalate(ctx context.Context, mapping store.CodexThreadMapping
 }
 
 func (s *Service) replyQuestionError(ctx context.Context, in teams.CodexActivity, err error) {
-	s.logger.Printf("[codex-bridge] question failed: %v", err)
+	s.logger.Printf("[codex-bridge] question failed: %s", debuglog.SummarizePayload(err))
 	_, _ = s.teams.SendText(ctx, in.ServiceURL, teamsThreadConversationID(in.ConversationID, in.RootID), in.ActivityID, "Codex bridge error: "+err.Error())
 }
 

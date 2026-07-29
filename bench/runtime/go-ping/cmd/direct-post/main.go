@@ -12,6 +12,7 @@ import (
 	"time"
 
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
+	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 	"gopkg.in/yaml.v3"
 )
 
@@ -75,9 +76,9 @@ func main() {
 		start := time.Now()
 		messageID, err := sendOnce(ctx, endpoint, token, acct.ProxyURL, *talkID, msg)
 		if err != nil {
-			log.Fatalf("send failed: %v", err)
+			log.Fatalf("send failed: %s", debuglog.SummarizePayload(err))
 		}
-		fmt.Printf("sent account=%s talk=%s message_id=%s elapsed_ms=%d text=%q\n", acct.ID, normalizeForLog(*talkID), messageID, time.Since(start).Milliseconds(), msg)
+		fmt.Printf("sent account=%s talk=%s message_id=%s elapsed_ms=%d text=%s\n", debuglog.RedactID(acct.ID), debuglog.RedactID(normalizeForLog(*talkID)), debuglog.RedactID(messageID), time.Since(start).Milliseconds(), debuglog.SummarizePayload(msg))
 		if i+1 < *count {
 			time.Sleep(*interval)
 		}

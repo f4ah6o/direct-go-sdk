@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/config"
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/model"
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/store"
@@ -69,7 +70,7 @@ func (s *Service) runDirectToTeams(ctx context.Context) {
 				continue
 			}
 			if err := s.handleDirectMessage(ctx, msg); err != nil {
-				s.logger.Printf("[bridge] direct->teams failed: account=%s talk=%s err=%v", msg.AccountID, msg.TalkID, err)
+				s.logger.Printf("[bridge] direct->teams failed: account=%s talk=%s err=%s", debuglog.RedactID(msg.AccountID), debuglog.RedactID(msg.TalkID), debuglog.SummarizePayload(err))
 			}
 		}
 	}
@@ -82,7 +83,7 @@ func (s *Service) handleDirectMessage(ctx context.Context, msg model.DirectMessa
 	}
 	binding, ok := s.st.GetChannelBinding(account.TeamsChannel)
 	if !ok {
-		s.logger.Printf("[bridge] teams channel alias %q is not bound; run @bot bind %s in Teams", account.TeamsChannel, account.TeamsChannel)
+		s.logger.Printf("[bridge] teams channel alias %s is not bound", debuglog.RedactID(account.TeamsChannel))
 		return nil
 	}
 	mapping, ok := s.st.GetByTalk(msg.AccountID, msg.TalkID)
@@ -122,7 +123,7 @@ func (s *Service) handleDirectMessage(ctx context.Context, msg model.DirectMessa
 			ActivityID:      rootID,
 			DirectSenderID:  msg.UserID,
 		})
-		s.logger.Printf("[bridge] mapped account=%s talk=%s to teams root=%s", msg.AccountID, msg.TalkID, rootID)
+		s.logger.Printf("[bridge] mapped account=%s talk=%s to teams root=%s", debuglog.RedactID(msg.AccountID), debuglog.RedactID(msg.TalkID), debuglog.RedactID(rootID))
 		return nil
 	}
 	replyID, err := retry(ctx, func() (string, error) {
@@ -131,7 +132,7 @@ func (s *Service) handleDirectMessage(ctx context.Context, msg model.DirectMessa
 	if err != nil {
 		return err
 	}
-	s.logger.Printf("[bridge] direct->teams reply posted: account=%s direct_message=%s teams_reply=%s conversation=%s", msg.AccountID, msg.MessageID, replyID, teamsThreadConversationID(mapping.ConversationID, mapping.RootID))
+	s.logger.Printf("[bridge] direct->teams reply posted: account=%s direct_message=%s teams_reply=%s conversation=%s", debuglog.RedactID(msg.AccountID), debuglog.RedactID(msg.MessageID), debuglog.RedactID(replyID), debuglog.RedactID(teamsThreadConversationID(mapping.ConversationID, mapping.RootID)))
 	if err := s.st.MarkTeamsMessage(replyID); err != nil {
 		return err
 	}
@@ -156,7 +157,7 @@ func (s *Service) runTeamsToDirect(ctx context.Context) {
 			s.markPendingDirectMessage(msg)
 			if err := s.direct.Send(ctx, msg); err != nil {
 				s.clearPendingDirectMessage(msg)
-				s.logger.Printf("[bridge] teams->direct failed: account=%s talk=%s err=%v", msg.AccountID, msg.TalkID, err)
+				s.logger.Printf("[bridge] teams->direct failed: account=%s talk=%s err=%s", debuglog.RedactID(msg.AccountID), debuglog.RedactID(msg.TalkID), debuglog.SummarizePayload(err))
 				s.notifyTeamsSendFailure(ctx, model.DirectSent{Outbound: msg, Err: err})
 			}
 		}
@@ -176,7 +177,7 @@ func (s *Service) runDirectSent(ctx context.Context) {
 			}
 			if sent.MessageID != "" {
 				if err := s.st.MarkDirectMessage(sent.MessageID); err != nil {
-					s.logger.Printf("[bridge] failed to mark direct message id=%s err=%v", sent.MessageID, err)
+					s.logger.Printf("[bridge] failed to mark direct message id=%s err=%s", debuglog.RedactID(sent.MessageID), debuglog.SummarizePayload(err))
 				}
 				if sent.Outbound.TeamsSource != nil {
 					ref := store.TeamsMessageRef{
@@ -203,7 +204,7 @@ func (s *Service) runDirectReads(ctx context.Context) {
 			return
 		case receipt := <-s.readIn:
 			if err := s.handleDirectReadReceipt(ctx, receipt); err != nil {
-				s.logger.Printf("[bridge] direct read receipt failed: account=%s talk=%s err=%v", receipt.AccountID, receipt.TalkID, err)
+				s.logger.Printf("[bridge] direct read receipt failed: account=%s talk=%s err=%s", debuglog.RedactID(receipt.AccountID), debuglog.RedactID(receipt.TalkID), debuglog.SummarizePayload(err))
 			}
 		}
 	}
@@ -225,19 +226,19 @@ func (s *Service) handleDirectReadReceipt(ctx context.Context, receipt model.Dir
 func (s *Service) reactToDirectRead(ctx context.Context, receipt model.DirectReadReceipt, messageID string) (bool, error) {
 	ref, ok := s.st.GetTeamsMessageRef(receipt.AccountID, messageID)
 	if !ok {
-		s.logger.Printf("[bridge] read receipt pending without teams ref: account=%s direct_message=%s talk=%s", receipt.AccountID, messageID, receipt.TalkID)
+		s.logger.Printf("[bridge] read receipt pending without teams ref: account=%s direct_message=%s talk=%s", debuglog.RedactID(receipt.AccountID), debuglog.RedactID(messageID), debuglog.RedactID(receipt.TalkID))
 		return false, nil
 	}
 	if !ref.ReactedAt.IsZero() {
-		s.logger.Printf("[bridge] read receipt skipped already reacted: account=%s direct_message=%s teams_activity=%s", ref.AccountID, ref.DirectMessageID, ref.ActivityID)
+		s.logger.Printf("[bridge] read receipt skipped already reacted: account=%s direct_message=%s teams_activity=%s", debuglog.RedactID(ref.AccountID), debuglog.RedactID(ref.DirectMessageID), debuglog.RedactID(ref.ActivityID))
 		return true, nil
 	}
 	if ref.DirectSenderID == "" {
-		s.logger.Printf("[bridge] read receipt skipped without sender id: account=%s direct_message=%s teams_activity=%s", ref.AccountID, ref.DirectMessageID, ref.ActivityID)
+		s.logger.Printf("[bridge] read receipt skipped without sender id: account=%s direct_message=%s teams_activity=%s", debuglog.RedactID(ref.AccountID), debuglog.RedactID(ref.DirectMessageID), debuglog.RedactID(ref.ActivityID))
 		return true, nil
 	}
 	if !hasReaderOtherThan(receipt.ReadUserIDs, ref.DirectSenderID) {
-		s.logger.Printf("[bridge] read receipt skipped self-only: account=%s direct_message=%s sender=%s read_users=%d", ref.AccountID, ref.DirectMessageID, ref.DirectSenderID, len(receipt.ReadUserIDs))
+		s.logger.Printf("[bridge] read receipt skipped self-only: account=%s direct_message=%s sender=%s read_users=%d", debuglog.RedactID(ref.AccountID), debuglog.RedactID(ref.DirectMessageID), debuglog.RedactID(ref.DirectSenderID), len(receipt.ReadUserIDs))
 		return true, nil
 	}
 	if err := s.teams.AddReaction(ctx, ref.ServiceURL, ref.ConversationID, ref.ActivityID, teams.ReactionEyes); err != nil {
@@ -247,7 +248,7 @@ func (s *Service) reactToDirectRead(ctx context.Context, receipt model.DirectRea
 		return false, err
 	}
 	s.clearPendingRead(ref.AccountID, ref.DirectMessageID)
-	s.logger.Printf("[bridge] added teams read reaction: account=%s direct_message=%s teams_activity=%s", ref.AccountID, ref.DirectMessageID, ref.ActivityID)
+	s.logger.Printf("[bridge] added teams read reaction: account=%s direct_message=%s teams_activity=%s", debuglog.RedactID(ref.AccountID), debuglog.RedactID(ref.DirectMessageID), debuglog.RedactID(ref.ActivityID))
 	return true, nil
 }
 
@@ -296,17 +297,17 @@ func (s *Service) storeDirectToTeamsMessageRef(ctx context.Context, ref store.Te
 		return
 	}
 	if ref.ActivityID == "" || ref.ConversationID == "" || ref.ServiceURL == "" {
-		s.logger.Printf("[bridge] direct->teams message ref incomplete: account=%s direct_message=%s service_url=%t conversation_id=%t activity_id=%t", ref.AccountID, ref.DirectMessageID, ref.ServiceURL != "", ref.ConversationID != "", ref.ActivityID != "")
+		s.logger.Printf("[bridge] direct->teams message ref incomplete: account=%s direct_message=%s service_url=%t conversation_id=%t activity_id=%t", debuglog.RedactID(ref.AccountID), debuglog.RedactID(ref.DirectMessageID), ref.ServiceURL != "", ref.ConversationID != "", ref.ActivityID != "")
 		return
 	}
 	if err := s.st.PutTeamsMessageRef(ref); err != nil {
-		s.logger.Printf("[bridge] failed to store direct->teams message ref: account=%s direct_message=%s teams_activity=%s err=%v", ref.AccountID, ref.DirectMessageID, ref.ActivityID, err)
+		s.logger.Printf("[bridge] failed to store direct->teams message ref: account=%s direct_message=%s teams_activity=%s err=%s", debuglog.RedactID(ref.AccountID), debuglog.RedactID(ref.DirectMessageID), debuglog.RedactID(ref.ActivityID), debuglog.SummarizePayload(err))
 		return
 	}
-	s.logger.Printf("[bridge] stored direct->teams message ref: account=%s direct_message=%s teams_activity=%s", ref.AccountID, ref.DirectMessageID, ref.ActivityID)
+	s.logger.Printf("[bridge] stored direct->teams message ref: account=%s direct_message=%s teams_activity=%s", debuglog.RedactID(ref.AccountID), debuglog.RedactID(ref.DirectMessageID), debuglog.RedactID(ref.ActivityID))
 	if receipt, ok := s.consumePendingRead(ref.AccountID, ref.DirectMessageID); ok {
 		if reacted, err := s.reactToDirectRead(ctx, receipt, ref.DirectMessageID); err != nil {
-			s.logger.Printf("[bridge] pending read receipt reaction failed: account=%s direct_message=%s err=%v", ref.AccountID, ref.DirectMessageID, err)
+			s.logger.Printf("[bridge] pending read receipt reaction failed: account=%s direct_message=%s err=%s", debuglog.RedactID(ref.AccountID), debuglog.RedactID(ref.DirectMessageID), debuglog.SummarizePayload(err))
 		} else if !reacted {
 			s.markPendingRead(receipt, ref.DirectMessageID)
 		}
@@ -322,14 +323,14 @@ func (s *Service) reactToDirectSent(ctx context.Context, ref store.TeamsMessageR
 		return
 	}
 	if err := s.teams.AddReaction(ctx, stored.ServiceURL, stored.ConversationID, stored.ActivityID, teams.ReactionBallotBoxWithBallot); err != nil {
-		s.logger.Printf("[bridge] failed to add teams sent reaction: account=%s direct_message=%s teams_activity=%s err=%v", stored.AccountID, stored.DirectMessageID, stored.ActivityID, err)
+		s.logger.Printf("[bridge] failed to add teams sent reaction: account=%s direct_message=%s teams_activity=%s err=%s", debuglog.RedactID(stored.AccountID), debuglog.RedactID(stored.DirectMessageID), debuglog.RedactID(stored.ActivityID), debuglog.SummarizePayload(err))
 		return
 	}
 	if _, _, err := s.st.MarkTeamsSentReaction(ref.AccountID, ref.DirectMessageID); err != nil {
-		s.logger.Printf("[bridge] failed to mark teams sent reaction: account=%s direct_message=%s err=%v", ref.AccountID, ref.DirectMessageID, err)
+		s.logger.Printf("[bridge] failed to mark teams sent reaction: account=%s direct_message=%s err=%s", debuglog.RedactID(ref.AccountID), debuglog.RedactID(ref.DirectMessageID), debuglog.SummarizePayload(err))
 		return
 	}
-	s.logger.Printf("[bridge] added teams sent reaction: account=%s direct_message=%s teams_activity=%s", stored.AccountID, stored.DirectMessageID, stored.ActivityID)
+	s.logger.Printf("[bridge] added teams sent reaction: account=%s direct_message=%s teams_activity=%s", debuglog.RedactID(stored.AccountID), debuglog.RedactID(stored.DirectMessageID), debuglog.RedactID(stored.ActivityID))
 }
 
 func hasReaderOtherThan(readUserIDs []string, senderID string) bool {
@@ -348,7 +349,7 @@ func (s *Service) notifyTeamsSendFailure(ctx context.Context, sent model.DirectS
 	}
 	text := "❌ failed to send to direct: " + sent.Err.Error()
 	if _, err := s.teams.SendText(ctx, mapping.ServiceURL, teamsThreadConversationID(mapping.ConversationID, mapping.RootID), "", text); err != nil {
-		s.logger.Printf("[bridge] failed to notify teams send failure: account=%s talk=%s err=%v", sent.Outbound.AccountID, sent.Outbound.TalkID, err)
+		s.logger.Printf("[bridge] failed to notify teams send failure: account=%s talk=%s err=%s", debuglog.RedactID(sent.Outbound.AccountID), debuglog.RedactID(sent.Outbound.TalkID), debuglog.SummarizePayload(err))
 	}
 }
 
@@ -412,10 +413,10 @@ func (s *Service) storeTeamsToDirectMessageRef(ctx context.Context, outbound mod
 		return
 	}
 	if err := s.st.MarkDirectMessage(msg.MessageID); err != nil {
-		s.logger.Printf("[bridge] failed to mark pending direct message id=%s err=%v", msg.MessageID, err)
+		s.logger.Printf("[bridge] failed to mark pending direct message id=%s err=%s", debuglog.RedactID(msg.MessageID), debuglog.SummarizePayload(err))
 	}
 	if outbound.TeamsSource == nil {
-		s.logger.Printf("[bridge] pending direct message has no teams source: account=%s direct_message=%s", msg.AccountID, msg.MessageID)
+		s.logger.Printf("[bridge] pending direct message has no teams source: account=%s direct_message=%s", debuglog.RedactID(msg.AccountID), debuglog.RedactID(msg.MessageID))
 		return
 	}
 	ref := store.TeamsMessageRef{
