@@ -73,7 +73,7 @@ type ReadStatusesUpdate struct {
 
 // GetReadStatus retrieves read status for a message in a talk.
 func (c *Client) GetReadStatus(ctx context.Context, talkID, messageID interface{}) (*ReadStatus, error) {
-	result, err := c.Call(MethodGetReadStatus, []interface{}{talkID, messageID})
+	result, err := c.CallWithContext(ctx, MethodGetReadStatus, []interface{}{talkID, messageID})
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +82,7 @@ func (c *Client) GetReadStatus(ctx context.Context, talkID, messageID interface{
 
 // UpdateReadStatuses marks messages through maxReadMessageID as read in a talk.
 func (c *Client) UpdateReadStatuses(ctx context.Context, talkID, maxReadMessageID interface{}) error {
-	_, err := c.Call(MethodUpdateReadStatuses, []interface{}{talkID, maxReadMessageID})
+	_, err := c.CallWithContext(ctx, MethodUpdateReadStatuses, []interface{}{talkID, maxReadMessageID})
 	return err
 }
 
@@ -108,7 +108,7 @@ func (c *Client) GetMessages(ctx context.Context, domainID, talkID interface{}, 
 	}
 
 	params := []interface{}{domainID, talkID, opts.SinceID, opts.MaxID, int(opts.Order)}
-	result, err := c.Call(MethodGetMessages, params)
+	result, err := c.CallWithContext(ctx, MethodGetMessages, params)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +136,7 @@ func (c *Client) GetMessages(ctx context.Context, domainID, talkID interface{}, 
 // Returns error if the deletion fails.
 func (c *Client) DeleteMessage(ctx context.Context, domainID, messageID interface{}) error {
 	params := []interface{}{domainID, messageID}
-	_, err := c.Call(MethodDeleteMessage, params)
+	_, err := c.CallWithContext(ctx, MethodDeleteMessage, params)
 	return err
 }
 
@@ -152,7 +152,7 @@ func (c *Client) DeleteMessage(ctx context.Context, domainID, messageID interfac
 // Returns search results with pagination information.
 func (c *Client) SearchMessages(ctx context.Context, domainID, talkID interface{}, keyword string, marker interface{}, limit int) (*SearchMessagesResult, error) {
 	params := []interface{}{domainID, talkID, keyword, marker, limit}
-	result, err := c.Call(MethodSearchMessages, params)
+	result, err := c.CallWithContext(ctx, MethodSearchMessages, params)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +199,7 @@ func (c *Client) SearchMessages(ctx context.Context, domainID, talkID interface{
 
 // SearchMessagesAroundDateTime searches for messages around a target datetime.
 func (c *Client) SearchMessagesAroundDateTime(ctx context.Context, talkID, datetime interface{}) (*SearchMessagesAroundDateTimeResult, error) {
-	result, err := c.Call(MethodSearchMessagesAroundDateTime, []interface{}{talkID, datetime})
+	result, err := c.CallWithContext(ctx, MethodSearchMessagesAroundDateTime, []interface{}{talkID, datetime})
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +223,7 @@ func (c *Client) SearchMessagesAroundDateTime(ctx context.Context, talkID, datet
 
 // GetFavoriteMessages retrieves the user's favorite messages.
 func (c *Client) GetFavoriteMessages(ctx context.Context) ([]ReceivedMessage, error) {
-	result, err := c.Call(MethodGetFavoriteMessages, []interface{}{})
+	result, err := c.CallWithContext(ctx, MethodGetFavoriteMessages, []interface{}{})
 	if err != nil {
 		return nil, err
 	}
@@ -244,14 +244,14 @@ func (c *Client) GetFavoriteMessages(ctx context.Context) ([]ReceivedMessage, er
 // AddFavoriteMessage adds a message to favorites.
 func (c *Client) AddFavoriteMessage(ctx context.Context, messageID interface{}) error {
 	params := []interface{}{messageID}
-	_, err := c.Call(MethodAddFavoriteMessage, params)
+	_, err := c.CallWithContext(ctx, MethodAddFavoriteMessage, params)
 	return err
 }
 
 // DeleteFavoriteMessage removes a message from favorites.
 func (c *Client) DeleteFavoriteMessage(ctx context.Context, messageID interface{}) error {
 	params := []interface{}{messageID}
-	_, err := c.Call(MethodDeleteFavoriteMessage, params)
+	_, err := c.CallWithContext(ctx, MethodDeleteFavoriteMessage, params)
 	return err
 }
 
@@ -268,7 +268,7 @@ type ScheduledMessage struct {
 
 // GetScheduledMessages retrieves all scheduled messages.
 func (c *Client) GetScheduledMessages(ctx context.Context) ([]ScheduledMessage, error) {
-	result, err := c.Call(MethodGetScheduledMessages, []interface{}{})
+	result, err := c.CallWithContext(ctx, MethodGetScheduledMessages, []interface{}{})
 	if err != nil {
 		return nil, err
 	}
@@ -310,7 +310,7 @@ func (c *Client) GetScheduledMessages(ctx context.Context) ([]ScheduledMessage, 
 // ScheduleMessage schedules a message to be sent at a specific time.
 func (c *Client) ScheduleMessage(ctx context.Context, talkID interface{}, msgType MessageType, content interface{}, scheduledAt time.Time) (*ScheduledMessage, error) {
 	params := []interface{}{talkID, int(msgType), content, scheduledAt.Unix()}
-	result, err := c.Call(MethodScheduleMessage, params)
+	result, err := c.CallWithContext(ctx, MethodScheduleMessage, params)
 	if err != nil {
 		return nil, err
 	}
@@ -346,14 +346,14 @@ func (c *Client) ScheduleMessage(ctx context.Context, talkID interface{}, msgTyp
 // DeleteScheduledMessage deletes a scheduled message.
 func (c *Client) DeleteScheduledMessage(ctx context.Context, messageID interface{}) error {
 	params := []interface{}{messageID}
-	_, err := c.Call(MethodDeleteScheduledMessage, params)
+	_, err := c.CallWithContext(ctx, MethodDeleteScheduledMessage, params)
 	return err
 }
 
 // RescheduleMessage changes the scheduled time of a message.
 func (c *Client) RescheduleMessage(ctx context.Context, messageID interface{}, newScheduledAt time.Time) error {
 	params := []interface{}{messageID, newScheduledAt.Unix()}
-	_, err := c.Call(MethodRescheduleMessage, params)
+	_, err := c.CallWithContext(ctx, MethodRescheduleMessage, params)
 	return err
 }
 
@@ -366,7 +366,7 @@ type MessageReaction struct {
 
 // GetAvailableMessageReactions retrieves all available message reactions.
 func (c *Client) GetAvailableMessageReactions(ctx context.Context) ([]MessageReaction, error) {
-	result, err := c.Call(MethodGetAvailableMessageReactions, []interface{}{})
+	result, err := c.CallWithContext(ctx, MethodGetAvailableMessageReactions, []interface{}{})
 	if err != nil {
 		return nil, err
 	}
@@ -396,14 +396,14 @@ func (c *Client) GetAvailableMessageReactions(ctx context.Context) ([]MessageRea
 // SetMessageReaction sets a reaction on a message.
 func (c *Client) SetMessageReaction(ctx context.Context, messageID, reactionID interface{}) error {
 	params := []interface{}{messageID, reactionID}
-	_, err := c.Call(MethodSetMessageReaction, params)
+	_, err := c.CallWithContext(ctx, MethodSetMessageReaction, params)
 	return err
 }
 
 // ResetMessageReaction removes a reaction from a message.
 func (c *Client) ResetMessageReaction(ctx context.Context, messageID, reactionID interface{}) error {
 	params := []interface{}{messageID, reactionID}
-	_, err := c.Call(MethodResetMessageReaction, params)
+	_, err := c.CallWithContext(ctx, MethodResetMessageReaction, params)
 	return err
 }
 
@@ -417,7 +417,7 @@ type MessageReactionUser struct {
 // GetMessageReactionUsers retrieves users who reacted to a message.
 func (c *Client) GetMessageReactionUsers(ctx context.Context, messageID interface{}) ([]MessageReactionUser, error) {
 	params := []interface{}{messageID}
-	result, err := c.Call(MethodGetMessageReactionUsers, params)
+	result, err := c.CallWithContext(ctx, MethodGetMessageReactionUsers, params)
 	if err != nil {
 		return nil, err
 	}

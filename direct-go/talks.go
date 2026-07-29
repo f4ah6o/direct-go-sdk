@@ -38,7 +38,7 @@ func (c *Client) CreateGroupTalk(ctx context.Context, domainID interface{}, name
 		}
 	}
 
-	result, err := c.Call(MethodCreateGroupTalk, params)
+	result, err := c.CallWithContext(ctx, MethodCreateGroupTalk, params)
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +54,7 @@ func (c *Client) CreateGroupTalk(ctx context.Context, domainID interface{}, name
 // Returns the created Talk with its ID and metadata.
 func (c *Client) CreatePairTalk(ctx context.Context, domainID, userID interface{}) (*Talk, error) {
 	params := []interface{}{domainID, userID}
-	result, err := c.Call(MethodCreatePairTalk, params)
+	result, err := c.CallWithContext(ctx, MethodCreatePairTalk, params)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +71,7 @@ func (c *Client) CreatePairTalk(ctx context.Context, domainID, userID interface{
 // Returns the updated Talk.
 func (c *Client) UpdateGroupTalk(ctx context.Context, talkID interface{}, updates map[string]interface{}) (*Talk, error) {
 	params := []interface{}{talkID, updates}
-	result, err := c.Call(MethodUpdateGroupTalk, params)
+	result, err := c.CallWithContext(ctx, MethodUpdateGroupTalk, params)
 	if err != nil {
 		return nil, err
 	}
@@ -87,28 +87,28 @@ func (c *Client) UpdateGroupTalk(ctx context.Context, talkID interface{}, update
 // This is typically used for group conversations.
 func (c *Client) AddTalkers(ctx context.Context, talkID interface{}, userIDs []interface{}) error {
 	params := []interface{}{talkID, userIDs}
-	_, err := c.Call(MethodAddTalkers, params)
+	_, err := c.CallWithContext(ctx, MethodAddTalkers, params)
 	return err
 }
 
 // DeleteTalker removes a user from a talk/room, ending their participation.
 func (c *Client) DeleteTalker(ctx context.Context, talkID, userID interface{}) error {
 	params := []interface{}{talkID, userID}
-	_, err := c.Call(MethodDeleteTalker, params)
+	_, err := c.CallWithContext(ctx, MethodDeleteTalker, params)
 	return err
 }
 
 // AddFavoriteTalk adds a talk to the current user's favorites list for quick access.
 func (c *Client) AddFavoriteTalk(ctx context.Context, talkID interface{}) error {
 	params := []interface{}{talkID}
-	_, err := c.Call(MethodAddFavoriteTalk, params)
+	_, err := c.CallWithContext(ctx, MethodAddFavoriteTalk, params)
 	return err
 }
 
 // DeleteFavoriteTalk removes a talk from the current user's favorites list.
 func (c *Client) DeleteFavoriteTalk(ctx context.Context, talkID interface{}) error {
 	params := []interface{}{talkID}
-	_, err := c.Call(MethodDeleteFavoriteTalk, params)
+	_, err := c.CallWithContext(ctx, MethodDeleteFavoriteTalk, params)
 	return err
 }
 

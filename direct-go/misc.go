@@ -16,7 +16,7 @@ func (c *Client) GetActions(ctx context.Context, domainID, talkID interface{}, a
 	if opts == nil {
 		opts = &ActionQueryOptions{}
 	}
-	result, err := c.Call(MethodGetActions, []interface{}{domainID, talkID, actionType, marker, limit, opts.SinceID, opts.MaxID})
+	result, err := c.CallWithContext(ctx, MethodGetActions, []interface{}{domainID, talkID, actionType, marker, limit, opts.SinceID, opts.MaxID})
 	if err != nil {
 		return nil, err
 	}
@@ -25,7 +25,7 @@ func (c *Client) GetActions(ctx context.Context, domainID, talkID interface{}, a
 
 // GetSolutions retrieves solution payloads for a domain.
 func (c *Client) GetSolutions(ctx context.Context, domainID, marker interface{}) ([]RawItem, error) {
-	result, err := c.Call(MethodGetSolutions, []interface{}{domainID, marker})
+	result, err := c.CallWithContext(ctx, MethodGetSolutions, []interface{}{domainID, marker})
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +34,7 @@ func (c *Client) GetSolutions(ctx context.Context, domainID, marker interface{})
 
 // GetStampsets retrieves original stamp sets for a domain.
 func (c *Client) GetStampsets(ctx context.Context, domainID interface{}) ([]RawItem, error) {
-	result, err := c.Call(MethodGetStampsets, []interface{}{domainID})
+	result, err := c.CallWithContext(ctx, MethodGetStampsets, []interface{}{domainID})
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +43,7 @@ func (c *Client) GetStampsets(ctx context.Context, domainID interface{}) ([]RawI
 
 // GetFlowNotificationBadges retrieves flow notification badges for a domain.
 func (c *Client) GetFlowNotificationBadges(ctx context.Context, domainID interface{}) ([]RawItem, error) {
-	result, err := c.Call(MethodGetFlowNotificationBadges, []interface{}{domainID})
+	result, err := c.CallWithContext(ctx, MethodGetFlowNotificationBadges, []interface{}{domainID})
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +52,7 @@ func (c *Client) GetFlowNotificationBadges(ctx context.Context, domainID interfa
 
 // GetDirectApps retrieves direct app payloads for a domain.
 func (c *Client) GetDirectApps(ctx context.Context, domainID interface{}) ([]RawItem, error) {
-	result, err := c.Call(MethodGetDirectApps, []interface{}{domainID})
+	result, err := c.CallWithContext(ctx, MethodGetDirectApps, []interface{}{domainID})
 	if err != nil {
 		return nil, err
 	}

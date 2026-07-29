@@ -72,7 +72,7 @@ type directClient interface {
 	OnMessage(func(direct.ReceivedMessage))
 	CreateTextMessageWithContext(context.Context, string, string) (string, error)
 	CreateUploadAuth(context.Context, string, string, int64, string) (*direct.UploadAuth, error)
-	Call(string, []interface{}) (interface{}, error)
+	CallWithContext(context.Context, string, []interface{}) (interface{}, error)
 	Done() <-chan struct{}
 }
 
@@ -396,8 +396,8 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 				AccountID: cfg.ID,
 				TalkID:    msg.TalkID,
 				UserID:    msg.UserID,
-				UserName:  worker.names.userName(client, msg.DomainID, msg.UserID, msg.TalkID, logger, cfg.ID),
-				RoomName:  worker.names.roomName(client, msg.TalkID, logger, cfg.ID),
+				UserName:  worker.names.userName(ctx, client, msg.DomainID, msg.UserID, msg.TalkID, logger, cfg.ID),
+				RoomName:  worker.names.roomName(ctx, client, msg.TalkID, logger, cfg.ID),
 				Text:      msg.Text,
 				MessageID: msg.ID,
 				CreatedAt: messageTime(msg),
@@ -444,7 +444,7 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 			continue
 		}
 		logger.Printf("[%s] connected", cfg.ID)
-		selfUserID := directSelfUserID(client)
+		selfUserID := directSelfUserID(ctx, client)
 		if selfUserID == "" {
 			logger.Printf("[%s] direct self user id unavailable; read reactions will ignore self-read filtering", cfg.ID)
 		}
@@ -457,7 +457,7 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 		for !disconnected {
 			if pending != nil {
 				if selfUserID == "" {
-					selfUserID = directSelfUserID(client)
+					selfUserID = directSelfUserID(ctx, client)
 				}
 				messageID, err := sendDirect(ctx, client, *pending)
 				if err != nil {
@@ -526,7 +526,7 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 				disconnected = true
 			case <-readyNow:
 				if selfUserID == "" {
-					selfUserID = directSelfUserID(client)
+					selfUserID = directSelfUserID(ctx, client)
 				}
 				backoff = time.Second
 			case msg := <-in:
@@ -555,12 +555,12 @@ func newNameResolver() *nameResolver {
 	}
 }
 
-func (r *nameResolver) userName(client directClient, domainID, userID, talkID string, logger *log.Logger, accountID string) string {
+func (r *nameResolver) userName(ctx context.Context, client directClient, domainID, userID, talkID string, logger *log.Logger, accountID string) string {
 	if userID == "" {
 		return ""
 	}
 	if domainID == "" && talkID != "" {
-		domainID = r.roomInfo(client, talkID, logger, accountID).domainID
+		domainID = r.roomInfo(ctx, client, talkID, logger, accountID).domainID
 	}
 	if domainID == "" {
 		logger.Printf("[%s] direct user name lookup skipped without domain: talk=%s user=%s", accountID, talkID, userID)
@@ -574,7 +574,7 @@ func (r *nameResolver) userName(client directClient, domainID, userID, talkID st
 		return name
 	}
 
-	result, err := client.Call(direct.MethodGetUsers, []interface{}{normalizeRPCID(domainID), []interface{}{normalizeRPCID(userID)}})
+	result, err := client.CallWithContext(ctx, direct.MethodGetUsers, []interface{}{normalizeRPCID(domainID), []interface{}{normalizeRPCID(userID)}})
 	if err != nil {
 		logger.Printf("[%s] direct user name lookup failed: domain=%s user=%s err=%v", accountID, domainID, userID, err)
 		return ""
@@ -586,11 +586,11 @@ func (r *nameResolver) userName(client directClient, domainID, userID, talkID st
 	return name
 }
 
-func (r *nameResolver) roomName(client directClient, talkID string, logger *log.Logger, accountID string) string {
-	return r.roomInfo(client, talkID, logger, accountID).name
+func (r *nameResolver) roomName(ctx context.Context, client directClient, talkID string, logger *log.Logger, accountID string) string {
+	return r.roomInfo(ctx, client, talkID, logger, accountID).name
 }
 
-func (r *nameResolver) roomInfo(client directClient, talkID string, logger *log.Logger, accountID string) directRoomInfo {
+func (r *nameResolver) roomInfo(ctx context.Context, client directClient, talkID string, logger *log.Logger, accountID string) directRoomInfo {
 	if talkID == "" {
 		return directRoomInfo{}
 	}
@@ -601,7 +601,7 @@ func (r *nameResolver) roomInfo(client directClient, talkID string, logger *log.
 		return info
 	}
 
-	result, err := client.Call(direct.MethodGetTalks, []interface{}{})
+	result, err := client.CallWithContext(ctx, direct.MethodGetTalks, []interface{}{})
 	if err != nil {
 		logger.Printf("[%s] direct room name lookup failed: talk=%s err=%v", accountID, talkID, err)
 		return directRoomInfo{}
@@ -756,8 +756,8 @@ func isRecoverableDirectError(err error) bool {
 	return errors.As(err, &connErr)
 }
 
-func directSelfUserID(client directClient) string {
-	result, err := client.Call(direct.MethodGetMe, []interface{}{})
+func directSelfUserID(ctx context.Context, client directClient) string {
+	result, err := client.CallWithContext(ctx, direct.MethodGetMe, []interface{}{})
 	if err != nil {
 		return ""
 	}
@@ -790,14 +790,14 @@ func sendDirect(ctx context.Context, client directClient, msg model.DirectOutbou
 		files = append(files, fileInfo)
 	}
 	if len(files) == 1 && msg.Text == "" {
-		result, err := client.Call(direct.MethodCreateMessage, []interface{}{normalizeTalkID(msg.TalkID), direct.MsgTypeFile, files[0]})
+		result, err := client.CallWithContext(ctx, direct.MethodCreateMessage, []interface{}{normalizeTalkID(msg.TalkID), direct.MsgTypeFile, files[0]})
 		return directMessageID(result), err
 	}
 	content := map[string]interface{}{"files": files}
 	if msg.Text != "" {
 		content["text"] = msg.Text
 	}
-	result, err := client.Call(direct.MethodCreateMessage, []interface{}{normalizeTalkID(msg.TalkID), direct.MsgTypeTextMultipleFile, content})
+	result, err := client.CallWithContext(ctx, direct.MethodCreateMessage, []interface{}{normalizeTalkID(msg.TalkID), direct.MsgTypeTextMultipleFile, content})
 	return directMessageID(result), err
 }
 

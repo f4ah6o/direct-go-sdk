@@ -3,10 +3,12 @@ package direct
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"pgregory.net/rapid"
 
 	"github.com/f4ah6o/direct-go-sdk/direct-go/testutil"
@@ -180,6 +182,143 @@ func TestClientRPCError(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error, got nil")
 	}
+}
+
+func TestCallWithContextPreCanceledDoesNotSendRequest(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+	mockServer.OnSimple("ping", true)
+
+	client := NewClient(Options{Endpoint: mockServer.URL()})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close()
+	if _, err := client.Call("ping", []interface{}{}); err != nil {
+		t.Fatalf("connection synchronization call failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	started := time.Now()
+	_, err := client.GetMeWithContext(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("pre-canceled call took %v", elapsed)
+	}
+	if got := mockServer.GetCallCount("get_me"); got != 0 {
+		t.Fatalf("pre-canceled call sent get_me %d times", got)
+	}
+
+	client.mu.RLock()
+	defer client.mu.RUnlock()
+	if got := len(client.responseHandlers); got != 0 {
+		t.Fatalf("response handlers after pre-canceled call = %d, want 0", got)
+	}
+}
+
+func TestCallWithContextDeadlineCleansUpHandler(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	mockServer.On("get_me", func(params []interface{}) (interface{}, error) {
+		close(started)
+		<-release
+		close(finished)
+		return map[string]interface{}{"id": "user123"}, nil
+	})
+
+	client := NewClient(Options{Endpoint: mockServer.URL()})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := client.CallWithContext(ctx, "get_me", []interface{}{})
+		errCh <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("mock server did not receive get_me")
+	}
+
+	err := <-errCh
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context.DeadlineExceeded", err)
+	}
+	client.mu.RLock()
+	handlerCount := len(client.responseHandlers)
+	client.mu.RUnlock()
+	if handlerCount != 0 {
+		t.Fatalf("response handlers after deadline = %d, want 0", handlerCount)
+	}
+
+	close(release)
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("mock server handler did not finish")
+	}
+}
+
+func TestCallWithContextPropagatesTraceParent(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+	mockServer.OnSimple("get_me", map[string]interface{}{"id": "user123"})
+
+	provider := &recordingTracerProvider{}
+	client := NewClient(Options{Endpoint: mockServer.URL(), TracerProvider: provider})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close()
+
+	parent := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    trace.TraceID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+		SpanID:     trace.SpanID{1, 2, 3, 4, 5, 6, 7, 8},
+		TraceFlags: trace.FlagsSampled,
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), parent)
+	if _, err := client.GetMeWithContext(ctx); err != nil {
+		t.Fatalf("GetMeWithContext failed: %v", err)
+	}
+	got := provider.parent
+	if got.TraceID() != parent.TraceID() || got.SpanID() != parent.SpanID() || got.TraceFlags() != parent.TraceFlags() {
+		t.Fatalf("trace parent = %v, want %v", got, parent)
+	}
+}
+
+type recordingTracerProvider struct {
+	trace.TracerProvider
+	parent trace.SpanContext
+}
+
+func (p *recordingTracerProvider) Tracer(name string, options ...trace.TracerOption) trace.Tracer {
+	return &recordingTracer{
+		Tracer: trace.NewNoopTracerProvider().Tracer(name, options...),
+		parent: &p.parent,
+	}
+}
+
+type recordingTracer struct {
+	trace.Tracer
+	parent *trace.SpanContext
+}
+
+func (t *recordingTracer) Start(ctx context.Context, name string, options ...trace.SpanStartOption) (context.Context, trace.Span) {
+	*t.parent = trace.SpanFromContext(ctx).SpanContext()
+	return t.Tracer.Start(ctx, name, options...)
 }
 
 func TestGetMeWithContext(t *testing.T) {

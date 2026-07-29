@@ -32,7 +32,7 @@ type AnnouncementStatus struct {
 // Returns the created Announcement with its ID and metadata.
 func (c *Client) CreateAnnouncement(ctx context.Context, domainID interface{}, title, text string, targetUserIDs []interface{}) (*Announcement, error) {
 	params := []interface{}{domainID, title, text, targetUserIDs}
-	result, err := c.Call(MethodCreateAnnouncement, params)
+	result, err := c.CallWithContext(ctx, MethodCreateAnnouncement, params)
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +48,7 @@ func (c *Client) CreateAnnouncement(ctx context.Context, domainID interface{}, t
 // Returns a slice of Announcement objects with titles, text, and read status.
 func (c *Client) GetAnnouncements(ctx context.Context, domainID interface{}) ([]Announcement, error) {
 	params := []interface{}{domainID}
-	result, err := c.Call(MethodGetAnnouncements, params)
+	result, err := c.CallWithContext(ctx, MethodGetAnnouncements, params)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +69,7 @@ func (c *Client) GetAnnouncements(ctx context.Context, domainID interface{}) ([]
 // GetAnnouncementStatuses retrieves unread announcement counts for all domains.
 // Returns AnnouncementStatus with unread counts and latest announcement IDs per domain.
 func (c *Client) GetAnnouncementStatuses(ctx context.Context) ([]AnnouncementStatus, error) {
-	result, err := c.Call(MethodGetAnnouncementStatuses, []interface{}{})
+	result, err := c.CallWithContext(ctx, MethodGetAnnouncementStatuses, []interface{}{})
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +102,7 @@ func (c *Client) GetAnnouncementStatuses(ctx context.Context) ([]AnnouncementSta
 // UpdateAnnouncementStatus marks an announcement as read by the current user.
 func (c *Client) UpdateAnnouncementStatus(ctx context.Context, domainID, announcementID interface{}) error {
 	params := []interface{}{domainID, announcementID}
-	_, err := c.Call(MethodUpdateAnnouncementStatus, params)
+	_, err := c.CallWithContext(ctx, MethodUpdateAnnouncementStatus, params)
 	return err
 }
 

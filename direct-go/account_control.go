@@ -17,7 +17,7 @@ type AccountControlGroup struct {
 
 // GetAccountControlRequests retrieves pending account-control requests.
 func (c *Client) GetAccountControlRequests(ctx context.Context) ([]AccountControlRequest, error) {
-	result, err := c.Call(MethodGetAccountControlRequests, []interface{}{})
+	result, err := c.CallWithContext(ctx, MethodGetAccountControlRequests, []interface{}{})
 	if err != nil {
 		return nil, err
 	}
@@ -35,7 +35,7 @@ func (c *Client) GetAccountControlRequests(ctx context.Context) ([]AccountContro
 
 // GetJoinedAccountControlGroup retrieves account-control groups joined by the current user.
 func (c *Client) GetJoinedAccountControlGroup(ctx context.Context) ([]AccountControlGroup, error) {
-	result, err := c.Call(MethodGetJoinedAccountControlGroup, []interface{}{})
+	result, err := c.CallWithContext(ctx, MethodGetJoinedAccountControlGroup, []interface{}{})
 	if err != nil {
 		return nil, err
 	}
@@ -52,12 +52,12 @@ func (c *Client) GetJoinedAccountControlGroup(ctx context.Context) ([]AccountCon
 
 // AcceptAccountControlRequest accepts an account-control request by id and version.
 func (c *Client) AcceptAccountControlRequest(ctx context.Context, id, version interface{}) error {
-	_, err := c.Call(MethodAcceptAccountControlRequest, []interface{}{id, version})
+	_, err := c.CallWithContext(ctx, MethodAcceptAccountControlRequest, []interface{}{id, version})
 	return err
 }
 
 // RejectAccountControlRequest rejects an account-control request by id and version.
 func (c *Client) RejectAccountControlRequest(ctx context.Context, id, version interface{}) error {
-	_, err := c.Call(MethodRejectAccountControlRequest, []interface{}{id, version})
+	_, err := c.CallWithContext(ctx, MethodRejectAccountControlRequest, []interface{}{id, version})
 	return err
 }

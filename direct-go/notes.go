@@ -62,7 +62,7 @@ type UpdateNoteInput struct {
 
 // GetNoteStatuses retrieves note statuses for a talk.
 func (c *Client) GetNoteStatuses(ctx context.Context, domainID, talkID interface{}, limit int, marker interface{}) (*NoteStatusesResult, error) {
-	result, err := c.Call(MethodGetNoteStatuses, []interface{}{domainID, talkID, limit, marker})
+	result, err := c.CallWithContext(ctx, MethodGetNoteStatuses, []interface{}{domainID, talkID, limit, marker})
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +71,7 @@ func (c *Client) GetNoteStatuses(ctx context.Context, domainID, talkID interface
 
 // GetNote retrieves a note by ID. Compressed content is preserved as returned by the API.
 func (c *Client) GetNote(ctx context.Context, noteID interface{}) (*Note, error) {
-	result, err := c.Call(MethodGetNote, []interface{}{noteID})
+	result, err := c.CallWithContext(ctx, MethodGetNote, []interface{}{noteID})
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +80,7 @@ func (c *Client) GetNote(ctx context.Context, noteID interface{}) (*Note, error)
 
 // GetNoteDecompressed retrieves a note and expands rich_text_compressed content when present.
 func (c *Client) GetNoteDecompressed(ctx context.Context, noteID interface{}) (*Note, error) {
-	result, err := c.Call(MethodGetNote, []interface{}{noteID})
+	result, err := c.CallWithContext(ctx, MethodGetNote, []interface{}{noteID})
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +110,7 @@ func (c *Client) CreateNoteRaw(ctx context.Context, talkID interface{}, input Cr
 	if input.CreateMessage != nil {
 		createMessage = *input.CreateMessage
 	}
-	result, err := c.Call(MethodCreateNote, []interface{}{talkID, input.Title, input.ContentType, content, createMessage})
+	result, err := c.CallWithContext(ctx, MethodCreateNote, []interface{}{talkID, input.Title, input.ContentType, content, createMessage})
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +136,7 @@ func (c *Client) UpdateNoteRaw(ctx context.Context, noteID, currentRevision inte
 	if input.NotifyTalkMembersOfUpdate != nil {
 		notifyTalkMembers = *input.NotifyTalkMembersOfUpdate
 	}
-	result, err := c.Call(MethodUpdateNote, []interface{}{noteID, currentRevision, input.Title, input.ContentType, content, notifyTalkMembers})
+	result, err := c.CallWithContext(ctx, MethodUpdateNote, []interface{}{noteID, currentRevision, input.Title, input.ContentType, content, notifyTalkMembers})
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +145,7 @@ func (c *Client) UpdateNoteRaw(ctx context.Context, noteID, currentRevision inte
 
 // UpdateNoteSetting updates note settings by note ID and version.
 func (c *Client) UpdateNoteSetting(ctx context.Context, noteID, setting, version interface{}) (*Note, error) {
-	result, err := c.Call(MethodUpdateNoteSetting, []interface{}{noteID, setting, version})
+	result, err := c.CallWithContext(ctx, MethodUpdateNoteSetting, []interface{}{noteID, setting, version})
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +154,7 @@ func (c *Client) UpdateNoteSetting(ctx context.Context, noteID, setting, version
 
 // DeleteNote deletes a note by ID.
 func (c *Client) DeleteNote(ctx context.Context, noteID interface{}) (*DeletedNote, error) {
-	result, err := c.Call(MethodDeleteNote, []interface{}{noteID})
+	result, err := c.CallWithContext(ctx, MethodDeleteNote, []interface{}{noteID})
 	if err != nil {
 		return nil, err
 	}
@@ -168,13 +168,13 @@ func (c *Client) DeleteNote(ctx context.Context, noteID interface{}) (*DeletedNo
 
 // LockNote locks a note by ID and version.
 func (c *Client) LockNote(ctx context.Context, noteID, version interface{}) error {
-	_, err := c.Call(MethodLockNote, []interface{}{noteID, version})
+	_, err := c.CallWithContext(ctx, MethodLockNote, []interface{}{noteID, version})
 	return err
 }
 
 // UnlockNote unlocks a note by ID and version.
 func (c *Client) UnlockNote(ctx context.Context, noteID, version interface{}) error {
-	_, err := c.Call(MethodUnlockNote, []interface{}{noteID, version})
+	_, err := c.CallWithContext(ctx, MethodUnlockNote, []interface{}{noteID, version})
 	return err
 }
 

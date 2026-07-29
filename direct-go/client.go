@@ -7,6 +7,7 @@ package direct
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -546,12 +547,37 @@ func (c *Client) call(method string, params []interface{}, onSuccess func(interf
 // Returns the result on success, or an error on failure or timeout.
 // Returns ErrNotConnected if the client is not connected.
 // Returns ErrTimeout if the request times out.
+//
+// Deprecated: Use CallWithContext to control cancellation and deadlines.
 func (c *Client) Call(method string, params []interface{}) (interface{}, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultRequestTimeout)
+	defer cancel()
+
+	result, err := c.CallWithContext(ctx, method, params)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return nil, fmt.Errorf("RPC error: %w", ErrTimeout)
+	}
+	return result, err
+}
+
+// CallWithContext sends a synchronous RPC request using the supplied context.
+// Cancellation and deadlines stop waiting for the response and remove the
+// request handler so a late response cannot be delivered to a canceled call.
+// The span created for the RPC inherits the caller's context.
+func (c *Client) CallWithContext(ctx context.Context, method string, params []interface{}) (interface{}, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	start := time.Now()
 	c.mu.RLock()
 	tracer := c.tracer
+	metrics := c.metrics
 	c.mu.RUnlock()
-	_, span := tracer.Start(context.Background(), "direct.rpc", trace.WithAttributes(attribute.String("rpc.system", "direct"), attribute.String("rpc.method", method)))
+	_, span := tracer.Start(ctx, "direct.rpc", trace.WithAttributes(attribute.String("rpc.system", "direct"), attribute.String("rpc.method", method)))
 	defer span.End()
 	resultCh := make(chan interface{}, DefaultResultChannelSize)
 	errCh := make(chan interface{}, DefaultResultChannelSize)
@@ -564,27 +590,26 @@ func (c *Client) Call(method string, params []interface{}) (interface{}, error) 
 
 	select {
 	case result := <-resultCh:
-		c.metrics.RecordRequest(method, time.Since(start))
+		metrics.RecordRequest(method, time.Since(start))
 		span.SetStatus(codes.Ok, "")
 		return result, nil
 	case err := <-errCh:
 		rpcErr := fmt.Errorf("RPC error: %v", err)
-		c.metrics.RecordError(method, rpcErr)
+		metrics.RecordError(method, rpcErr)
 		span.RecordError(rpcErr)
 		span.SetStatus(codes.Error, rpcErr.Error())
 		return nil, rpcErr
-	case <-time.After(DefaultRequestTimeout):
-		// Clean up the handler on timeout
+	case <-ctx.Done():
+		err := ctx.Err()
 		if msgID != 0 {
 			c.mu.Lock()
 			delete(c.responseHandlers, msgID)
 			c.mu.Unlock()
 		}
-		rpcErr := fmt.Errorf("RPC error: %w", ErrTimeout)
-		c.metrics.RecordError(method, ErrTimeout)
-		span.RecordError(rpcErr)
-		span.SetStatus(codes.Error, rpcErr.Error())
-		return nil, rpcErr
+		metrics.RecordError(method, err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
 	}
 }
 
@@ -897,7 +922,7 @@ func (c *Client) emit(event string, data interface{}) {
 // Each Talk contains room metadata including participants, type (pair/group), and settings.
 // This is the preferred method over the legacy GetTalks().
 func (c *Client) GetTalksWithContext(ctx context.Context) ([]Talk, error) {
-	result, err := c.Call(MethodGetTalks, []interface{}{})
+	result, err := c.CallWithContext(ctx, MethodGetTalks, []interface{}{})
 	if err != nil {
 		return nil, err
 	}
@@ -918,7 +943,7 @@ func (c *Client) GetTalksWithContext(ctx context.Context) ([]Talk, error) {
 // GetTalkStatusesWithContext retrieves the status of all talks with context support.
 // Status includes unread count and latest message ID for each talk.
 func (c *Client) GetTalkStatusesWithContext(ctx context.Context) ([]TalkStatus, error) {
-	result, err := c.Call(MethodGetTalkStatuses, []interface{}{})
+	result, err := c.CallWithContext(ctx, MethodGetTalkStatuses, []interface{}{})
 	if err != nil {
 		return nil, err
 	}
@@ -949,7 +974,7 @@ func (c *Client) GetTalkStatusesWithContext(ctx context.Context) ([]TalkStatus, 
 // Returns user information including display name, email, status, and other profile details.
 // This is the preferred method over the legacy GetMe().
 func (c *Client) GetMeWithContext(ctx context.Context) (*UserInfo, error) {
-	result, err := c.Call(MethodGetMe, []interface{}{})
+	result, err := c.CallWithContext(ctx, MethodGetMe, []interface{}{})
 	if err != nil {
 		return nil, err
 	}
@@ -977,7 +1002,7 @@ func (c *Client) CreateTextMessageWithContext(ctx context.Context, roomID string
 	if id, err := strconv.ParseUint(roomID, 10, 64); err == nil {
 		talkID = id
 	}
-	result, err := c.Call(MethodCreateMessage, []interface{}{talkID, 1, text})
+	result, err := c.CallWithContext(ctx, MethodCreateMessage, []interface{}{talkID, 1, text})
 	if err != nil {
 		return "", err
 	}

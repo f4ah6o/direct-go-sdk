@@ -27,7 +27,7 @@ type DomainInviteInfo struct {
 // Returns DomainInfo with domain names, settings, user roles, and contract details.
 // This replaces the legacy GetDomains() method.
 func (c *Client) GetDomainsWithContext(ctx context.Context) ([]DomainInfo, error) {
-	result, err := c.Call(MethodGetDomains, []interface{}{})
+	result, err := c.CallWithContext(ctx, MethodGetDomains, []interface{}{})
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +49,7 @@ func (c *Client) GetDomainsWithContext(ctx context.Context) ([]DomainInfo, error
 // Returns DomainInviteInfo with invitation IDs, domain names, and timestamps.
 // This replaces the legacy GetDomainInvites() method.
 func (c *Client) GetDomainInvitesWithContext(ctx context.Context) ([]DomainInviteInfo, error) {
-	result, err := c.Call(MethodGetDomainInvites, []interface{}{})
+	result, err := c.CallWithContext(ctx, MethodGetDomainInvites, []interface{}{})
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +72,7 @@ func (c *Client) GetDomainInvitesWithContext(ctx context.Context) ([]DomainInvit
 // This replaces the legacy AcceptDomainInvite() method.
 func (c *Client) AcceptDomainInviteWithContext(ctx context.Context, inviteID interface{}) (*DomainInfo, error) {
 	params := []interface{}{inviteID}
-	result, err := c.Call(MethodAcceptDomainInvite, params)
+	result, err := c.CallWithContext(ctx, MethodAcceptDomainInvite, params)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +88,7 @@ func (c *Client) AcceptDomainInviteWithContext(ctx context.Context, inviteID int
 // LeaveDomain removes the current user from the specified domain/organization.
 func (c *Client) LeaveDomain(ctx context.Context, domainID interface{}) error {
 	params := []interface{}{domainID}
-	_, err := c.Call(MethodLeaveDomain, params)
+	_, err := c.CallWithContext(ctx, MethodLeaveDomain, params)
 	return err
 }
 
@@ -96,7 +96,7 @@ func (c *Client) LeaveDomain(ctx context.Context, domainID interface{}) error {
 // Returns a slice of UserInfo with user profiles, departments, and permissions.
 func (c *Client) GetDomainUsers(ctx context.Context, domainID interface{}) ([]UserInfo, error) {
 	params := []interface{}{domainID}
-	result, err := c.Call(MethodGetDomainUsers, params)
+	result, err := c.CallWithContext(ctx, MethodGetDomainUsers, params)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +118,7 @@ func (c *Client) GetDomainUsers(ctx context.Context, domainID interface{}) ([]Us
 // The query matches against user names, display names, and email addresses.
 func (c *Client) SearchDomainUsers(ctx context.Context, domainID interface{}, query string) ([]UserInfo, error) {
 	params := []interface{}{domainID, query}
-	result, err := c.Call(MethodSearchDomainUsers, params)
+	result, err := c.CallWithContext(ctx, MethodSearchDomainUsers, params)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +139,7 @@ func (c *Client) SearchDomainUsers(ctx context.Context, domainID interface{}, qu
 // DeleteDomainInvite rejects and deletes a pending domain invitation.
 func (c *Client) DeleteDomainInvite(ctx context.Context, inviteID interface{}) error {
 	params := []interface{}{inviteID}
-	_, err := c.Call(MethodDeleteDomainInvite, params)
+	_, err := c.CallWithContext(ctx, MethodDeleteDomainInvite, params)
 	return err
 }
 

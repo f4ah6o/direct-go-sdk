@@ -30,7 +30,7 @@ type DepartmentUserCount struct {
 // Returns DepartmentTree with nested departments, parent-child relationships, and user counts.
 func (c *Client) GetDepartmentTree(ctx context.Context, domainID interface{}) (*DepartmentTree, error) {
 	params := []interface{}{domainID}
-	result, err := c.Call(MethodGetDepartmentTree, params)
+	result, err := c.CallWithContext(ctx, MethodGetDepartmentTree, params)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +72,7 @@ func (c *Client) GetDepartmentTree(ctx context.Context, domainID interface{}) (*
 // Returns a slice of UserInfo with user profiles and metadata.
 func (c *Client) GetDepartmentUsers(ctx context.Context, domainID, departmentID interface{}) ([]UserInfo, error) {
 	params := []interface{}{domainID, departmentID}
-	result, err := c.Call(MethodGetDepartmentUsers, params)
+	result, err := c.CallWithContext(ctx, MethodGetDepartmentUsers, params)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +94,7 @@ func (c *Client) GetDepartmentUsers(ctx context.Context, domainID, departmentID 
 // Returns DepartmentUserCount with total and partial counts for each department.
 func (c *Client) GetDepartmentUserCount(ctx context.Context, domainID interface{}) ([]DepartmentUserCount, error) {
 	params := []interface{}{domainID}
-	result, err := c.Call(MethodGetDepartmentUserCount, params)
+	result, err := c.CallWithContext(ctx, MethodGetDepartmentUserCount, params)
 	if err != nil {
 		return nil, err
 	}
