@@ -79,6 +79,11 @@ type Options struct {
 	// Name is the bot name, used in log messages for debugging.
 	Name string
 
+	// MessageChannelSize controls the bounded Messages channel buffer.
+	// If zero or negative, DefaultMessageChannelSize is used. Incoming message
+	// delivery blocks when this buffer is full until the connection closes.
+	MessageChannelSize int
+
 	// TracerProvider is an optional OpenTelemetry tracer provider used to create
 	// spans for RPC calls. If nil, the global OpenTelemetry tracer provider is used.
 	TracerProvider trace.TracerProvider
@@ -165,6 +170,10 @@ func NewClient(opts Options) *Client {
 			opts.Host = u.Host
 		}
 	}
+	messageChannelSize := opts.MessageChannelSize
+	if messageChannelSize <= 0 {
+		messageChannelSize = DefaultMessageChannelSize
+	}
 
 	tracerProvider := opts.TracerProvider
 	if tracerProvider == nil {
@@ -176,7 +185,7 @@ func NewClient(opts Options) *Client {
 		handlers:         make(map[string][]EventHandler),
 		responseHandlers: make(map[int64]*ResponseHandler),
 		talkDomains:      make(map[string]string),
-		Messages:         make(chan ReceivedMessage, DefaultMessageChannelSize),
+		Messages:         make(chan ReceivedMessage, messageChannelSize),
 		Done:             make(chan struct{}),
 		metrics:          &NoopMetrics{},
 		tracer:           tracerProvider.Tracer(instrumentationName),
@@ -619,7 +628,8 @@ func (c *Client) On(event string, handler EventHandler) {
 
 // OnMessage registers a callback for incoming messages.
 // The handler runs in a separate goroutine for each message and remains
-// registered across reconnects.
+// registered across reconnects. Callback panics are recovered and written to
+// the debug log; a panicking callback does not stop message delivery.
 func (c *Client) OnMessage(handler func(ReceivedMessage)) {
 	c.mu.Lock()
 	c.messageHandlers = append(c.messageHandlers, handler)
@@ -983,15 +993,49 @@ func (c *Client) handleMessageNotification(conn *websocket.Conn, data interface{
 		handlers := append([]func(ReceivedMessage){}, c.messageHandlers...)
 		c.mu.RUnlock()
 		for _, handler := range handlers {
-			go handler(msg)
+			go c.runMessageHandler(handler, msg)
 		}
 
+		done := c.connectionDone(conn)
+		if done == nil {
+			c.recordMessageDrop("connection_closed")
+			dlog("[DEBUG] Message delivery canceled: connection is no longer active")
+			return
+		}
 		select {
 		case c.Messages <- msg:
-		default:
-			// Channel full, drop message
+		case <-done:
+			c.recordMessageDrop("connection_closed")
+			dlog("[DEBUG] Message delivery canceled during connection shutdown")
 		}
 	}
+}
+
+func (c *Client) connectionDone(conn *websocket.Conn) <-chan struct{} {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.conn != conn || c.closed {
+		return nil
+	}
+	return c.connDone
+}
+
+func (c *Client) recordMessageDrop(reason string) {
+	c.mu.RLock()
+	metrics := c.metrics
+	c.mu.RUnlock()
+	if messageMetrics, ok := metrics.(MessageMetrics); ok {
+		messageMetrics.RecordMessageDrop(reason)
+	}
+}
+
+func (c *Client) runMessageHandler(handler func(ReceivedMessage), msg ReceivedMessage) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			dlog("[DEBUG] OnMessage handler panicked: %v", recovered)
+		}
+	}()
+	handler(msg)
 }
 
 // parseMessage converts a raw notification to a ReceivedMessage.

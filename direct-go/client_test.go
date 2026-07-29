@@ -483,6 +483,125 @@ func TestClientFailedAuthenticationCanRetry(t *testing.T) {
 	}
 }
 
+func TestMessageDeliveryFanoutBackpressureAndShutdown(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+	mockServer.OnSimple("ping", true)
+
+	drops := make(chan string, 1)
+	metrics := &messageDropMetrics{drops: drops}
+	client := NewClient(Options{
+		Endpoint:           mockServer.URL(),
+		MessageChannelSize: 1,
+	})
+	client.SetMetrics(metrics)
+	if cap(client.Messages) != 1 {
+		t.Fatalf("message channel capacity = %d, want 1", cap(client.Messages))
+	}
+
+	firstHandler := make(chan string, 2)
+	secondHandler := make(chan string, 2)
+	client.OnMessage(func(msg ReceivedMessage) {
+		firstHandler <- msg.ID
+	})
+	client.OnMessage(func(msg ReceivedMessage) {
+		secondHandler <- msg.ID
+	})
+	client.OnMessage(func(msg ReceivedMessage) {
+		panic("handler failure")
+	})
+
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close()
+	if _, err := client.Call("ping", []interface{}{}); err != nil {
+		t.Fatalf("connection synchronization call failed: %v", err)
+	}
+
+	client.mu.RLock()
+	conn := client.conn
+	client.mu.RUnlock()
+	if conn == nil {
+		t.Fatal("client connection is nil")
+	}
+
+	client.handleMessageNotification(conn, map[string]interface{}{
+		"message_id": "first",
+		"talk_id":    "talk-1",
+		"content":    "one",
+	})
+	if got := <-firstHandler; got != "first" {
+		t.Fatalf("first handler message = %q, want first", got)
+	}
+	if got := <-secondHandler; got != "first" {
+		t.Fatalf("second handler message = %q, want first", got)
+	}
+	if got := len(client.Messages); got != 1 {
+		t.Fatalf("channel length after first message = %d, want 1", got)
+	}
+
+	deliveryDone := make(chan struct{})
+	go func() {
+		client.handleMessageNotification(conn, map[string]interface{}{
+			"message_id": "second",
+			"talk_id":    "talk-1",
+			"content":    "two",
+		})
+		close(deliveryDone)
+	}()
+	if got := <-firstHandler; got != "second" {
+		t.Fatalf("first handler message = %q, want second", got)
+	}
+	if got := <-secondHandler; got != "second" {
+		t.Fatalf("second handler message = %q, want second", got)
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- client.Close()
+	}()
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close blocked on a full message channel")
+	}
+	select {
+	case <-deliveryDone:
+	case <-time.After(time.Second):
+		t.Fatal("message delivery did not stop after connection shutdown")
+	}
+	select {
+	case reason := <-drops:
+		if reason != "connection_closed" {
+			t.Fatalf("message drop reason = %q, want connection_closed", reason)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled message delivery was not observable")
+	}
+
+	if got := (<-client.Messages).ID; got != "first" {
+		t.Fatalf("channel message = %q, want first", got)
+	}
+	select {
+	case msg := <-client.Messages:
+		t.Fatalf("second message unexpectedly reached channel: %q", msg.ID)
+	default:
+	}
+}
+
+type messageDropMetrics struct {
+	NoopMetrics
+	drops chan<- string
+}
+
+func (m *messageDropMetrics) RecordMessageDrop(reason string) {
+	m.drops <- reason
+}
+
 type recordingTracerProvider struct {
 	trace.TracerProvider
 	parent trace.SpanContext

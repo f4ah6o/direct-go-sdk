@@ -53,6 +53,18 @@ func main() {
 }
 ```
 
+## メッセージ受信
+
+`OnMessage` の callback と `Client.Messages` channel は独立した配信先です。
+`OnMessage` を登録しても `Messages` の受信を消費しません。
+
+`Messages` は `Options.MessageChannelSize`（未指定時は100）の bounded channel です。
+channel が満杯になると、受信ループは接続終了まで backpressure を適用します。
+`Close` または接続断では待機中の配信をキャンセルし、実装する `MessageMetrics` に drop 理由 `connection_closed` を通知します。
+再接続可能な client の lifetime channel のため、`Messages` 自体は `Close` で閉じません。
+channel consumer は `Done` と組み合わせて終了を検知してください。
+callback はメッセージごとに別 goroutine で実行され、panic は debug log へ記録されます。
+
 ## リリース
 
 Git tag を使用してバージョン管理します：

@@ -15,6 +15,7 @@ func TestNewOpenTelemetryMetrics(t *testing.T) {
 	metrics.RecordRequest(MethodGetMe, time.Millisecond)
 	metrics.RecordError(MethodGetMe, errors.New("boom"))
 	metrics.RecordConnectionState("connected")
+	metrics.RecordMessageDrop("connection_closed")
 }
 
 func TestSetMetricsNilUsesNoop(t *testing.T) {
