@@ -1,6 +1,7 @@
 package teams
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log"
@@ -119,6 +120,117 @@ func TestThreadReplyCommandForwardsToDirect(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for direct outbound")
 	}
+}
+
+func TestCodexQuestionAliasRoutesToCodex(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/state.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutChannelBinding(store.TeamsChannelBinding{Alias: "codex-question", ConversationID: "question-conversation"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := &fakeCodexHandler{question: make(chan CodexActivity, 1), answer: make(chan CodexActivity, 1)}
+	s := &Server{
+		cfg: &config.Config{Codex: config.CodexConfig{
+			Enabled:       true,
+			QuestionAlias: "codex-question",
+			AnswerAlias:   "codex-answer",
+		}},
+		store:  st,
+		codex:  handler,
+		client: NewClient(config.BotConfig{AppPassword: "secret"}),
+		logger: discardLogger(),
+	}
+	s.processActivity(t.Context(), Activity{
+		Type:       "message",
+		ID:         "activity-id",
+		ServiceURL: "https://service.example",
+		Text:       `<at>direct</at> help me`,
+		From:       ChannelAccount{ID: "teams-user", Name: "Teams User"},
+		Recipient:  ChannelAccount{ID: "direct-bot", Name: "direct"},
+		Conversation: ConversationAccount{
+			ID: "question-conversation",
+		},
+		ChannelData: ChannelData{Channel: ChannelInfo{ID: "question-conversation"}},
+		Entities: []Entity{{
+			Type:      "mention",
+			Text:      "<at>direct</at>",
+			Mentioned: ChannelAccount{ID: "direct-bot", Name: "direct"},
+		}},
+	})
+	select {
+	case got := <-handler.question:
+		if got.Text != "help me" || got.RootID != "activity-id" || got.ConversationID != "question-conversation" {
+			t.Fatalf("unexpected codex question: %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for codex question")
+	}
+}
+
+func TestCodexAnswerThreadRoutesWithoutMention(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/state.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutCodexMapping(store.CodexThreadMapping{
+		QuestionConversationID: "question-conversation",
+		QuestionRootID:         "question-root",
+		QuestionServiceURL:     "https://service.example",
+		AnswerConversationID:   "answer-conversation",
+		AnswerRootID:           "answer-root",
+		AnswerServiceURL:       "https://service.example",
+		CodexThreadID:          "thread-1",
+		Status:                 "awaiting_human",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := &fakeCodexHandler{question: make(chan CodexActivity, 1), answer: make(chan CodexActivity, 1)}
+	s := &Server{
+		cfg: &config.Config{Codex: config.CodexConfig{
+			Enabled:       true,
+			QuestionAlias: "codex-question",
+			AnswerAlias:   "codex-answer",
+		}},
+		store:  st,
+		codex:  handler,
+		client: NewClient(config.BotConfig{AppPassword: "secret"}),
+		logger: discardLogger(),
+	}
+	s.processActivity(t.Context(), Activity{
+		Type:       "message",
+		ID:         "answer-activity",
+		ServiceURL: "https://service.example",
+		Text:       "人間の回答です",
+		From:       ChannelAccount{ID: "teams-user", Name: "Teams User"},
+		Recipient:  ChannelAccount{ID: "direct-bot", Name: "direct"},
+		Conversation: ConversationAccount{
+			ID: "answer-conversation;messageid=answer-root",
+		},
+		ChannelData: ChannelData{Channel: ChannelInfo{ID: "answer-conversation"}},
+	})
+	select {
+	case got := <-handler.answer:
+		if got.Text != "人間の回答です" || got.RootID != "answer-root" || got.ConversationID != "answer-conversation" {
+			t.Fatalf("unexpected codex answer: %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for codex answer")
+	}
+}
+
+type fakeCodexHandler struct {
+	question chan CodexActivity
+	answer   chan CodexActivity
+}
+
+func (f *fakeCodexHandler) HandleQuestion(ctx context.Context, in CodexActivity) {
+	f.question <- in
+}
+
+func (f *fakeCodexHandler) HandleAnswer(ctx context.Context, in CodexActivity) {
+	f.answer <- in
 }
 
 func TestThreadUnknownCommandDoesNotForwardToDirect(t *testing.T) {

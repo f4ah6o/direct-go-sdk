@@ -60,6 +60,11 @@ func (c *Client) CreateRootThread(ctx context.Context, serviceURL string, bindin
 	return c.createConversation(ctx, serviceURL, binding.ConversationParameters(activity))
 }
 
+func (c *Client) CreateRootThreadText(ctx context.Context, serviceURL string, binding ChannelThreadBinding, text string) (string, error) {
+	activity := NewMessageActivity(text)
+	return c.createConversation(ctx, serviceURL, binding.ConversationParameters(activity))
+}
+
 func (c *Client) ReplyToThread(ctx context.Context, serviceURL, conversationID, rootID string, msg model.DirectMessage) (string, error) {
 	activity := NewMessageActivity(c.formatDirectReplyMessage(msg))
 	return c.sendActivity(ctx, serviceURL, teamsThreadConversationID(conversationID, rootID), "", activity)

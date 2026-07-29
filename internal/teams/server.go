@@ -29,6 +29,23 @@ type Server struct {
 	account    func(string) (config.AccountConfig, bool)
 	token      func(string) (string, bool)
 	health     func() (bool, interface{})
+	codex      CodexHandler
+}
+
+type CodexActivity struct {
+	ServiceURL     string
+	ConversationID string
+	RootID         string
+	ActivityID     string
+	Text           string
+	FromID         string
+	FromName       string
+	Attachments    []model.Attachment
+}
+
+type CodexHandler interface {
+	HandleQuestion(context.Context, CodexActivity)
+	HandleAnswer(context.Context, CodexActivity)
 }
 
 func NewServer(cfg *config.Config, client *Client, st *store.Store, out chan<- model.DirectOutbound, logger *log.Logger, opts ...func(*Server)) *Server {
@@ -87,6 +104,12 @@ func WithRuntimeLookups(hasChannel func(string) bool, account func(string) (conf
 		s.hasChannel = hasChannel
 		s.account = account
 		s.token = token
+	}
+}
+
+func WithCodexHandler(handler CodexHandler) func(*Server) {
+	return func(s *Server) {
+		s.codex = handler
 	}
 }
 
@@ -229,10 +252,16 @@ func (s *Server) processActivity(ctx context.Context, activity Activity) {
 		s.unbindChannel(ctx, alias, activity)
 		return
 	}
-	if s.handleCommand(ctx, activity) {
+	if s.handleCodexAnswerActivity(ctx, activity) {
 		return
 	}
 	if !MentionsRecipient(activity) {
+		return
+	}
+	if s.handleCodexActivity(ctx, activity) {
+		return
+	}
+	if s.handleCommand(ctx, activity) {
 		return
 	}
 	conversationID, rootID := threadReference(activity)
@@ -280,6 +309,90 @@ func (s *Server) processActivity(ctx context.Context, activity Activity) {
 	case s.out <- out:
 	case <-ctx.Done():
 	}
+}
+
+func (s *Server) handleCodexAnswerActivity(ctx context.Context, activity Activity) bool {
+	if s.codex == nil || s.cfg == nil || s.store == nil || !s.cfg.Codex.Enabled {
+		return false
+	}
+	conversationID, rootID := threadReference(activity)
+	if rootID == "" {
+		return false
+	}
+	if _, ok := s.store.GetCodexByAnswer(conversationID, rootID); !ok {
+		return false
+	}
+	in := CodexActivity{
+		ServiceURL:     activity.ServiceURL,
+		ConversationID: conversationID,
+		RootID:         rootID,
+		ActivityID:     activity.ID,
+		Text:           StripRecipientMention(activity),
+		FromID:         activity.From.ID,
+		FromName:       activity.From.Name,
+		Attachments:    s.attachmentsFromActivity(ctx, activity),
+	}
+	s.codex.HandleAnswer(ctx, in)
+	return true
+}
+
+func (s *Server) handleCodexActivity(ctx context.Context, activity Activity) bool {
+	if s.codex == nil || s.cfg == nil || s.store == nil || !s.cfg.Codex.Enabled {
+		return false
+	}
+	conversationID, rootID := threadReference(activity)
+	if rootID == "" {
+		rootID = activity.ID
+	}
+	bindingAlias := s.boundAliasForConversation(conversationID)
+	if bindingAlias == "" {
+		return false
+	}
+	in := CodexActivity{
+		ServiceURL:     activity.ServiceURL,
+		ConversationID: conversationID,
+		RootID:         rootID,
+		ActivityID:     activity.ID,
+		Text:           StripRecipientMention(activity),
+		FromID:         activity.From.ID,
+		FromName:       activity.From.Name,
+		Attachments:    s.attachmentsFromActivity(ctx, activity),
+	}
+	switch bindingAlias {
+	case s.cfg.Codex.QuestionAlias:
+		if !s.codexUserAllowed(activity.From.ID) {
+			_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "このユーザーは Codex bridge を利用できません。")
+			return true
+		}
+		s.codex.HandleQuestion(ctx, in)
+		return true
+	case s.cfg.Codex.AnswerAlias:
+		s.codex.HandleAnswer(ctx, in)
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) boundAliasForConversation(conversationID string) string {
+	for _, binding := range s.store.ListChannelBindings() {
+		if binding.ConversationID == conversationID {
+			return binding.Alias
+		}
+	}
+	return ""
+}
+
+func (s *Server) codexUserAllowed(userID string) bool {
+	if len(s.cfg.Codex.AllowedUserIDs) == 0 {
+		return true
+	}
+	for _, allowed := range s.cfg.Codex.AllowedUserIDs {
+		if allowed == userID {
+			return true
+		}
+	}
+	return false
 }
 
 func appendTeamsSenderName(text, displayName string) string {

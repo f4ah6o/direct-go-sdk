@@ -16,6 +16,8 @@ import (
 
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
 	appbridge "github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/bridge"
+	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/codex"
+	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/codexbridge"
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/config"
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/directworker"
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/model"
@@ -78,9 +80,17 @@ func runBridge(args []string, logger *log.Logger) error {
 	teamsClient := teams.NewClient(cfg.Bot, cfg.Server.PublicBaseURL, cfg.Attachments.FileProxyTTL)
 	directManager := directworker.NewManager(directToTeams, directReads, directSent, logger)
 	service := appbridge.NewService(runtimeState.Account, st, teamsClient, directManager, directToTeams, directReads, teamsToDirect, directSent, logger)
+	var codexHandler teams.CodexHandler
+	var codexClient *codex.Client
+	if cfg.Codex.Enabled {
+		codexClient = codex.NewClient(cfg.Codex, logger)
+		defer codexClient.Close()
+		codexHandler = codexbridge.NewService(cfg.Codex, st, teamsClient, codexClient, logger)
+	}
 	server := teams.NewServer(cfg, teamsClient, st, teamsToDirect, logger,
 		teams.WithRuntimeLookups(runtimeState.HasChannel, runtimeState.Account, runtimeState.Token),
 		teams.WithHealthCheck(func() (bool, interface{}) { return directManager.Healthy() }),
+		teams.WithCodexHandler(codexHandler),
 	)
 
 	directManager.Apply(ctx, runtimeState.DirectAccounts())
@@ -266,6 +276,14 @@ func staticConfigID(cfg *config.Config) string {
 		fmt.Sprint(cfg.Queues.DirectToTeams),
 		fmt.Sprint(cfg.Queues.TeamsToDirect),
 		cfg.Attachments.FileProxyTTL,
+		fmt.Sprint(cfg.Codex.Enabled),
+		cfg.Codex.Binary,
+		cfg.Codex.CWD,
+		cfg.Codex.Model,
+		cfg.Codex.QuestionAlias,
+		cfg.Codex.AnswerAlias,
+		strings.Join(cfg.Codex.AllowedUserIDs, ","),
+		cfg.Codex.BaseInstructions,
 	}, "\x00")
 }
 

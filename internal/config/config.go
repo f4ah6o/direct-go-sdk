@@ -14,6 +14,7 @@ type Config struct {
 	TeamsChannels TeamsChannels    `yaml:"teams_channels"`
 	Accounts      []AccountConfig  `yaml:"accounts"`
 	Bot           BotConfig        `yaml:"bot"`
+	Codex         CodexConfig      `yaml:"codex"`
 	State         StateConfig      `yaml:"state"`
 	Server        ServerConfig     `yaml:"server"`
 	Queues        QueueConfig      `yaml:"queues"`
@@ -110,6 +111,17 @@ type AttachmentConfig struct {
 	FileProxyTTL string `yaml:"file_proxy_ttl"`
 }
 
+type CodexConfig struct {
+	Enabled          bool     `yaml:"enabled"`
+	Binary           string   `yaml:"binary"`
+	CWD              string   `yaml:"cwd"`
+	Model            string   `yaml:"model"`
+	QuestionAlias    string   `yaml:"question_alias"`
+	AnswerAlias      string   `yaml:"answer_alias"`
+	AllowedUserIDs   []string `yaml:"allowed_user_ids"`
+	BaseInstructions string   `yaml:"base_instructions"`
+}
+
 func Load(path string) (*Config, error) {
 	cfg, err := LoadPartial(path)
 	if err != nil {
@@ -160,6 +172,15 @@ func (c *Config) Defaults() {
 	if c.Attachments.FileProxyTTL == "" {
 		c.Attachments.FileProxyTTL = "24h"
 	}
+	if c.Codex.Binary == "" {
+		c.Codex.Binary = "codex"
+	}
+	if c.Codex.QuestionAlias == "" {
+		c.Codex.QuestionAlias = "codex-question"
+	}
+	if c.Codex.AnswerAlias == "" {
+		c.Codex.AnswerAlias = "codex-answer"
+	}
 	if c.Bot.EndpointPath == "" {
 		c.Bot.EndpointPath = "/api/messages"
 	}
@@ -182,7 +203,7 @@ func (c *Config) Defaults() {
 }
 
 func (c *Config) Validate() error {
-	if len(c.Accounts) == 0 {
+	if len(c.Accounts) == 0 && !c.Codex.Enabled {
 		return errors.New("at least one account is required")
 	}
 	if len(c.TeamsChannels) == 0 {
@@ -200,6 +221,14 @@ func (c *Config) Validate() error {
 	for name := range c.TeamsChannels {
 		if strings.TrimSpace(name) == "" {
 			return errors.New("teams channel alias cannot be empty")
+		}
+	}
+	if c.Codex.Enabled {
+		if _, ok := c.TeamsChannels[c.Codex.QuestionAlias]; !ok {
+			return fmt.Errorf("codex.question_alias references unknown teams channel %q", c.Codex.QuestionAlias)
+		}
+		if _, ok := c.TeamsChannels[c.Codex.AnswerAlias]; !ok {
+			return fmt.Errorf("codex.answer_alias references unknown teams channel %q", c.Codex.AnswerAlias)
 		}
 	}
 	seen := map[string]bool{}

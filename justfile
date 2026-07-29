@@ -1,6 +1,7 @@
 set dotenv-load := false
 
 go := env_var_or_default("GO", env_var("HOME") + "/bin/go/bin/go")
+node_bin := env_var_or_default("NODE_BIN", env_var("HOME") + "/.nvm/versions/node/v24.12.0/bin")
 config := env_var_or_default("CONFIG", "config.yaml")
 account := env_var_or_default("DIRECT_ACCOUNT", "bot-trial")
 lookup_account := env_var_or_default("DIRECT_LOOKUP_ACCOUNT", "bot-trial2")
@@ -20,12 +21,12 @@ run config=config:
 
 # Run the bridge through opz, loading secrets from the configured 1Password item.
 run-op item=op_item config=config:
-    opz run {{ item }} -- go run ./cmd/direct-teams-bridge run --config {{ config }}
+    opz run {{ item }} -- env PATH="{{ env_var("HOME") }}/bin/go/bin:{{ node_bin }}:$PATH" {{ go }} run ./cmd/direct-teams-bridge run --config {{ config }}
 
 # Build the bridge, then run the binary through opz with 1Password secrets.
 run-op-bin item=op_item config=config:
     PATH="{{ env_var("HOME") }}/bin/go/bin:$PATH" {{ go }} build -o ./bin/direct-teams-bridge ./cmd/direct-teams-bridge
-    opz run {{ item }} -- ./bin/direct-teams-bridge run --config {{ config }}
+    opz run {{ item }} -- env PATH="{{ node_bin }}:$PATH" ./bin/direct-teams-bridge run --config {{ config }}
 
 # List Teams channel bindings.
 channels config=config:
