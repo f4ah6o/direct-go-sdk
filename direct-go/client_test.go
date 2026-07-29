@@ -29,7 +29,12 @@ func TestClientConnect(t *testing.T) {
 		"token":   "test-token",
 	})
 	mockServer.OnSimple("get_domains", []interface{}{})
-	mockServer.OnSimple("get_talks", []interface{}{})
+	mockServer.OnSimple("get_talks", []interface{}{
+		map[string]interface{}{
+			"id":        "talk-1",
+			"domain_id": "domain-1",
+		},
+	})
 	mockServer.OnSimple("get_talk_statuses", []interface{}{})
 	mockServer.OnSimple("start_notification", true)
 
@@ -40,8 +45,14 @@ func TestClientConnect(t *testing.T) {
 	}
 	defer client.Close()
 
-	// Give some time for session creation
-	time.Sleep(100 * time.Millisecond)
+	// Wait until notification startup has reached the final initialization RPC.
+	deadline := time.Now().Add(time.Second)
+	for mockServer.GetCallCount("start_notification") == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := mockServer.GetCallCount("start_notification"); got == 0 {
+		t.Fatal("start_notification was not called")
+	}
 
 	// Verify create_session was called
 	messages := mockServer.GetReceivedMessages()
@@ -60,6 +71,17 @@ func TestClientConnect(t *testing.T) {
 
 	if !foundCreateSession {
 		t.Error("create_session was not called")
+	}
+
+	if got := mockServer.GetCallCount("create_message"); got != 0 {
+		t.Fatalf("startup sent create_message %d times", got)
+	}
+
+	client.mu.RLock()
+	domainID := client.talkDomains["talk-1"]
+	client.mu.RUnlock()
+	if domainID != "domain-1" {
+		t.Fatalf("talk-domain cache = %q, want domain-1", domainID)
 	}
 }
 

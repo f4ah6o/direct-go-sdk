@@ -295,18 +295,10 @@ func (c *Client) startNotification() {
 		c.call("get_talks", []interface{}{}, func(result interface{}) {
 			dlog("[DEBUG] get_talks success: %d talks", countItems(result))
 
-			// Log talk details and cache talk->domain mapping
-			if talks, ok := result.([]interface{}); ok && len(talks) > 0 {
-				for i, talk := range talks {
+			// Cache talk->domain mappings needed by notification parsing.
+			if talks, ok := result.([]interface{}); ok {
+				for _, talk := range talks {
 					if talkMap, ok := talk.(map[string]interface{}); ok {
-						// Print all keys in the map
-						keys := make([]string, 0, len(talkMap))
-						for k := range talkMap {
-							keys = append(keys, k)
-						}
-						dlog("[DEBUG] Talk %d keys: %v", i, keys)
-						dlog("[DEBUG] Talk %d: %+v", i, talkMap)
-
 						// Cache talk_id -> domain_id mapping
 						var talkID, domainID string
 						if id, ok := talkMap["talk_id"]; ok {
@@ -323,31 +315,6 @@ func (c *Client) startNotification() {
 							c.mu.Unlock()
 							dlog("[DEBUG] Cached talk->domain: %s -> %s", talkID, domainID)
 						}
-					} else {
-						dlog("[DEBUG] Talk %d: unexpected type %T: %v", i, talk, talk)
-					}
-				}
-
-				// Try to send a test message to the first talk
-				if firstTalk, ok := talks[0].(map[string]interface{}); ok {
-					// Find the talk ID - might be "id" or encoded differently
-					var talkID interface{}
-					for k, v := range firstTalk {
-						dlog("[DEBUG] First talk field: %s = %v (type %T)", k, v, v)
-						if k == "id" || k == "talk_id" || k == "talkId" {
-							talkID = v
-						}
-					}
-
-					if talkID != nil {
-						dlog("[DEBUG] Sending test message to talk: %v", talkID)
-						c.call("create_message", []interface{}{}, func(result interface{}) {
-							dlog("[DEBUG] create_message success: %+v", result)
-						}, func(err interface{}) {
-							dlog("[DEBUG] create_message error: %+v", err)
-						})
-					} else {
-						dlog("[DEBUG] Could not find talk ID in first talk")
 					}
 				}
 			} else {
