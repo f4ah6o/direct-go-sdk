@@ -67,6 +67,7 @@ type AccountStatus struct {
 
 type directClient interface {
 	Connect() error
+	ConnectWithContext(context.Context) error
 	Close() error
 	On(string, direct.EventHandler)
 	OnMessage(func(direct.ReceivedMessage))
@@ -431,15 +432,21 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 			}
 		})
 
-		if err := client.Connect(); err != nil {
+		if err := client.ConnectWithContext(ctx); err != nil {
 			logger.Printf("[%s] connect failed: %v", cfg.ID, err)
 			worker.status(func(status *AccountStatus) {
 				status.Connected = false
 				status.Ready = false
 				markUnready(status, now())
+				status.AuthInvalid = isInvalidTokenError(err)
 				status.LastError = err.Error()
 			})
 			_ = client.Close()
+			if isInvalidTokenError(err) {
+				logger.Printf("[%s] direct token is invalid; waiting for token update before retrying", cfg.ID)
+				<-ctx.Done()
+				return
+			}
 			sleepBackoff(ctx, &backoff)
 			continue
 		}
@@ -728,12 +735,16 @@ func tokenFingerprint(token string) string {
 
 func isInvalidTokenError(data interface{}) bool {
 	m, ok := data.(map[string]interface{})
-	if !ok {
-		return false
+	if ok {
+		code := fmt.Sprint(m["code"])
+		message := fmt.Sprint(m["message"])
+		return code == "401" && (message == "invalid token" || message == "bad token")
 	}
-	code := fmt.Sprint(m["code"])
-	message := fmt.Sprint(m["message"])
-	return code == "401" && (message == "invalid token" || message == "bad token")
+	if err, ok := data.(error); ok {
+		message := strings.ToLower(err.Error())
+		return strings.Contains(message, "invalid token") || strings.Contains(message, "bad token")
+	}
+	return false
 }
 
 func isRecoverableDirectError(err error) bool {

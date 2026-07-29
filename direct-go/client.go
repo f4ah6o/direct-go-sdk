@@ -127,6 +127,7 @@ type Client struct {
 	closed           bool
 	connected        bool
 	connDone         chan struct{}
+	connReady        *connectionReadiness
 	connWriteMu      *sync.Mutex
 	connWriteTimeout time.Duration
 	connecting       bool
@@ -198,24 +199,55 @@ func NewClient(opts Options) *Client {
 	}
 }
 
-// Connect establishes a WebSocket connection to the direct API.
-// It starts the message reader and ping keepalive loops.
-// If an access token is provided in Options, it automatically creates a session.
+// Connect establishes a WebSocket connection to the direct API and returns
+// after the WebSocket handshake completes. If an access token is provided,
+// authentication and notification initialization continue asynchronously.
+// Use ConnectWithContext or WaitReady when authenticated API calls must not
+// begin until startup is complete.
 // Returns ErrAlreadyConnected if the client is already connected.
 // Returns a ConnectionError if the WebSocket connection fails.
 // Connect may be called again after Close or a failed connection attempt.
 func (c *Client) Connect() error {
+	return c.connect(context.Background())
+}
+
+// ConnectWithContext establishes a WebSocket connection and waits until the
+// client is authenticated and notification initialization is complete.
+// When the context is canceled while dialing or waiting, the connection is
+// closed and the context error is returned.
+func (c *Client) ConnectWithContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := c.connect(ctx); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return err
+	}
+	if err := c.WaitReady(ctx); err != nil {
+		_ = c.Close()
+		return err
+	}
+	return nil
+}
+
+func (c *Client) connect(ctx context.Context) error {
 	c.mu.Lock()
 	if c.conn != nil || c.connecting {
 		c.mu.Unlock()
 		return ErrAlreadyConnected
 	}
-	connectCtx, cancel := context.WithCancel(context.Background())
+	connectCtx, cancel := context.WithCancel(ctx)
 	c.connecting = true
 	c.connectCancel = cancel
 	c.connectAttempt++
 	attempt := c.connectAttempt
 	endpoint := c.options.Endpoint
+	accessToken := c.options.AccessToken
 	proxyURLString := c.options.ProxyURL
 	writeTimeout := c.options.WriteTimeout
 	if writeTimeout <= 0 {
@@ -273,6 +305,8 @@ func (c *Client) Connect() error {
 	c.closed = false
 	c.connected = false
 	c.connDone = make(chan struct{})
+	ready := newConnectionReadiness()
+	c.connReady = ready
 	c.connWriteMu = &sync.Mutex{}
 	c.connWriteTimeout = writeTimeout
 	c.Done = c.connDone
@@ -297,8 +331,10 @@ func (c *Client) Connect() error {
 	go c.pingLoop(conn, done, writeMu, writeTimeout)
 
 	// Create session if access token is provided
-	if c.options.AccessToken != "" {
+	if accessToken != "" {
 		go c.createSession(conn)
+	} else {
+		ready.complete(nil)
 	}
 
 	return nil
@@ -395,6 +431,78 @@ func isConnectionWriteError(err error) bool {
 	return errors.As(err, &writeErr)
 }
 
+type connectionReadiness struct {
+	done chan struct{}
+	err  error
+	once sync.Once
+}
+
+func newConnectionReadiness() *connectionReadiness {
+	return &connectionReadiness{done: make(chan struct{})}
+}
+
+func (r *connectionReadiness) complete(err error) {
+	r.once.Do(func() {
+		r.err = err
+		close(r.done)
+	})
+}
+
+// WaitReady waits until the current connection is authenticated and its
+// notification initialization has completed. Clients without an access token
+// are ready as soon as the WebSocket connection is established.
+//
+// If the connection closes before readiness, the close or startup error is
+// returned. A canceled context returns its context error and leaves the
+// connection open for other waiters.
+func (c *Client) WaitReady(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	c.mu.RLock()
+	ready := c.connReady
+	connected := c.conn != nil && !c.closed
+	closed := c.closed
+	c.mu.RUnlock()
+	if ready == nil || !connected {
+		if closed {
+			return ErrConnectionClosed
+		}
+		return ErrNotConnected
+	}
+
+	select {
+	case <-ready.done:
+		return ready.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *Client) completeReady(conn *websocket.Conn, err error) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn != conn || c.closed || c.connReady == nil {
+		return false
+	}
+	c.connReady.complete(err)
+	return true
+}
+
+func (c *Client) failReady(conn *websocket.Conn, err error) {
+	if err == nil {
+		err = ErrConnectionClosed
+	}
+	if !c.completeReady(conn, err) {
+		return
+	}
+	_ = c.closeConnection(conn, err)
+}
+
 func (c *Client) isCurrentConnection(conn *websocket.Conn) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -430,7 +538,7 @@ func (c *Client) createSession(conn *websocket.Conn) {
 		}
 		dlog("[DEBUG] Session error: %+v", err)
 		c.emit("session_error", err)
-		_ = c.closeConnection(conn, fmt.Errorf("%w: session authentication failed", ErrConnectionClosed))
+		c.failReady(conn, fmt.Errorf("direct: session authentication failed: %v", err))
 	})
 }
 
@@ -516,12 +624,14 @@ func (c *Client) startNotification(conn *websocket.Conn) {
 										return
 									}
 									dlog("[DEBUG] update_last_used_at result: %+v", result)
+									c.completeReady(conn, nil)
 									c.emit("data_recovered", result)
 								}, func(err interface{}) {
 									if !c.isCurrentConnection(conn) {
 										return
 									}
 									dlog("[DEBUG] update_last_used_at error: %+v", err)
+									c.completeReady(conn, nil)
 									c.emit("data_recovered", nil)
 								})
 							}, func(err interface{}) {
@@ -530,14 +640,18 @@ func (c *Client) startNotification(conn *websocket.Conn) {
 								}
 								dlog("[DEBUG] start_notification (after reset) error: %+v", err)
 								c.emit("notification_error", err)
+								c.failReady(conn, fmt.Errorf("direct: notification initialization failed: %v", err))
 							})
 						}, func(err interface{}) {
 							if !c.isCurrentConnection(conn) {
 								return
 							}
 							dlog("[DEBUG] reset_notification error: %+v", err)
+							c.emit("notification_error", err)
+							c.failReady(conn, fmt.Errorf("direct: notification initialization failed: %v", err))
 						})
 					} else {
+						c.completeReady(conn, nil)
 						c.emit("data_recovered", result)
 					}
 				}, func(err interface{}) {
@@ -546,24 +660,31 @@ func (c *Client) startNotification(conn *websocket.Conn) {
 					}
 					dlog("[DEBUG] start_notification error: %+v", err)
 					c.emit("notification_error", err)
+					c.failReady(conn, fmt.Errorf("direct: notification initialization failed: %v", err))
 				})
 			}, func(err interface{}) {
 				if !c.isCurrentConnection(conn) {
 					return
 				}
 				dlog("[DEBUG] get_talk_statuses error: %+v", err)
+				c.emit("notification_error", err)
+				c.failReady(conn, fmt.Errorf("direct: notification initialization failed: %v", err))
 			})
 		}, func(err interface{}) {
 			if !c.isCurrentConnection(conn) {
 				return
 			}
 			dlog("[DEBUG] get_talks error: %+v", err)
+			c.emit("notification_error", err)
+			c.failReady(conn, fmt.Errorf("direct: notification initialization failed: %v", err))
 		})
 	}, func(err interface{}) {
 		if !c.isCurrentConnection(conn) {
 			return
 		}
 		dlog("[DEBUG] get_domains error: %+v", err)
+		c.emit("notification_error", err)
+		c.failReady(conn, fmt.Errorf("direct: notification initialization failed: %v", err))
 	})
 }
 
@@ -591,6 +712,10 @@ func (c *Client) Close() error {
 // connection when conn is nil. A stale read/ping loop cannot close a newer
 // connection because the pointer must still match the active connection.
 func (c *Client) closeConnection(conn *websocket.Conn, cause error) error {
+	if cause == nil {
+		cause = ErrConnectionClosed
+	}
+
 	c.mu.Lock()
 	if conn != nil && c.conn != conn {
 		c.mu.Unlock()
@@ -605,11 +730,13 @@ func (c *Client) closeConnection(conn *websocket.Conn, cause error) error {
 	wasActive := activeConn != nil || c.connecting
 	writeMu := c.connWriteMu
 	writeTimeout := c.connWriteTimeout
+	ready := c.connReady
 	c.connectAttempt++
 	c.connecting = false
 	c.connectCancel = nil
 	c.conn = nil
 	c.connDone = nil
+	c.connReady = nil
 	c.connWriteMu = nil
 	c.connWriteTimeout = 0
 	c.closed = true
@@ -624,6 +751,9 @@ func (c *Client) closeConnection(conn *websocket.Conn, cause error) error {
 	}
 	c.responseHandlers = make(map[int64]*ResponseHandler)
 	c.talkDomains = make(map[string]string)
+	if ready != nil {
+		ready.complete(cause)
+	}
 	metrics := c.metrics
 	c.mu.Unlock()
 
@@ -631,9 +761,6 @@ func (c *Client) closeConnection(conn *websocket.Conn, cause error) error {
 		connectCancel()
 	}
 
-	if cause == nil {
-		cause = ErrConnectionClosed
-	}
 	for _, handler := range pending {
 		if handler != nil && handler.OnError != nil {
 			handler.OnError(cause)
@@ -806,6 +933,7 @@ func (c *Client) callOnConnection(expected *websocket.Conn, method string, param
 
 // Call sends a synchronous RPC request to the direct API server.
 // It blocks until a response is received or the 30-second timeout expires.
+// If an access token is configured, it also waits for authenticated readiness.
 // Method names are defined as constants (e.g., MethodGetTalks, MethodCreateMessage).
 // Returns the result on success, or an error on failure or timeout.
 // Returns ErrNotConnected if the client is not connected.
@@ -826,12 +954,17 @@ func (c *Client) Call(method string, params []interface{}) (interface{}, error) 
 // CallWithContext sends a synchronous RPC request using the supplied context.
 // Cancellation and deadlines stop waiting for the response and remove the
 // request handler so a late response cannot be delivered to a canceled call.
+// If an access token is configured, it waits for authenticated readiness before
+// sending the request.
 // The span created for the RPC inherits the caller's context.
 func (c *Client) CallWithContext(ctx context.Context, method string, params []interface{}) (interface{}, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := c.waitForAuthenticatedReady(ctx); err != nil {
 		return nil, err
 	}
 
@@ -879,6 +1012,16 @@ func (c *Client) CallWithContext(ctx context.Context, method string, params []in
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
+}
+
+func (c *Client) waitForAuthenticatedReady(ctx context.Context) error {
+	c.mu.RLock()
+	needsReady := c.conn != nil && !c.closed && c.options.AccessToken != ""
+	c.mu.RUnlock()
+	if !needsReady {
+		return nil
+	}
+	return c.WaitReady(ctx)
 }
 
 // Send sends a message with custom type and content to the specified room.

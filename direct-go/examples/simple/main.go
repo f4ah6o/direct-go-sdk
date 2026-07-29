@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -49,7 +50,7 @@ func main() {
 
 	// Connect
 	fmt.Println("Connecting to direct...")
-	if err := client.Connect(); err != nil {
+	if err := client.ConnectWithContext(context.Background()); err != nil {
 		log.Fatalf("Failed to connect: %v", err)
 	}
 	defer client.Close()

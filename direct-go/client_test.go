@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -85,6 +86,142 @@ func TestClientConnect(t *testing.T) {
 	client.mu.RUnlock()
 	if domainID != "domain-1" {
 		t.Fatalf("talk-domain cache = %q, want domain-1", domainID)
+	}
+}
+
+func configureSessionStartup(mockServer *testutil.MockServer) {
+	mockServer.OnSimple("get_domains", []interface{}{})
+	mockServer.OnSimple("get_talks", []interface{}{})
+	mockServer.OnSimple("get_talk_statuses", []interface{}{})
+	mockServer.OnSimple("start_notification", true)
+}
+
+func TestClientConnectWithContextWaitsForReady(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+
+	createReceived := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	mockServer.On("create_session", func(params []interface{}) (interface{}, error) {
+		close(createReceived)
+		<-release
+		return map[string]interface{}{"user_id": "user123"}, nil
+	})
+	mockServer.OnSimple("get_me", map[string]interface{}{"user_id": "user123"})
+	configureSessionStartup(mockServer)
+
+	client := NewClient(Options{Endpoint: mockServer.URL(), AccessToken: "token"})
+	defer client.Close()
+	readyErr := make(chan error, 1)
+	go func() {
+		readyErr <- client.ConnectWithContext(context.Background())
+	}()
+	select {
+	case <-createReceived:
+	case <-time.After(time.Second):
+		t.Fatal("create_session was not called")
+	}
+	select {
+	case err := <-readyErr:
+		t.Fatalf("ConnectWithContext returned before authentication: %v", err)
+	default:
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	_, err := client.GetMeWithContext(ctx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("API call before readiness error = %v, want context deadline", err)
+	}
+	if got := mockServer.GetCallCount("get_me"); got != 0 {
+		t.Fatalf("get_me was sent before readiness: %d calls", got)
+	}
+	releaseOnce.Do(func() { close(release) })
+
+	select {
+	case err := <-readyErr:
+		if err != nil {
+			t.Fatalf("ConnectWithContext failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ConnectWithContext did not wait for readiness")
+	}
+	if health := client.Health(); !health.Connected || !health.Authenticated {
+		t.Fatalf("health after readiness = %+v", health)
+	}
+}
+
+func TestClientWaitReadyUnblocksOnCancellationAndClose(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+
+	createReceived := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	mockServer.On("create_session", func(params []interface{}) (interface{}, error) {
+		close(createReceived)
+		<-release
+		return map[string]interface{}{"user_id": "user123"}, nil
+	})
+	configureSessionStartup(mockServer)
+
+	client := NewClient(Options{Endpoint: mockServer.URL(), AccessToken: "token"})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close()
+	select {
+	case <-createReceived:
+	case <-time.After(time.Second):
+		t.Fatal("create_session was not called")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	waitErr := make(chan error, 1)
+	go func() { waitErr <- client.WaitReady(ctx) }()
+	cancel()
+	select {
+	case err := <-waitErr:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("WaitReady cancellation error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WaitReady did not unblock on cancellation")
+	}
+
+	closeErr := make(chan error, 1)
+	go func() { closeErr <- client.WaitReady(context.Background()) }()
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	select {
+	case err := <-closeErr:
+		if !errors.Is(err, ErrConnectionClosed) {
+			t.Fatalf("WaitReady close error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WaitReady did not unblock on close")
+	}
+	releaseOnce.Do(func() { close(release) })
+}
+
+func TestClientConnectWithContextReturnsSessionError(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+	mockServer.OnError("create_session", "invalid token")
+
+	client := NewClient(Options{Endpoint: mockServer.URL(), AccessToken: "bad-token"})
+	err := client.ConnectWithContext(context.Background())
+	if err == nil {
+		t.Fatal("ConnectWithContext unexpectedly succeeded")
+	}
+	if !strings.Contains(err.Error(), "invalid token") {
+		t.Fatalf("session error = %v, want invalid token", err)
+	}
+	if health := client.Health(); health.Connected || health.Authenticated {
+		t.Fatalf("health after session failure = %+v", health)
 	}
 }
 

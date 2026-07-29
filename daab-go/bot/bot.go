@@ -263,7 +263,7 @@ func (r *Robot) Run(ctx context.Context) error {
 
 	// Connect
 	fmt.Printf("%s is starting...\n", r.Name)
-	if err := r.client.Connect(); err != nil {
+	if err := r.client.ConnectWithContext(ctx); err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
 	defer func() {

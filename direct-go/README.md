@@ -22,6 +22,7 @@ go get github.com/f4ah6o/direct-go-sdk/direct-go
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     
@@ -39,8 +40,8 @@ func main() {
         fmt.Printf("Received: %s\n", msg.Text)
     })
     
-    // 接続
-    if err := client.Connect(); err != nil {
+    // 接続・認証・通知初期化の完了まで待機
+    if err := client.ConnectWithContext(context.Background()); err != nil {
         log.Fatal(err)
     }
     defer client.Close()
@@ -52,6 +53,10 @@ func main() {
     select {}
 }
 ```
+
+`Connect` は WebSocket 接続の確立後に戻り、アクセストークンを指定した場合の認証と通知初期化は非同期で続行します。
+認証済みAPIを開始する前に `ConnectWithContext` または `WaitReady(ctx)` を使用してください。
+認証失敗や通知初期化失敗は readiness の待機結果として返されます。
 
 ## メッセージ受信
 

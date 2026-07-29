@@ -555,6 +555,10 @@ func (c *fakeDirectClient) Connect() error {
 	return nil
 }
 
+func (c *fakeDirectClient) ConnectWithContext(context.Context) error {
+	return c.Connect()
+}
+
 func (c *fakeDirectClient) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
