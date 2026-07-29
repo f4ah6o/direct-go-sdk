@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -600,6 +601,71 @@ type messageDropMetrics struct {
 
 func (m *messageDropMetrics) RecordMessageDrop(reason string) {
 	m.drops <- reason
+}
+
+func TestClientConcurrentRPCAndNotificationWrites(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+	mockServer.OnSimple("ping", true)
+	mockServer.On("echo", func(params []interface{}) (interface{}, error) {
+		if len(params) != 1 {
+			return nil, fmt.Errorf("got %d params", len(params))
+		}
+		return params[0], nil
+	})
+
+	client := NewClient(Options{Endpoint: mockServer.URL(), WriteTimeout: time.Second})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close()
+	if _, err := client.Call("ping", []interface{}{}); err != nil {
+		t.Fatalf("connection synchronization call failed: %v", err)
+	}
+
+	client.mu.RLock()
+	conn := client.conn
+	client.mu.RUnlock()
+	if conn == nil {
+		t.Fatal("client connection is nil")
+	}
+
+	const writers = 32
+	errs := make(chan error, writers)
+	var wg sync.WaitGroup
+	wg.Add(writers * 2)
+	for i := 0; i < writers; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			result, err := client.Call("echo", []interface{}{i})
+			if err != nil {
+				errs <- err
+				return
+			}
+			got, ok := toInt64(result)
+			if !ok || got != int64(i) {
+				errs <- fmt.Errorf("echo result = %v, want %d", result, i)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			client.handleNotification(conn, []interface{}{
+				RpcRequest,
+				int64(i),
+				"notify_test",
+				[]interface{}{map[string]interface{}{"id": i}},
+			})
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if health := client.Health(); !health.Connected {
+		t.Fatalf("health after concurrent writes = %+v", health)
+	}
 }
 
 type recordingTracerProvider struct {

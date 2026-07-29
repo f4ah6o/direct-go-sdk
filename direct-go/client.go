@@ -84,6 +84,10 @@ type Options struct {
 	// delivery blocks when this buffer is full until the connection closes.
 	MessageChannelSize int
 
+	// WriteTimeout is the maximum duration allowed for a WebSocket write.
+	// If zero or negative, DefaultWriteTimeout is used.
+	WriteTimeout time.Duration
+
 	// TracerProvider is an optional OpenTelemetry tracer provider used to create
 	// spans for RPC calls. If nil, the global OpenTelemetry tracer provider is used.
 	TracerProvider trace.TracerProvider
@@ -123,6 +127,8 @@ type Client struct {
 	closed           bool
 	connected        bool
 	connDone         chan struct{}
+	connWriteMu      *sync.Mutex
+	connWriteTimeout time.Duration
 	connecting       bool
 	connectCancel    context.CancelFunc
 	connectAttempt   uint64
@@ -211,6 +217,10 @@ func (c *Client) Connect() error {
 	attempt := c.connectAttempt
 	endpoint := c.options.Endpoint
 	proxyURLString := c.options.ProxyURL
+	writeTimeout := c.options.WriteTimeout
+	if writeTimeout <= 0 {
+		writeTimeout = DefaultWriteTimeout
+	}
 	c.mu.Unlock()
 
 	dialer := websocket.Dialer{
@@ -263,8 +273,11 @@ func (c *Client) Connect() error {
 	c.closed = false
 	c.connected = false
 	c.connDone = make(chan struct{})
+	c.connWriteMu = &sync.Mutex{}
+	c.connWriteTimeout = writeTimeout
 	c.Done = c.connDone
 	done := c.connDone
+	writeMu := c.connWriteMu
 	metrics := c.metrics
 	c.mu.Unlock()
 
@@ -281,7 +294,7 @@ func (c *Client) Connect() error {
 	go c.readLoop(conn)
 
 	// Start ping keepalive (every 45 seconds like direct-js)
-	go c.pingLoop(conn, done)
+	go c.pingLoop(conn, done, writeMu, writeTimeout)
 
 	// Create session if access token is provided
 	if c.options.AccessToken != "" {
@@ -292,7 +305,7 @@ func (c *Client) Connect() error {
 }
 
 // pingLoop sends periodic pings to keep the connection alive
-func (c *Client) pingLoop(conn *websocket.Conn, done <-chan struct{}) {
+func (c *Client) pingLoop(conn *websocket.Conn, done <-chan struct{}, writeMu *sync.Mutex, writeTimeout time.Duration) {
 	ticker := time.NewTicker(DefaultPingInterval)
 	defer ticker.Stop()
 
@@ -304,16 +317,82 @@ func (c *Client) pingLoop(conn *websocket.Conn, done <-chan struct{}) {
 			}
 
 			vlog("[DEBUG] Sending ping...")
-			if err := conn.WriteMessage(websocket.PingMessage, []byte("PING")); err != nil {
+			if err := writeMessage(conn, writeMu, writeTimeout, websocket.PingMessage, []byte("PING")); err != nil {
 				vlog("[DEBUG] Ping error: %v", err)
 				// Close this connection to trigger proper cleanup.
-				_ = c.closeConnection(conn, fmt.Errorf("%w: %v", ErrConnectionClosed, err))
+				_ = c.closeConnection(conn, newConnectionWriteError(err))
 				return
 			}
 		case <-done:
 			return
 		}
 	}
+}
+
+func writeMessage(conn *websocket.Conn, writeMu *sync.Mutex, timeout time.Duration, messageType int, data []byte) error {
+	if conn == nil || writeMu == nil {
+		return ErrConnectionClosed
+	}
+	if timeout <= 0 {
+		timeout = DefaultWriteTimeout
+	}
+
+	writeMu.Lock()
+	defer writeMu.Unlock()
+
+	if err := conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+		return err
+	}
+	err := conn.WriteMessage(messageType, data)
+	clearErr := conn.SetWriteDeadline(time.Time{})
+	if err != nil {
+		return err
+	}
+	return clearErr
+}
+
+func writeCloseMessage(conn *websocket.Conn, writeMu *sync.Mutex, timeout time.Duration) error {
+	if conn == nil || writeMu == nil {
+		return ErrConnectionClosed
+	}
+	if timeout <= 0 {
+		timeout = DefaultWriteTimeout
+	}
+
+	writeMu.Lock()
+	defer writeMu.Unlock()
+
+	deadline := time.Now().Add(timeout)
+	if err := conn.SetWriteDeadline(deadline); err != nil {
+		return err
+	}
+	err := conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), deadline)
+	clearErr := conn.SetWriteDeadline(time.Time{})
+	if err != nil {
+		return err
+	}
+	return clearErr
+}
+
+type connectionWriteError struct {
+	cause error
+}
+
+func (e *connectionWriteError) Error() string {
+	return fmt.Sprintf("websocket write failed: %v", e.cause)
+}
+
+func (e *connectionWriteError) Unwrap() error {
+	return errors.Join(ErrConnectionClosed, e.cause)
+}
+
+func newConnectionWriteError(err error) error {
+	return &connectionWriteError{cause: err}
+}
+
+func isConnectionWriteError(err error) bool {
+	var writeErr *connectionWriteError
+	return errors.As(err, &writeErr)
 }
 
 func (c *Client) isCurrentConnection(conn *websocket.Conn) bool {
@@ -524,11 +603,15 @@ func (c *Client) closeConnection(conn *websocket.Conn, cause error) error {
 	}
 	connectCancel := c.connectCancel
 	wasActive := activeConn != nil || c.connecting
+	writeMu := c.connWriteMu
+	writeTimeout := c.connWriteTimeout
 	c.connectAttempt++
 	c.connecting = false
 	c.connectCancel = nil
 	c.conn = nil
 	c.connDone = nil
+	c.connWriteMu = nil
+	c.connWriteTimeout = 0
 	c.closed = true
 	c.connected = false
 	done := c.Done
@@ -562,7 +645,17 @@ func (c *Client) closeConnection(conn *websocket.Conn, cause error) error {
 	}
 
 	if activeConn != nil {
-		return activeConn.Close()
+		var closeErr error
+		if writeMu != nil {
+			closeErr = writeCloseMessage(activeConn, writeMu, writeTimeout)
+		}
+		if err := activeConn.Close(); closeErr == nil {
+			closeErr = err
+		}
+		if causeWrite := isConnectionWriteError(cause); causeWrite {
+			c.emit("error", map[string]string{"error": cause.Error()})
+		}
+		return closeErr
 	}
 	return nil
 }
@@ -662,6 +755,8 @@ func (c *Client) callOnConnection(expected *websocket.Conn, method string, param
 		}
 		return 0
 	}
+	writeMu := c.connWriteMu
+	writeTimeout := c.connWriteTimeout
 
 	msgID := atomic.AddInt64(&c.msgID, 1)
 
@@ -689,7 +784,10 @@ func (c *Client) callOnConnection(expected *websocket.Conn, method string, param
 	}
 
 	c.mu.Lock()
-	if c.conn != conn || c.closed || (expected != nil && c.conn != expected) {
+	validConnection := c.conn == conn && !c.closed && (expected == nil || c.conn == expected)
+	c.mu.Unlock()
+	if !validConnection {
+		c.mu.Lock()
 		delete(c.responseHandlers, msgID)
 		c.mu.Unlock()
 		if onError != nil {
@@ -697,16 +795,10 @@ func (c *Client) callOnConnection(expected *websocket.Conn, method string, param
 		}
 		return 0
 	}
-	err = conn.WriteMessage(websocket.BinaryMessage, data)
-	c.mu.Unlock()
+	err = writeMessage(conn, writeMu, writeTimeout, websocket.BinaryMessage, data)
 
 	if err != nil {
-		c.mu.Lock()
-		delete(c.responseHandlers, msgID)
-		c.mu.Unlock()
-		if onError != nil {
-			onError(map[string]string{"message": err.Error()})
-		}
+		_ = c.closeConnection(conn, newConnectionWriteError(err))
 	}
 
 	return msgID
@@ -951,12 +1043,17 @@ func (c *Client) handleNotification(conn *websocket.Conn, message []interface{})
 	// Send acknowledgment response: [1, msgId, null, true]
 	response := []interface{}{RpcResponse, msgID, nil, true}
 	data, err := msgpack.Marshal(response)
-	if err == nil {
-		c.mu.Lock()
-		if c.conn == conn && !c.closed {
-			_ = conn.WriteMessage(websocket.BinaryMessage, data)
-		}
-		c.mu.Unlock()
+	if err != nil {
+		dlog("[DEBUG] Could not encode notification acknowledgment: %v", err)
+		return
+	}
+	writeMu, writeTimeout := c.connectionWriter(conn)
+	if writeMu == nil {
+		return
+	}
+	if err := writeMessage(conn, writeMu, writeTimeout, websocket.BinaryMessage, data); err != nil {
+		dlog("[DEBUG] Notification acknowledgment write failed: %v", err)
+		_ = c.closeConnection(conn, newConnectionWriteError(err))
 	}
 }
 
@@ -1018,6 +1115,15 @@ func (c *Client) connectionDone(conn *websocket.Conn) <-chan struct{} {
 		return nil
 	}
 	return c.connDone
+}
+
+func (c *Client) connectionWriter(conn *websocket.Conn) (*sync.Mutex, time.Duration) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.conn != conn || c.closed {
+		return nil, 0
+	}
+	return c.connWriteMu, c.connWriteTimeout
 }
 
 func (c *Client) recordMessageDrop(reason string) {

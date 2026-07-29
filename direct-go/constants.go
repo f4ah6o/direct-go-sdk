@@ -12,6 +12,9 @@ const (
 
 	// DefaultHandshakeTimeout is the timeout for WebSocket handshake
 	DefaultHandshakeTimeout = 10 * time.Second
+
+	// DefaultWriteTimeout is the maximum duration allowed for a WebSocket write.
+	DefaultWriteTimeout = 10 * time.Second
 )
 
 // Buffer size constants
