@@ -101,6 +101,13 @@ type ResponseHandler struct {
 }
 
 // Client is a direct API client.
+//
+// The lifecycle is reconnectable: after Close returns, or after a transport
+// or session-authentication failure, Connect may be called again. Each
+// successful Connect creates a new connection generation. Close clears the
+// authenticated state and fails in-flight RPCs with ErrConnectionClosed.
+// Messages remains usable across generations; Done is closed when the current
+// generation ends and replaced by the next successful Connect.
 type Client struct {
 	options          Options
 	conn             *websocket.Conn
@@ -110,12 +117,18 @@ type Client struct {
 	msgID            int64
 	closed           bool
 	connected        bool
-	closeOnce        sync.Once
+	connDone         chan struct{}
+	connecting       bool
+	connectCancel    context.CancelFunc
+	connectAttempt   uint64
+	messageHandlers  []func(ReceivedMessage)
 
 	// talkDomains maps talk_id to domain_id for user lookups
 	talkDomains map[string]string
 
-	// Channels for events
+	// Channels for events. Messages remains usable across reconnects and is not
+	// closed when one connection ends; Done belongs to the current connection
+	// and is replaced on the next successful Connect.
 	Messages chan ReceivedMessage
 	Done     chan struct{}
 
@@ -175,22 +188,37 @@ func NewClient(opts Options) *Client {
 // If an access token is provided in Options, it automatically creates a session.
 // Returns ErrAlreadyConnected if the client is already connected.
 // Returns a ConnectionError if the WebSocket connection fails.
+// Connect may be called again after Close or a failed connection attempt.
 func (c *Client) Connect() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.conn != nil {
+	if c.conn != nil || c.connecting {
+		c.mu.Unlock()
 		return ErrAlreadyConnected
 	}
+	connectCtx, cancel := context.WithCancel(context.Background())
+	c.connecting = true
+	c.connectCancel = cancel
+	c.connectAttempt++
+	attempt := c.connectAttempt
+	endpoint := c.options.Endpoint
+	proxyURLString := c.options.ProxyURL
+	c.mu.Unlock()
 
 	dialer := websocket.Dialer{
 		HandshakeTimeout: DefaultHandshakeTimeout,
 	}
 
 	// Set up proxy if configured
-	if c.options.ProxyURL != "" {
-		proxyURL, err := url.Parse(c.options.ProxyURL)
+	if proxyURLString != "" {
+		proxyURL, err := url.Parse(proxyURLString)
 		if err != nil {
+			c.mu.Lock()
+			if c.connectAttempt == attempt {
+				c.connecting = false
+				c.connectCancel = nil
+			}
+			c.mu.Unlock()
+			cancel()
 			return fmt.Errorf("invalid proxy URL: %w", err)
 		}
 		dialer.Proxy = http.ProxyURL(proxyURL)
@@ -201,99 +229,139 @@ func (c *Client) Connect() error {
 	// header.Set("Origin", "https://"+c.options.Host)
 
 	// HTTP response from dialer is not needed after connection is established
-	conn, _ /* *http.Response */, err := dialer.Dial(c.options.Endpoint, header)
+	conn, _ /* *http.Response */, err := dialer.DialContext(connectCtx, endpoint, header)
 	if err != nil {
+		c.mu.Lock()
+		if c.connectAttempt == attempt {
+			c.connecting = false
+			c.connectCancel = nil
+		}
+		c.mu.Unlock()
+		cancel()
 		return NewConnectionError(err)
 	}
+	cancel()
 
+	c.mu.Lock()
+	if c.connectAttempt != attempt || !c.connecting {
+		c.mu.Unlock()
+		_ = conn.Close()
+		return ErrConnectionClosed
+	}
+	c.connecting = false
+	c.connectCancel = nil
 	c.conn = conn
 	c.closed = false
+	c.connected = false
+	c.connDone = make(chan struct{})
+	c.Done = c.connDone
+	done := c.connDone
+	metrics := c.metrics
+	c.mu.Unlock()
 
 	// Record connection
-	c.metrics.RecordConnectionState("connected")
+	metrics.RecordConnectionState("connected")
 
 	// Set up pong handler
-	c.conn.SetPongHandler(func(appData string) error {
+	conn.SetPongHandler(func(appData string) error {
 		vlog("[DEBUG] Received pong: %s", appData)
 		return nil
 	})
 
 	// Start message reader
-	go c.readLoop()
+	go c.readLoop(conn)
 
 	// Start ping keepalive (every 45 seconds like direct-js)
-	go c.pingLoop()
+	go c.pingLoop(conn, done)
 
 	// Create session if access token is provided
 	if c.options.AccessToken != "" {
-		go c.createSession()
+		go c.createSession(conn)
 	}
 
 	return nil
 }
 
 // pingLoop sends periodic pings to keep the connection alive
-func (c *Client) pingLoop() {
+func (c *Client) pingLoop(conn *websocket.Conn, done <-chan struct{}) {
 	ticker := time.NewTicker(DefaultPingInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			c.mu.RLock()
-			closed := c.closed
-			conn := c.conn
-			c.mu.RUnlock()
-
-			if closed || conn == nil {
+			if !c.isCurrentConnection(conn) {
 				return
 			}
 
 			vlog("[DEBUG] Sending ping...")
 			if err := conn.WriteMessage(websocket.PingMessage, []byte("PING")); err != nil {
 				vlog("[DEBUG] Ping error: %v", err)
-				// Close connection to trigger proper cleanup
-				c.Close()
+				// Close this connection to trigger proper cleanup.
+				_ = c.closeConnection(conn, fmt.Errorf("%w: %v", ErrConnectionClosed, err))
 				return
 			}
-		case <-c.Done:
+		case <-done:
 			return
 		}
 	}
 }
 
+func (c *Client) isCurrentConnection(conn *websocket.Conn) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.conn == conn && !c.closed
+}
+
 // createSession authenticates with the server.
-func (c *Client) createSession() {
+func (c *Client) createSession(conn *websocket.Conn) {
 	dlog("[DEBUG] Creating session with token: ***...")
 	osString := DefaultBotOS
 	params := []interface{}{c.options.AccessToken, APIVersion, osString}
 
-	c.call("create_session", params, func(result interface{}) {
+	c.callOnConnection(conn, "create_session", params, func(result interface{}) {
+		if !c.isCurrentConnection(conn) {
+			return
+		}
 		dlog("[DEBUG] Session created successfully: %+v", result)
 		c.mu.Lock()
+		if c.conn != conn || c.closed {
+			c.mu.Unlock()
+			return
+		}
 		c.connected = true
 		c.mu.Unlock()
 
 		c.emit("session_created", result)
 
 		// Start notification after session is created
-		c.startNotification()
+		c.startNotification(conn)
 	}, func(err interface{}) {
+		if !c.isCurrentConnection(conn) {
+			return
+		}
 		dlog("[DEBUG] Session error: %+v", err)
 		c.emit("session_error", err)
+		_ = c.closeConnection(conn, fmt.Errorf("%w: session authentication failed", ErrConnectionClosed))
 	})
 }
 
 // startNotification tells the server to start sending notifications.
-func (c *Client) startNotification() {
+func (c *Client) startNotification(conn *websocket.Conn) {
 	dlog("[DEBUG] Starting notification...")
 
 	// First, get domains to initialize data
-	c.call("get_domains", []interface{}{}, func(result interface{}) {
+	c.callOnConnection(conn, "get_domains", []interface{}{}, func(result interface{}) {
+		if !c.isCurrentConnection(conn) {
+			return
+		}
 		dlog("[DEBUG] get_domains success: %d domains", countItems(result))
 
 		// Then get talks
-		c.call("get_talks", []interface{}{}, func(result interface{}) {
+		c.callOnConnection(conn, "get_talks", []interface{}{}, func(result interface{}) {
+			if !c.isCurrentConnection(conn) {
+				return
+			}
 			dlog("[DEBUG] get_talks success: %d talks", countItems(result))
 
 			// Cache talk->domain mappings needed by notification parsing.
@@ -312,7 +380,9 @@ func (c *Client) startNotification() {
 						}
 						if talkID != "" && domainID != "" {
 							c.mu.Lock()
-							c.talkDomains[talkID] = domainID
+							if c.conn == conn && !c.closed {
+								c.talkDomains[talkID] = domainID
+							}
 							c.mu.Unlock()
 							dlog("[DEBUG] Cached talk->domain: %s -> %s", talkID, domainID)
 						}
@@ -323,52 +393,88 @@ func (c *Client) startNotification() {
 			}
 
 			// Then get talk statuses
-			c.call("get_talk_statuses", []interface{}{}, func(result interface{}) {
+			c.callOnConnection(conn, "get_talk_statuses", []interface{}{}, func(result interface{}) {
+				if !c.isCurrentConnection(conn) {
+					return
+				}
 				dlog("[DEBUG] get_talk_statuses success")
 
 				// Try start_notification first
-				c.call("start_notification", []interface{}{}, func(result interface{}) {
+				c.callOnConnection(conn, "start_notification", []interface{}{}, func(result interface{}) {
+					if !c.isCurrentConnection(conn) {
+						return
+					}
 					dlog("[DEBUG] start_notification result: %+v", result)
 
 					// If false, try reset_notification and then start_notification again
 					if result == false {
 						dlog("[DEBUG] start_notification returned false, trying reset_notification...")
-						c.call("reset_notification", []interface{}{}, func(result interface{}) {
+						c.callOnConnection(conn, "reset_notification", []interface{}{}, func(result interface{}) {
+							if !c.isCurrentConnection(conn) {
+								return
+							}
 							dlog("[DEBUG] reset_notification result: %+v", result)
 
 							// After reset, call start_notification again
-							c.call("start_notification", []interface{}{}, func(result interface{}) {
+							c.callOnConnection(conn, "start_notification", []interface{}{}, func(result interface{}) {
+								if !c.isCurrentConnection(conn) {
+									return
+								}
 								dlog("[DEBUG] start_notification (after reset) result: %+v", result)
 
 								// Call update_last_used_at to mark session as active
-								c.call("update_last_used_at", []interface{}{}, func(result interface{}) {
+								c.callOnConnection(conn, "update_last_used_at", []interface{}{}, func(result interface{}) {
+									if !c.isCurrentConnection(conn) {
+										return
+									}
 									dlog("[DEBUG] update_last_used_at result: %+v", result)
 									c.emit("data_recovered", result)
 								}, func(err interface{}) {
+									if !c.isCurrentConnection(conn) {
+										return
+									}
 									dlog("[DEBUG] update_last_used_at error: %+v", err)
 									c.emit("data_recovered", nil)
 								})
 							}, func(err interface{}) {
+								if !c.isCurrentConnection(conn) {
+									return
+								}
 								dlog("[DEBUG] start_notification (after reset) error: %+v", err)
 								c.emit("notification_error", err)
 							})
 						}, func(err interface{}) {
+							if !c.isCurrentConnection(conn) {
+								return
+							}
 							dlog("[DEBUG] reset_notification error: %+v", err)
 						})
 					} else {
 						c.emit("data_recovered", result)
 					}
 				}, func(err interface{}) {
+					if !c.isCurrentConnection(conn) {
+						return
+					}
 					dlog("[DEBUG] start_notification error: %+v", err)
 					c.emit("notification_error", err)
 				})
 			}, func(err interface{}) {
+				if !c.isCurrentConnection(conn) {
+					return
+				}
 				dlog("[DEBUG] get_talk_statuses error: %+v", err)
 			})
 		}, func(err interface{}) {
+			if !c.isCurrentConnection(conn) {
+				return
+			}
 			dlog("[DEBUG] get_talks error: %+v", err)
 		})
 	}, func(err interface{}) {
+		if !c.isCurrentConnection(conn) {
+			return
+		}
 		dlog("[DEBUG] get_domains error: %+v", err)
 	})
 }
@@ -390,32 +496,66 @@ func min(a, b int) int {
 // Close closes the WebSocket connection and stops all background goroutines.
 // It is safe to call Close multiple times.
 func (c *Client) Close() error {
-	c.mu.Lock()
-	conn := c.conn
-	wasClosed := c.closed
-	c.closed = true
-	c.mu.Unlock()
+	return c.closeConnection(nil, ErrConnectionClosed)
+}
 
-	if conn == nil || wasClosed {
+// closeConnection closes the specified active connection, or the current
+// connection when conn is nil. A stale read/ping loop cannot close a newer
+// connection because the pointer must still match the active connection.
+func (c *Client) closeConnection(conn *websocket.Conn, cause error) error {
+	c.mu.Lock()
+	if conn != nil && c.conn != conn {
+		c.mu.Unlock()
 		return nil
 	}
-
-	// Clear response handlers map to free memory
-	c.mu.Lock()
+	activeConn := c.conn
+	if activeConn == nil && !c.connecting && c.closed {
+		c.mu.Unlock()
+		return nil
+	}
+	connectCancel := c.connectCancel
+	wasActive := activeConn != nil || c.connecting
+	c.connectAttempt++
+	c.connecting = false
+	c.connectCancel = nil
+	c.conn = nil
+	c.connDone = nil
+	c.closed = true
+	c.connected = false
+	done := c.Done
+	if done != nil {
+		close(done)
+	}
+	pending := make([]*ResponseHandler, 0, len(c.responseHandlers))
+	for _, handler := range c.responseHandlers {
+		pending = append(pending, handler)
+	}
 	c.responseHandlers = make(map[int64]*ResponseHandler)
-	// Clear talkDomains cache to free memory
 	c.talkDomains = make(map[string]string)
+	metrics := c.metrics
 	c.mu.Unlock()
 
-	// Record disconnection
-	c.metrics.RecordConnectionState("disconnected")
+	if connectCancel != nil {
+		connectCancel()
+	}
 
-	// Close Done channel without holding the lock to avoid deadlock
-	c.closeOnce.Do(func() {
-		close(c.Done)
-	})
+	if cause == nil {
+		cause = ErrConnectionClosed
+	}
+	for _, handler := range pending {
+		if handler != nil && handler.OnError != nil {
+			handler.OnError(cause)
+		}
+	}
 
-	return conn.Close()
+	if wasActive {
+		metrics.RecordConnectionState("disconnected")
+	}
+
+	if activeConn != nil {
+		return activeConn.Close()
+	}
+	return nil
 }
 
 // SetMetrics sets the metrics implementation for this client.
@@ -478,24 +618,37 @@ func (c *Client) On(event string, handler EventHandler) {
 }
 
 // OnMessage registers a callback for incoming messages.
-// The handler is called for each message received from the Messages channel.
-// The handler runs in a separate goroutine.
+// The handler runs in a separate goroutine for each message and remains
+// registered across reconnects.
 func (c *Client) OnMessage(handler func(ReceivedMessage)) {
-	go func() {
-		for msg := range c.Messages {
-			handler(msg)
-		}
-	}()
+	c.mu.Lock()
+	c.messageHandlers = append(c.messageHandlers, handler)
+	c.mu.Unlock()
 }
 
-// call sends an RPC request to the server.
+// call sends an RPC request to the current connection.
 func (c *Client) call(method string, params []interface{}, onSuccess func(interface{}), onError func(interface{})) int64 {
+	return c.callOnConnection(nil, method, params, onSuccess, onError)
+}
+
+// callOnConnection sends an RPC request only if expected is still the active
+// connection. This prevents callbacks from an older connection from issuing
+// requests on a newer one after reconnect.
+func (c *Client) callOnConnection(expected *websocket.Conn, method string, params []interface{}, onSuccess func(interface{}), onError func(interface{})) int64 {
 	c.mu.Lock()
 
-	if c.conn == nil {
+	conn := c.conn
+	if conn == nil {
 		c.mu.Unlock()
 		if onError != nil {
 			onError(map[string]string{"message": "not connected"})
+		}
+		return 0
+	}
+	if c.closed || (expected != nil && conn != expected) {
+		c.mu.Unlock()
+		if onError != nil {
+			onError(ErrConnectionClosed)
 		}
 		return 0
 	}
@@ -526,7 +679,15 @@ func (c *Client) call(method string, params []interface{}, onSuccess func(interf
 	}
 
 	c.mu.Lock()
-	err = c.conn.WriteMessage(websocket.BinaryMessage, data)
+	if c.conn != conn || c.closed || (expected != nil && c.conn != expected) {
+		delete(c.responseHandlers, msgID)
+		c.mu.Unlock()
+		if onError != nil {
+			onError(ErrConnectionClosed)
+		}
+		return 0
+	}
+	err = conn.WriteMessage(websocket.BinaryMessage, data)
 	c.mu.Unlock()
 
 	if err != nil {
@@ -594,7 +755,12 @@ func (c *Client) CallWithContext(ctx context.Context, method string, params []in
 		span.SetStatus(codes.Ok, "")
 		return result, nil
 	case err := <-errCh:
-		rpcErr := fmt.Errorf("RPC error: %v", err)
+		var rpcErr error
+		if errValue, ok := err.(error); ok {
+			rpcErr = fmt.Errorf("RPC error: %w", errValue)
+		} else {
+			rpcErr = fmt.Errorf("RPC error: %v", err)
+		}
 		metrics.RecordError(method, rpcErr)
 		span.RecordError(rpcErr)
 		span.SetStatus(codes.Error, rpcErr.Error())
@@ -637,37 +803,35 @@ func (c *Client) SendText(roomID string, text string) error {
 }
 
 // readLoop continuously reads messages from the WebSocket.
-func (c *Client) readLoop() {
-	defer close(c.Messages)
-
+func (c *Client) readLoop(conn *websocket.Conn) {
 	for {
-		c.mu.RLock()
-		if c.closed {
-			c.mu.RUnlock()
+		if !c.isCurrentConnection(conn) {
 			return
 		}
-		conn := c.conn
-		c.mu.RUnlock()
 
 		msgType, data, err := conn.ReadMessage()
 		if err != nil {
-			if !c.closed {
+			if c.isCurrentConnection(conn) {
 				dlog("[DEBUG] ReadMessage error: %v", err)
 				c.emit("error", map[string]string{"error": err.Error()})
-				// Close connection to trigger proper cleanup
-				c.Close()
+				// Close only this connection. A newer connection may already be active.
+				_ = c.closeConnection(conn, fmt.Errorf("%w: %v", ErrConnectionClosed, err))
 			}
 			return
 		}
 
 		dlog("[DEBUG] Raw WebSocket message: type=%d len=%d", msgType, len(data))
 
-		c.handleMessage(data)
+		c.handleMessage(conn, data)
 	}
 }
 
 // handleMessage processes an incoming WebSocket message.
-func (c *Client) handleMessage(data []byte) {
+func (c *Client) handleMessage(conn *websocket.Conn, data []byte) {
+	if !c.isCurrentConnection(conn) {
+		return
+	}
+
 	// Decode MessagePack
 	var message []interface{}
 	if err := msgpack.Unmarshal(data, &message); err != nil {
@@ -699,7 +863,7 @@ func (c *Client) handleMessage(data []byte) {
 
 	case RpcRequest:
 		// Request from server (notification): [0, msgId, method, params]
-		c.handleNotification(message)
+		c.handleNotification(conn, message)
 	}
 }
 
@@ -734,7 +898,11 @@ func (c *Client) handleResponse(message []interface{}) {
 }
 
 // handleNotification processes a notification from the server.
-func (c *Client) handleNotification(message []interface{}) {
+func (c *Client) handleNotification(conn *websocket.Conn, message []interface{}) {
+	if !c.isCurrentConnection(conn) {
+		return
+	}
+
 	if len(message) < 4 {
 		dlog("[DEBUG] Notification too short: %v", message)
 		return
@@ -756,6 +924,9 @@ func (c *Client) handleNotification(message []interface{}) {
 	}
 
 	dlog("[DEBUG] Received notification: %s, params count: %d", method, len(params))
+	if !c.isCurrentConnection(conn) {
+		return
+	}
 
 	// Emit the notification event
 	c.emit(method, params[0])
@@ -764,7 +935,7 @@ func (c *Client) handleNotification(message []interface{}) {
 	if method == "notify_create_message" || method == "create_message" {
 		dlog("[DEBUG] Message notification received: %s", method)
 		dlog("[DEBUG] Data: %+v", params[0])
-		c.handleMessageNotification(params[0])
+		c.handleMessageNotification(conn, params[0])
 	}
 
 	// Send acknowledgment response: [1, msgId, null, true]
@@ -772,15 +943,19 @@ func (c *Client) handleNotification(message []interface{}) {
 	data, err := msgpack.Marshal(response)
 	if err == nil {
 		c.mu.Lock()
-		if c.conn != nil {
-			c.conn.WriteMessage(websocket.BinaryMessage, data)
+		if c.conn == conn && !c.closed {
+			_ = conn.WriteMessage(websocket.BinaryMessage, data)
 		}
 		c.mu.Unlock()
 	}
 }
 
 // handleMessageNotification parses and queues a message notification.
-func (c *Client) handleMessageNotification(data interface{}) {
+func (c *Client) handleMessageNotification(conn *websocket.Conn, data interface{}) {
+	if !c.isCurrentConnection(conn) {
+		return
+	}
+
 	dlog("[DEBUG] handleMessageNotification: raw data: %+v", data)
 	msg := parseMessage(data)
 
@@ -804,6 +979,13 @@ func (c *Client) handleMessageNotification(data interface{}) {
 	dlog("[DEBUG] handleMessageNotification: parsed msg: ID=%s UserID=%s TalkID=%s DomainID=%s Text=%s",
 		msg.ID, msg.UserID, msg.TalkID, msg.DomainID, msg.Text)
 	if msg.ID != "" {
+		c.mu.RLock()
+		handlers := append([]func(ReceivedMessage){}, c.messageHandlers...)
+		c.mu.RUnlock()
+		for _, handler := range handlers {
+			go handler(msg)
+		}
+
 		select {
 		case c.Messages <- msg:
 		default:

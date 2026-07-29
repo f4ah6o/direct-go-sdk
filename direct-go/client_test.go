@@ -299,6 +299,190 @@ func TestCallWithContextPropagatesTraceParent(t *testing.T) {
 	}
 }
 
+func TestClientReconnectAfterClose(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+	mockServer.OnSimple("get_me", map[string]interface{}{"id": "user123"})
+
+	client := NewClient(Options{Endpoint: mockServer.URL()})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("first Connect failed: %v", err)
+	}
+	firstDone := client.Done
+	if _, err := client.Call("get_me", []interface{}{}); err != nil {
+		t.Fatalf("first RPC failed: %v", err)
+	}
+	if health := client.Health(); !health.Connected || health.Authenticated {
+		t.Fatalf("health after first connect = %+v", health)
+	}
+
+	if err := client.Close(); err != nil {
+		t.Fatalf("first Close failed: %v", err)
+	}
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("first Done channel was not closed")
+	}
+	if health := client.Health(); health.Connected || health.Authenticated {
+		t.Fatalf("health after close = %+v", health)
+	}
+	select {
+	case _, ok := <-client.Messages:
+		if !ok {
+			t.Fatal("Messages was closed during reconnectable Close")
+		}
+	default:
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("second Close failed: %v", err)
+	}
+
+	if err := client.Connect(); err != nil {
+		t.Fatalf("reconnect failed: %v", err)
+	}
+	if client.Done == firstDone {
+		t.Fatal("reconnect reused the closed Done channel")
+	}
+	if _, err := client.Call("get_me", []interface{}{}); err != nil {
+		t.Fatalf("RPC after reconnect failed: %v", err)
+	}
+	if health := client.Health(); !health.Connected || health.Authenticated {
+		t.Fatalf("health after reconnect = %+v", health)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("final Close failed: %v", err)
+	}
+}
+
+func TestClientCloseReleasesPendingCall(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	mockServer.On("get_me", func(params []interface{}) (interface{}, error) {
+		close(started)
+		<-release
+		return map[string]interface{}{"id": "late"}, nil
+	})
+
+	client := NewClient(Options{Endpoint: mockServer.URL()})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := client.CallWithContext(context.Background(), "get_me", []interface{}{})
+		errCh <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		client.Close()
+		close(release)
+		t.Fatal("mock server did not receive get_me")
+	}
+
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, ErrConnectionClosed) {
+			t.Fatalf("pending call error = %v, want ErrConnectionClosed", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("pending call was not released by Close")
+	}
+
+	client.mu.RLock()
+	handlerCount := len(client.responseHandlers)
+	client.mu.RUnlock()
+	if handlerCount != 0 {
+		t.Fatalf("response handlers after close = %d, want 0", handlerCount)
+	}
+	close(release)
+}
+
+func TestClientFailedDialCanRetry(t *testing.T) {
+	failedServer := testutil.NewMockServer()
+	failedURL := failedServer.URL()
+	failedServer.Close()
+
+	workingServer := testutil.NewMockServer()
+	defer workingServer.Close()
+	workingServer.OnSimple("get_me", map[string]interface{}{"id": "user123"})
+
+	client := NewClient(Options{Endpoint: failedURL})
+	err := client.Connect()
+	if err == nil {
+		t.Fatal("Connect unexpectedly succeeded against a closed server")
+	}
+	if health := client.Health(); health.Connected || health.Authenticated {
+		t.Fatalf("health after failed dial = %+v", health)
+	}
+
+	client.mu.Lock()
+	client.options.Endpoint = workingServer.URL()
+	client.mu.Unlock()
+	if err := client.Connect(); err != nil {
+		t.Fatalf("retry Connect failed: %v", err)
+	}
+	defer client.Close()
+	if _, err := client.Call("get_me", []interface{}{}); err != nil {
+		t.Fatalf("RPC after dial retry failed: %v", err)
+	}
+}
+
+func TestClientFailedAuthenticationCanRetry(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+
+	mockServer.On("create_session", func(params []interface{}) (interface{}, error) {
+		if mockServer.GetCallCount("create_session") == 1 {
+			return nil, fmt.Errorf("invalid token")
+		}
+		return map[string]interface{}{"user_id": "user123"}, nil
+	})
+	mockServer.OnSimple("get_domains", []interface{}{})
+	mockServer.OnSimple("get_talks", []interface{}{})
+	mockServer.OnSimple("get_talk_statuses", []interface{}{})
+	mockServer.OnSimple("start_notification", true)
+
+	client := NewClient(Options{Endpoint: mockServer.URL(), AccessToken: "token"})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("first Connect failed: %v", err)
+	}
+	firstDone := client.Done
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("failed authentication did not close Done")
+	}
+	if health := client.Health(); health.Connected || health.Authenticated {
+		t.Fatalf("health after failed authentication = %+v", health)
+	}
+
+	sessionCreated := make(chan struct{}, 1)
+	client.On("session_created", func(data interface{}) {
+		sessionCreated <- struct{}{}
+	})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("retry after failed authentication failed: %v", err)
+	}
+	defer client.Close()
+	select {
+	case <-sessionCreated:
+	case <-time.After(time.Second):
+		t.Fatal("retry did not authenticate")
+	}
+	if health := client.Health(); !health.Connected || !health.Authenticated {
+		t.Fatalf("health after authentication retry = %+v", health)
+	}
+}
+
 type recordingTracerProvider struct {
 	trace.TracerProvider
 	parent trace.SpanContext
