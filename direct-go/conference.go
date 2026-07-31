@@ -31,7 +31,7 @@ type ConferenceJoinInfo struct {
 // GetConferences retrieves all active video/audio conferences the user can see.
 // Returns a slice of Conference objects with participant lists and metadata.
 func (c *Client) GetConferences(ctx context.Context) ([]Conference, error) {
-	result, err := c.Call(MethodGetConferences, []interface{}{})
+	result, err := c.CallWithContext(ctx, MethodGetConferences, []interface{}{})
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +53,7 @@ func (c *Client) GetConferences(ctx context.Context) ([]Conference, error) {
 // Returns a slice of participant IDs or user objects.
 func (c *Client) GetConferenceParticipants(ctx context.Context, conferenceID interface{}) ([]interface{}, error) {
 	params := []interface{}{conferenceID}
-	result, err := c.Call(MethodGetConferenceParticipants, params)
+	result, err := c.CallWithContext(ctx, MethodGetConferenceParticipants, params)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +69,7 @@ func (c *Client) GetConferenceParticipants(ctx context.Context, conferenceID int
 // Returns ConferenceJoinInfo with room name, credentials, and connection details.
 func (c *Client) JoinConference(ctx context.Context, conferenceID interface{}) (*ConferenceJoinInfo, error) {
 	params := []interface{}{conferenceID}
-	result, err := c.Call(MethodJoinConference, params)
+	result, err := c.CallWithContext(ctx, MethodJoinConference, params)
 	if err != nil {
 		return nil, err
 	}
@@ -84,14 +84,14 @@ func (c *Client) JoinConference(ctx context.Context, conferenceID interface{}) (
 // LeaveConference disconnects the current user from an active conference.
 func (c *Client) LeaveConference(ctx context.Context, conferenceID interface{}) error {
 	params := []interface{}{conferenceID}
-	_, err := c.Call(MethodLeaveConference, params)
+	_, err := c.CallWithContext(ctx, MethodLeaveConference, params)
 	return err
 }
 
 // RejectConference declines an invitation to join a conference.
 func (c *Client) RejectConference(ctx context.Context, conferenceID interface{}) error {
 	params := []interface{}{conferenceID}
-	_, err := c.Call(MethodRejectConference, params)
+	_, err := c.CallWithContext(ctx, MethodRejectConference, params)
 	return err
 }
 

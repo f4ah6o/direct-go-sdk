@@ -22,6 +22,7 @@ go get github.com/f4ah6o/direct-go-sdk/direct-go
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     
@@ -39,8 +40,8 @@ func main() {
         fmt.Printf("Received: %s\n", msg.Text)
     })
     
-    // 接続
-    if err := client.Connect(); err != nil {
+    // 接続・認証・通知初期化の完了まで待機
+    if err := client.ConnectWithContext(context.Background()); err != nil {
         log.Fatal(err)
     }
     defer client.Close()
@@ -52,6 +53,22 @@ func main() {
     select {}
 }
 ```
+
+`Connect` は WebSocket 接続の確立後に戻り、アクセストークンを指定した場合の認証と通知初期化は非同期で続行します。
+認証済みAPIを開始する前に `ConnectWithContext` または `WaitReady(ctx)` を使用してください。
+認証失敗や通知初期化失敗は readiness の待機結果として返されます。
+
+## メッセージ受信
+
+`OnMessage` の callback と `Client.Messages` channel は独立した配信先です。
+`OnMessage` を登録しても `Messages` の受信を消費しません。
+
+`Messages` は `Options.MessageChannelSize`（未指定時は100）の bounded channel です。
+channel が満杯になると、受信ループは接続終了まで backpressure を適用します。
+`Close` または接続断では待機中の配信をキャンセルし、実装する `MessageMetrics` に drop 理由 `connection_closed` を通知します。
+再接続可能な client の lifetime channel のため、`Messages` 自体は `Close` で閉じません。
+channel consumer は `Done` と組み合わせて終了を検知してください。
+callback はメッセージごとに別 goroutine で実行され、panic は debug log へ記録されます。
 
 ## リリース
 

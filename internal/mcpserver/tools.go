@@ -12,6 +12,7 @@ import (
 
 type directClient interface {
 	Connect() error
+	ConnectWithContext(context.Context) error
 	Close() error
 	GetMeWithContext(context.Context) (*direct.UserInfo, error)
 	GetDomainsWithContext(context.Context) ([]direct.DomainInfo, error)
@@ -140,7 +141,7 @@ func (s *Server) getMe(ctx context.Context, _ *mcp.CallToolRequest, args account
 	if err := RequireScope(ctx, s.cfg.MCP.ReadScope); err != nil {
 		return nil, userOutput{}, err
 	}
-	client, closeClient, err := s.openClient(args.AccountID)
+	client, closeClient, err := s.openClient(ctx, args.AccountID)
 	if err != nil {
 		return nil, userOutput{}, err
 	}
@@ -153,7 +154,7 @@ func (s *Server) listDomains(ctx context.Context, _ *mcp.CallToolRequest, args a
 	if err := RequireScope(ctx, s.cfg.MCP.ReadScope); err != nil {
 		return nil, listDomainsOutput{}, err
 	}
-	client, closeClient, err := s.openClient(args.AccountID)
+	client, closeClient, err := s.openClient(ctx, args.AccountID)
 	if err != nil {
 		return nil, listDomainsOutput{}, err
 	}
@@ -166,7 +167,7 @@ func (s *Server) listTalks(ctx context.Context, _ *mcp.CallToolRequest, args acc
 	if err := RequireScope(ctx, s.cfg.MCP.ReadScope); err != nil {
 		return nil, listTalksOutput{}, err
 	}
-	client, closeClient, err := s.openClient(args.AccountID)
+	client, closeClient, err := s.openClient(ctx, args.AccountID)
 	if err != nil {
 		return nil, listTalksOutput{}, err
 	}
@@ -179,7 +180,7 @@ func (s *Server) getMessages(ctx context.Context, _ *mcp.CallToolRequest, args g
 	if err := RequireScope(ctx, s.cfg.MCP.ReadScope); err != nil {
 		return nil, getMessagesOutput{}, err
 	}
-	client, closeClient, err := s.openClient(args.AccountID)
+	client, closeClient, err := s.openClient(ctx, args.AccountID)
 	if err != nil {
 		return nil, getMessagesOutput{}, err
 	}
@@ -200,7 +201,7 @@ func (s *Server) searchMessages(ctx context.Context, _ *mcp.CallToolRequest, arg
 	if strings.TrimSpace(args.Keyword) == "" {
 		return nil, searchMessagesOutput{}, fmt.Errorf("keyword is required")
 	}
-	client, closeClient, err := s.openClient(args.AccountID)
+	client, closeClient, err := s.openClient(ctx, args.AccountID)
 	if err != nil {
 		return nil, searchMessagesOutput{}, err
 	}
@@ -223,7 +224,7 @@ func (s *Server) sendText(ctx context.Context, _ *mcp.CallToolRequest, args send
 	if strings.TrimSpace(args.Text) == "" {
 		return nil, sendTextOutput{}, fmt.Errorf("text is required")
 	}
-	client, closeClient, err := s.openClient(args.AccountID)
+	client, closeClient, err := s.openClient(ctx, args.AccountID)
 	if err != nil {
 		return nil, sendTextOutput{}, err
 	}
@@ -235,7 +236,7 @@ func (s *Server) sendText(ctx context.Context, _ *mcp.CallToolRequest, args send
 	return nil, sendTextOutput{MessageID: messageID}, nil
 }
 
-func (s *Server) openClient(accountID string) (directClient, func(), error) {
+func (s *Server) openClient(ctx context.Context, accountID string) (directClient, func(), error) {
 	account, ok := s.cfg.Account(accountID)
 	if !ok {
 		return nil, nil, fmt.Errorf("unknown account %q", accountID)
@@ -252,7 +253,7 @@ func (s *Server) openClient(accountID string) (directClient, func(), error) {
 		ProxyURL:    account.ProxyURL,
 		Name:        "direct-mcp-server-" + account.ID,
 	})
-	if err := client.Connect(); err != nil {
+	if err := client.ConnectWithContext(ctx); err != nil {
 		return nil, nil, err
 	}
 	return client, func() { client.Close() }, nil

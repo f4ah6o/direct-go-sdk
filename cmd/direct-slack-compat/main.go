@@ -11,6 +11,7 @@ import (
 	"time"
 
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
+	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/slackcompat"
 )
 
@@ -68,7 +69,7 @@ func run(args []string, logger *log.Logger) error {
 			c.OnMessage(func(msg direct.ReceivedMessage) {
 				event := slackcompat.ConvertMessageEvent(mapper, cfg.Slack.TeamID, c.AccountID(), msg)
 				if err := sink.Publish(context.Background(), event); err != nil {
-					logger.Printf("[slackcompat] event callback failed account=%s message=%s err=%v", c.AccountID(), msg.ID, err)
+					logger.Printf("[slackcompat] event callback failed account=%s message=%s err=%s", debuglog.RedactID(c.AccountID()), debuglog.RedactID(msg.ID), debuglog.SummarizePayload(err))
 				}
 			})
 		}

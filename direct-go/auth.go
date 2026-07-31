@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 )
 
 const (
@@ -48,7 +50,7 @@ func (a *Auth) HasToken() bool {
 	token, err := a.readTokenFromFile()
 	if err != nil && !os.IsNotExist(err) {
 		// Log unexpected errors (permission issues, etc.) but ignore "file not found"
-		vlog("[WARNING] Error reading token file: %v", err)
+		vlog("[WARNING] Error reading token file: %s", debuglog.SummarizePayload(err))
 	}
 	return token != ""
 }
@@ -66,7 +68,7 @@ func (a *Auth) GetToken() string {
 	token, err := a.readTokenFromFile()
 	if err != nil && !os.IsNotExist(err) {
 		// Log unexpected errors (permission issues, etc.) but ignore "file not found"
-		vlog("[WARNING] Error reading token file: %v", err)
+		vlog("[WARNING] Error reading token file: %s", debuglog.SummarizePayload(err))
 	}
 	return token
 }

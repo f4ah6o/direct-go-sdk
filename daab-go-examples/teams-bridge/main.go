@@ -15,6 +15,7 @@ import (
 
 	"github.com/f4ah6o/direct-go-sdk/daab-go/bot"
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
+	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 )
 
 // N8NPayload is the JSON payload sent to n8n webhook
@@ -34,12 +35,10 @@ type TeamsReply struct {
 var robot *bot.Robot
 
 func main() {
-	// Enable debug server if running
-	debugServer := os.Getenv("DEBUG_SERVER")
-	if debugServer == "" {
-		debugServer = "http://localhost:9999"
+	// Enable safe diagnostics only when explicitly configured.
+	if debugServer := os.Getenv("DEBUG_SERVER"); debugServer != "" {
+		direct.EnableDebugServer(debugServer)
 	}
-	direct.EnableDebugServer(debugServer)
 
 	n8nWebhookURL := os.Getenv("N8N_WEBHOOK_URL")
 	if n8nWebhookURL == "" {
@@ -68,7 +67,7 @@ func main() {
 		talkID := res.RoomID()
 		message := res.Text()
 
-		log.Printf("[BRIDGE] Received message from user=%s talk=%s: %s", userID, talkID, message)
+		log.Printf("[BRIDGE] Received message from user=%s talk=%s text=%s", debuglog.RedactID(userID), debuglog.RedactID(talkID), debuglog.SummarizePayload(message))
 
 		// Forward to n8n
 		payload := N8NPayload{
@@ -78,7 +77,7 @@ func main() {
 		}
 
 		if err := sendToN8N(n8nWebhookURL, payload); err != nil {
-			log.Printf("[BRIDGE] Error sending to n8n: %v", err)
+			log.Printf("[BRIDGE] Error sending to n8n: %s", debuglog.SummarizePayload(err))
 		}
 	})
 
@@ -102,7 +101,7 @@ func main() {
 		log.Printf("Received signal %s, shutting down...", sig)
 		cancel()
 	case err := <-errCh:
-		log.Printf("Bot error: %v", err)
+		log.Printf("Bot error: %s", debuglog.SummarizePayload(err))
 	}
 }
 
@@ -133,7 +132,7 @@ func startCallbackServer(port string) {
 
 	log.Printf("[BRIDGE] Starting callback server on port %s", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
-		log.Fatalf("Failed to start callback server: %v", err)
+		log.Fatalf("Failed to start callback server: %s", debuglog.SummarizePayload(err))
 	}
 }
 
@@ -146,17 +145,17 @@ func handleTeamsReply(w http.ResponseWriter, r *http.Request) {
 
 	var reply TeamsReply
 	if err := json.NewDecoder(r.Body).Decode(&reply); err != nil {
-		log.Printf("[BRIDGE] Failed to decode reply: %v", err)
+		log.Printf("[BRIDGE] Failed to decode reply: %s", debuglog.SummarizePayload(err))
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
-	log.Printf("[BRIDGE] Received reply from Teams for user=%s talk=%s: %s",
-		reply.UserID, reply.TalkID, reply.Message)
+	log.Printf("[BRIDGE] Received reply from Teams for user=%s talk=%s text=%s",
+		debuglog.RedactID(reply.UserID), debuglog.RedactID(reply.TalkID), debuglog.SummarizePayload(reply.Message))
 
 	// Send reply to direct
 	if err := robot.SendText(reply.TalkID, reply.Message); err != nil {
-		log.Printf("[BRIDGE] Failed to send reply to direct: %v", err)
+		log.Printf("[BRIDGE] Failed to send reply to direct: %s", debuglog.SummarizePayload(err))
 		http.Error(w, "Failed to send to direct", http.StatusInternalServerError)
 		return
 	}

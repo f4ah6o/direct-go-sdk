@@ -3,7 +3,6 @@ package directworker
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
+	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/config"
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/model"
 )
@@ -67,12 +67,13 @@ type AccountStatus struct {
 
 type directClient interface {
 	Connect() error
+	ConnectWithContext(context.Context) error
 	Close() error
 	On(string, direct.EventHandler)
 	OnMessage(func(direct.ReceivedMessage))
 	CreateTextMessageWithContext(context.Context, string, string) (string, error)
 	CreateUploadAuth(context.Context, string, string, int64, string) (*direct.UploadAuth, error)
-	Call(string, []interface{}) (interface{}, error)
+	CallWithContext(context.Context, string, []interface{}) (interface{}, error)
 	Done() <-chan struct{}
 }
 
@@ -173,7 +174,7 @@ func (m *Manager) Apply(ctx context.Context, accounts []RuntimeAccount) {
 	for id, worker := range m.workers {
 		account, ok := next[id]
 		if !ok || !sameRuntimeAccount(worker.account, account) {
-			m.logger.Printf("[%s] stopping direct worker", id)
+			m.logger.Printf("[%s] stopping direct worker", debuglog.RedactID(id))
 			worker.cancel()
 			delete(m.workers, id)
 			delete(m.statuses, id)
@@ -199,7 +200,7 @@ func (m *Manager) Apply(ctx context.Context, accounts []RuntimeAccount) {
 		m.workers[id] = worker
 		now := m.now()
 		m.statuses[id] = AccountStatus{AccountID: id, Generation: generation, StartedAt: now, UnreadySince: now, UpdatedAt: now}
-		m.logger.Printf("[%s] starting direct worker", id)
+		m.logger.Printf("[%s] starting direct worker", debuglog.RedactID(id))
 		go runAccountWorker(workerCtx, worker, m.out, m.readOut, m.sent, m.logger, m.clientFactory, m.sleepBackoff, m.now)
 	}
 }
@@ -223,7 +224,7 @@ func (m *Manager) restartStaleWorkers(startupTimeout time.Duration) {
 		if unreadySince.IsZero() || now.Sub(unreadySince) < startupTimeout {
 			continue
 		}
-		m.logger.Printf("[%s] direct worker is not ready after %s; requesting restart", id, startupTimeout)
+		m.logger.Printf("[%s] direct worker is not ready after %s; requesting restart", debuglog.RedactID(id), startupTimeout)
 		select {
 		case worker.restart <- struct{}{}:
 			status.RestartedAt = now
@@ -299,7 +300,7 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 
 		token := account.Token
 		if token == "" {
-			logger.Printf("[%s] direct token is empty; retrying", cfg.ID)
+			logger.Printf("[%s] direct token is empty; retrying", debuglog.RedactID(cfg.ID))
 			worker.status(func(status *AccountStatus) {
 				status.LastError = "direct token is empty"
 			})
@@ -316,7 +317,7 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 			status.AuthInvalid = false
 			status.LastError = ""
 		})
-		logger.Printf("[%s] using direct token len=%d sha=%s", cfg.ID, len(token), tokenFingerprint(token))
+		logger.Printf("[%s] using direct token configured", debuglog.RedactID(cfg.ID))
 
 		endpoint := cfg.Endpoint
 		if endpoint == "" {
@@ -344,19 +345,19 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 		}
 
 		client.On(direct.EventError, func(data interface{}) {
-			logger.Printf("[%s] direct error: %+v", cfg.ID, data)
+			logger.Printf("[%s] direct error: %s", debuglog.RedactID(cfg.ID), debuglog.SummarizePayload(data))
 			worker.status(func(status *AccountStatus) {
-				status.LastError = fmt.Sprint(data)
+				status.LastError = debuglog.SummarizePayload(data)
 			})
 			requestReconnect()
 		})
 		client.On(direct.EventSessionError, func(data interface{}) {
-			logger.Printf("[%s] direct session error: %+v", cfg.ID, data)
+			logger.Printf("[%s] direct session error: %s", debuglog.RedactID(cfg.ID), debuglog.SummarizePayload(data))
 			worker.status(func(status *AccountStatus) {
-				status.LastError = fmt.Sprint(data)
+				status.LastError = debuglog.SummarizePayload(data)
 			})
 			if isInvalidTokenError(data) {
-				logger.Printf("[%s] direct token is invalid; waiting for token update before reconnect", cfg.ID)
+				logger.Printf("[%s] direct token is invalid; waiting for token update before reconnect", debuglog.RedactID(cfg.ID))
 				worker.status(func(status *AccountStatus) {
 					status.AuthInvalid = true
 					status.Connected = false
@@ -368,10 +369,10 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 			requestReconnect()
 		})
 		client.On(direct.EventSessionCreated, func(data interface{}) {
-			logger.Printf("[%s] direct session created", cfg.ID)
+			logger.Printf("[%s] direct session created", debuglog.RedactID(cfg.ID))
 		})
 		client.On(direct.EventDataRecovered, func(data interface{}) {
-			logger.Printf("[%s] direct notification ready", cfg.ID)
+			logger.Printf("[%s] direct notification ready", debuglog.RedactID(cfg.ID))
 			worker.status(func(status *AccountStatus) {
 				status.Ready = true
 				status.ReadyAt = now()
@@ -381,30 +382,30 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 			markReady()
 		})
 		client.On(direct.EventNotificationError, func(data interface{}) {
-			logger.Printf("[%s] direct notification error: %+v", cfg.ID, data)
+			logger.Printf("[%s] direct notification error: %s", debuglog.RedactID(cfg.ID), debuglog.SummarizePayload(data))
 			worker.status(func(status *AccountStatus) {
-				status.LastError = fmt.Sprint(data)
+				status.LastError = debuglog.SummarizePayload(data)
 			})
 			requestReconnect()
 		})
 		client.OnMessage(func(msg direct.ReceivedMessage) {
 			if msg.ID == "" {
-				logger.Printf("[%s] direct message ignored without id: talk=%s user=%s type=%d", cfg.ID, msg.TalkID, msg.UserID, msg.Type)
+				logger.Printf("[%s] direct message ignored without id: talk=%s user=%s type=%d", debuglog.RedactID(cfg.ID), debuglog.RedactID(msg.TalkID), debuglog.RedactID(msg.UserID), msg.Type)
 				return
 			}
 			bm := model.DirectMessage{
 				AccountID: cfg.ID,
 				TalkID:    msg.TalkID,
 				UserID:    msg.UserID,
-				UserName:  worker.names.userName(client, msg.DomainID, msg.UserID, msg.TalkID, logger, cfg.ID),
-				RoomName:  worker.names.roomName(client, msg.TalkID, logger, cfg.ID),
+				UserName:  worker.names.userName(ctx, client, msg.DomainID, msg.UserID, msg.TalkID, logger, cfg.ID),
+				RoomName:  worker.names.roomName(ctx, client, msg.TalkID, logger, cfg.ID),
 				Text:      msg.Text,
 				MessageID: msg.ID,
 				CreatedAt: messageTime(msg),
 				Raw:       msg,
 			}
 			bm.Attachments = attachmentsFromDirectMessage(msg)
-			logger.Printf("[%s] direct message received: id=%s talk=%s user=%s type=%d attachments=%d", cfg.ID, msg.ID, msg.TalkID, msg.UserID, msg.Type, len(bm.Attachments))
+			logger.Printf("[%s] direct message received: id=%s talk=%s user=%s type=%d attachments=%d", debuglog.RedactID(cfg.ID), debuglog.RedactID(msg.ID), debuglog.RedactID(msg.TalkID), debuglog.RedactID(msg.UserID), msg.Type, len(bm.Attachments))
 			select {
 			case out <- bm:
 			case <-ctx.Done():
@@ -421,7 +422,7 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 				MessageIDs:  update.MessageIDs,
 				ReadUserIDs: update.ReadUserIDs,
 			}
-			logger.Printf("[%s] direct read status updated: talk=%s messages=%d read_users=%d", cfg.ID, receipt.TalkID, len(receipt.MessageIDs), len(receipt.ReadUserIDs))
+			logger.Printf("[%s] direct read status updated: talk=%s messages=%d read_users=%d", debuglog.RedactID(cfg.ID), debuglog.RedactID(receipt.TalkID), len(receipt.MessageIDs), len(receipt.ReadUserIDs))
 			if readOut == nil {
 				return
 			}
@@ -431,22 +432,28 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 			}
 		})
 
-		if err := client.Connect(); err != nil {
-			logger.Printf("[%s] connect failed: %v", cfg.ID, err)
+		if err := client.ConnectWithContext(ctx); err != nil {
+			logger.Printf("[%s] connect failed: %s", debuglog.RedactID(cfg.ID), debuglog.SummarizePayload(err))
 			worker.status(func(status *AccountStatus) {
 				status.Connected = false
 				status.Ready = false
 				markUnready(status, now())
-				status.LastError = err.Error()
+				status.AuthInvalid = isInvalidTokenError(err)
+				status.LastError = debuglog.SummarizePayload(err)
 			})
 			_ = client.Close()
+			if isInvalidTokenError(err) {
+				logger.Printf("[%s] direct token is invalid; waiting for token update before retrying", debuglog.RedactID(cfg.ID))
+				<-ctx.Done()
+				return
+			}
 			sleepBackoff(ctx, &backoff)
 			continue
 		}
-		logger.Printf("[%s] connected", cfg.ID)
-		selfUserID := directSelfUserID(client)
+		logger.Printf("[%s] connected", debuglog.RedactID(cfg.ID))
+		selfUserID := directSelfUserID(ctx, client)
 		if selfUserID == "" {
-			logger.Printf("[%s] direct self user id unavailable; read reactions will ignore self-read filtering", cfg.ID)
+			logger.Printf("[%s] direct self user id unavailable; read reactions will ignore self-read filtering", debuglog.RedactID(cfg.ID))
 		}
 		worker.status(func(status *AccountStatus) {
 			status.Connected = true
@@ -457,16 +464,16 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 		for !disconnected {
 			if pending != nil {
 				if selfUserID == "" {
-					selfUserID = directSelfUserID(client)
+					selfUserID = directSelfUserID(ctx, client)
 				}
 				messageID, err := sendDirect(ctx, client, *pending)
 				if err != nil {
-					logger.Printf("[%s] direct send failed: talk=%s err=%v", cfg.ID, pending.TalkID, err)
+					logger.Printf("[%s] direct send failed: talk=%s err=%s", debuglog.RedactID(cfg.ID), debuglog.RedactID(pending.TalkID), debuglog.SummarizePayload(err))
 					worker.status(func(status *AccountStatus) {
-						status.LastError = err.Error()
+						status.LastError = debuglog.SummarizePayload(err)
 					})
 					if isRecoverableDirectError(err) {
-						logger.Printf("[%s] recreating client after recoverable direct send error", cfg.ID)
+						logger.Printf("[%s] recreating client after recoverable direct send error", debuglog.RedactID(cfg.ID))
 						_ = client.Close()
 						disconnected = true
 						continue
@@ -491,11 +498,11 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 
 			select {
 			case <-ctx.Done():
-				logger.Printf("[%s] shutting down", cfg.ID)
+				logger.Printf("[%s] shutting down", debuglog.RedactID(cfg.ID))
 				_ = client.Close()
 				return
 			case <-client.Done():
-				logger.Printf("[%s] disconnected; recreating client", cfg.ID)
+				logger.Printf("[%s] disconnected; recreating client", debuglog.RedactID(cfg.ID))
 				worker.status(func(status *AccountStatus) {
 					status.Connected = false
 					status.Ready = false
@@ -505,7 +512,7 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 				_ = client.Close()
 				disconnected = true
 			case <-reconnectNow:
-				logger.Printf("[%s] recreating client after direct startup error", cfg.ID)
+				logger.Printf("[%s] recreating client after direct startup error", debuglog.RedactID(cfg.ID))
 				worker.status(func(status *AccountStatus) {
 					status.Connected = false
 					status.Ready = false
@@ -514,7 +521,7 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 				_ = client.Close()
 				disconnected = true
 			case <-worker.restart:
-				logger.Printf("[%s] recreating client after watchdog restart request", cfg.ID)
+				logger.Printf("[%s] recreating client after watchdog restart request", debuglog.RedactID(cfg.ID))
 				worker.status(func(status *AccountStatus) {
 					status.Connected = false
 					status.Ready = false
@@ -526,7 +533,7 @@ func runAccountWorker(ctx context.Context, worker *accountWorker, out chan<- mod
 				disconnected = true
 			case <-readyNow:
 				if selfUserID == "" {
-					selfUserID = directSelfUserID(client)
+					selfUserID = directSelfUserID(ctx, client)
 				}
 				backoff = time.Second
 			case msg := <-in:
@@ -555,15 +562,15 @@ func newNameResolver() *nameResolver {
 	}
 }
 
-func (r *nameResolver) userName(client directClient, domainID, userID, talkID string, logger *log.Logger, accountID string) string {
+func (r *nameResolver) userName(ctx context.Context, client directClient, domainID, userID, talkID string, logger *log.Logger, accountID string) string {
 	if userID == "" {
 		return ""
 	}
 	if domainID == "" && talkID != "" {
-		domainID = r.roomInfo(client, talkID, logger, accountID).domainID
+		domainID = r.roomInfo(ctx, client, talkID, logger, accountID).domainID
 	}
 	if domainID == "" {
-		logger.Printf("[%s] direct user name lookup skipped without domain: talk=%s user=%s", accountID, talkID, userID)
+		logger.Printf("[%s] direct user name lookup skipped without domain: talk=%s user=%s", debuglog.RedactID(accountID), debuglog.RedactID(talkID), debuglog.RedactID(userID))
 		return ""
 	}
 	key := domainID + ":" + userID
@@ -574,9 +581,9 @@ func (r *nameResolver) userName(client directClient, domainID, userID, talkID st
 		return name
 	}
 
-	result, err := client.Call(direct.MethodGetUsers, []interface{}{normalizeRPCID(domainID), []interface{}{normalizeRPCID(userID)}})
+	result, err := client.CallWithContext(ctx, direct.MethodGetUsers, []interface{}{normalizeRPCID(domainID), []interface{}{normalizeRPCID(userID)}})
 	if err != nil {
-		logger.Printf("[%s] direct user name lookup failed: domain=%s user=%s err=%v", accountID, domainID, userID, err)
+		logger.Printf("[%s] direct user name lookup failed: domain=%s user=%s err=%s", debuglog.RedactID(accountID), debuglog.RedactID(domainID), debuglog.RedactID(userID), debuglog.SummarizePayload(err))
 		return ""
 	}
 	name = displayNameFromGetUsers(result, userID)
@@ -586,11 +593,11 @@ func (r *nameResolver) userName(client directClient, domainID, userID, talkID st
 	return name
 }
 
-func (r *nameResolver) roomName(client directClient, talkID string, logger *log.Logger, accountID string) string {
-	return r.roomInfo(client, talkID, logger, accountID).name
+func (r *nameResolver) roomName(ctx context.Context, client directClient, talkID string, logger *log.Logger, accountID string) string {
+	return r.roomInfo(ctx, client, talkID, logger, accountID).name
 }
 
-func (r *nameResolver) roomInfo(client directClient, talkID string, logger *log.Logger, accountID string) directRoomInfo {
+func (r *nameResolver) roomInfo(ctx context.Context, client directClient, talkID string, logger *log.Logger, accountID string) directRoomInfo {
 	if talkID == "" {
 		return directRoomInfo{}
 	}
@@ -601,9 +608,9 @@ func (r *nameResolver) roomInfo(client directClient, talkID string, logger *log.
 		return info
 	}
 
-	result, err := client.Call(direct.MethodGetTalks, []interface{}{})
+	result, err := client.CallWithContext(ctx, direct.MethodGetTalks, []interface{}{})
 	if err != nil {
-		logger.Printf("[%s] direct room name lookup failed: talk=%s err=%v", accountID, talkID, err)
+		logger.Printf("[%s] direct room name lookup failed: talk=%s err=%s", debuglog.RedactID(accountID), debuglog.RedactID(talkID), debuglog.SummarizePayload(err))
 		return directRoomInfo{}
 	}
 	rooms := roomInfoFromGetTalks(result)
@@ -617,7 +624,7 @@ func (r *nameResolver) roomInfo(client directClient, talkID string, logger *log.
 	}
 	r.mu.Unlock()
 	if info.name == "" && info.domainID == "" {
-		logger.Printf("[%s] direct room lookup returned no match: talk=%s talks=%d", accountID, talkID, len(rooms))
+		logger.Printf("[%s] direct room lookup returned no match: talk=%s talks=%d", debuglog.RedactID(accountID), debuglog.RedactID(talkID), len(rooms))
 	}
 	return info
 }
@@ -721,19 +728,18 @@ func normalizeRPCID(value string) interface{} {
 	return value
 }
 
-func tokenFingerprint(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return fmt.Sprintf("%x", sum[:])[:12]
-}
-
 func isInvalidTokenError(data interface{}) bool {
 	m, ok := data.(map[string]interface{})
-	if !ok {
-		return false
+	if ok {
+		code := fmt.Sprint(m["code"])
+		message := fmt.Sprint(m["message"])
+		return code == "401" && (message == "invalid token" || message == "bad token")
 	}
-	code := fmt.Sprint(m["code"])
-	message := fmt.Sprint(m["message"])
-	return code == "401" && (message == "invalid token" || message == "bad token")
+	if err, ok := data.(error); ok {
+		message := strings.ToLower(err.Error())
+		return strings.Contains(message, "invalid token") || strings.Contains(message, "bad token")
+	}
+	return false
 }
 
 func isRecoverableDirectError(err error) bool {
@@ -756,8 +762,8 @@ func isRecoverableDirectError(err error) bool {
 	return errors.As(err, &connErr)
 }
 
-func directSelfUserID(client directClient) string {
-	result, err := client.Call(direct.MethodGetMe, []interface{}{})
+func directSelfUserID(ctx context.Context, client directClient) string {
+	result, err := client.CallWithContext(ctx, direct.MethodGetMe, []interface{}{})
 	if err != nil {
 		return ""
 	}
@@ -790,14 +796,14 @@ func sendDirect(ctx context.Context, client directClient, msg model.DirectOutbou
 		files = append(files, fileInfo)
 	}
 	if len(files) == 1 && msg.Text == "" {
-		result, err := client.Call(direct.MethodCreateMessage, []interface{}{normalizeTalkID(msg.TalkID), direct.MsgTypeFile, files[0]})
+		result, err := client.CallWithContext(ctx, direct.MethodCreateMessage, []interface{}{normalizeTalkID(msg.TalkID), direct.MsgTypeFile, files[0]})
 		return directMessageID(result), err
 	}
 	content := map[string]interface{}{"files": files}
 	if msg.Text != "" {
 		content["text"] = msg.Text
 	}
-	result, err := client.Call(direct.MethodCreateMessage, []interface{}{normalizeTalkID(msg.TalkID), direct.MsgTypeTextMultipleFile, content})
+	result, err := client.CallWithContext(ctx, direct.MethodCreateMessage, []interface{}{normalizeTalkID(msg.TalkID), direct.MsgTypeTextMultipleFile, content})
 	return directMessageID(result), err
 }
 

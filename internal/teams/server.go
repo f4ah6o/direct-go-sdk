@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/config"
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/model"
 	"github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/store"
@@ -29,6 +30,23 @@ type Server struct {
 	account    func(string) (config.AccountConfig, bool)
 	token      func(string) (string, bool)
 	health     func() (bool, interface{})
+	codex      CodexHandler
+}
+
+type CodexActivity struct {
+	ServiceURL     string
+	ConversationID string
+	RootID         string
+	ActivityID     string
+	Text           string
+	FromID         string
+	FromName       string
+	Attachments    []model.Attachment
+}
+
+type CodexHandler interface {
+	HandleQuestion(context.Context, CodexActivity)
+	HandleAnswer(context.Context, CodexActivity)
 }
 
 func NewServer(cfg *config.Config, client *Client, st *store.Store, out chan<- model.DirectOutbound, logger *log.Logger, opts ...func(*Server)) *Server {
@@ -90,6 +108,12 @@ func WithRuntimeLookups(hasChannel func(string) bool, account func(string) (conf
 	}
 }
 
+func WithCodexHandler(handler CodexHandler) func(*Server) {
+	return func(s *Server) {
+		s.codex = handler
+	}
+}
+
 func (s *Server) Run(ctx context.Context) error {
 	errCh := make(chan error, 1)
 	go func() {
@@ -122,7 +146,7 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	if !s.authValidationBypassed(r) {
 		if err := s.validator.Validate(r.Context(), r, activity); err != nil {
-			s.logger.Printf("[teams] unauthorized activity: %v", err)
+			s.logger.Printf("[teams] unauthorized activity: %s", debuglog.SummarizePayload(err))
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -184,14 +208,14 @@ func (s *Server) handleDirectFile(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("Authorization", "ALB "+token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		s.logger.Printf("[teams] direct file proxy failed account=%s err=%v", accountID, err)
+		s.logger.Printf("[teams] direct file proxy failed account=%s err=%s", debuglog.RedactID(accountID), debuglog.SummarizePayload(err))
 		http.Error(w, "direct file fetch failed", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		s.logger.Printf("[teams] direct file proxy status=%d account=%s body=%s", resp.StatusCode, accountID, string(b))
+		s.logger.Printf("[teams] direct file proxy status=%d account=%s response_body_bytes=%d", resp.StatusCode, debuglog.RedactID(accountID), len(b))
 		http.Error(w, "direct file fetch failed", http.StatusBadGateway)
 		return
 	}
@@ -229,10 +253,16 @@ func (s *Server) processActivity(ctx context.Context, activity Activity) {
 		s.unbindChannel(ctx, alias, activity)
 		return
 	}
-	if s.handleCommand(ctx, activity) {
+	if s.handleCodexAnswerActivity(ctx, activity) {
 		return
 	}
 	if !MentionsRecipient(activity) {
+		return
+	}
+	if s.handleCodexActivity(ctx, activity) {
+		return
+	}
+	if s.handleCommand(ctx, activity) {
 		return
 	}
 	conversationID, rootID := threadReference(activity)
@@ -242,7 +272,7 @@ func (s *Server) processActivity(ctx context.Context, activity Activity) {
 	}
 	mapping, ok := s.store.GetByThread(conversationID, rootID)
 	if !ok {
-		s.logger.Printf("[teams] ignoring unmapped thread conversation=%s root=%s", conversationID, rootID)
+		s.logger.Printf("[teams] ignoring unmapped thread conversation=%s root=%s", debuglog.RedactID(conversationID), debuglog.RedactID(rootID))
 		return
 	}
 	text := StripRecipientMention(activity)
@@ -282,6 +312,90 @@ func (s *Server) processActivity(ctx context.Context, activity Activity) {
 	}
 }
 
+func (s *Server) handleCodexAnswerActivity(ctx context.Context, activity Activity) bool {
+	if s.codex == nil || s.cfg == nil || s.store == nil || !s.cfg.Codex.Enabled {
+		return false
+	}
+	conversationID, rootID := threadReference(activity)
+	if rootID == "" {
+		return false
+	}
+	if _, ok := s.store.GetCodexByAnswer(conversationID, rootID); !ok {
+		return false
+	}
+	in := CodexActivity{
+		ServiceURL:     activity.ServiceURL,
+		ConversationID: conversationID,
+		RootID:         rootID,
+		ActivityID:     activity.ID,
+		Text:           StripRecipientMention(activity),
+		FromID:         activity.From.ID,
+		FromName:       activity.From.Name,
+		Attachments:    s.attachmentsFromActivity(ctx, activity),
+	}
+	s.codex.HandleAnswer(ctx, in)
+	return true
+}
+
+func (s *Server) handleCodexActivity(ctx context.Context, activity Activity) bool {
+	if s.codex == nil || s.cfg == nil || s.store == nil || !s.cfg.Codex.Enabled {
+		return false
+	}
+	conversationID, rootID := threadReference(activity)
+	if rootID == "" {
+		rootID = activity.ID
+	}
+	bindingAlias := s.boundAliasForConversation(conversationID)
+	if bindingAlias == "" {
+		return false
+	}
+	in := CodexActivity{
+		ServiceURL:     activity.ServiceURL,
+		ConversationID: conversationID,
+		RootID:         rootID,
+		ActivityID:     activity.ID,
+		Text:           StripRecipientMention(activity),
+		FromID:         activity.From.ID,
+		FromName:       activity.From.Name,
+		Attachments:    s.attachmentsFromActivity(ctx, activity),
+	}
+	switch bindingAlias {
+	case s.cfg.Codex.QuestionAlias:
+		if !s.codexUserAllowed(activity.From.ID) {
+			_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "このユーザーは Codex bridge を利用できません。")
+			return true
+		}
+		s.codex.HandleQuestion(ctx, in)
+		return true
+	case s.cfg.Codex.AnswerAlias:
+		s.codex.HandleAnswer(ctx, in)
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) boundAliasForConversation(conversationID string) string {
+	for _, binding := range s.store.ListChannelBindings() {
+		if binding.ConversationID == conversationID {
+			return binding.Alias
+		}
+	}
+	return ""
+}
+
+func (s *Server) codexUserAllowed(userID string) bool {
+	if len(s.cfg.Codex.AllowedUserIDs) == 0 {
+		return true
+	}
+	for _, allowed := range s.cfg.Codex.AllowedUserIDs {
+		if allowed == userID {
+			return true
+		}
+	}
+	return false
+}
+
 func appendTeamsSenderName(text, displayName string) string {
 	name := strings.TrimSpace(displayName)
 	if name == "" {
@@ -296,7 +410,7 @@ func appendTeamsSenderName(text, displayName string) string {
 func (s *Server) sendWelcome(ctx context.Context, activity Activity) {
 	text := "direct bridge は利用可能です。対象チャネルで `@direct bind <alias>` を送ると、この Teams チャネルを Direct アカウントの転送先に紐付けます。"
 	if _, err := s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, "", text); err != nil {
-		s.logger.Printf("[teams] welcome message failed conversation=%s err=%v", activity.Conversation.ID, err)
+		s.logger.Printf("[teams] welcome message failed conversation=%s err=%s", debuglog.RedactID(activity.Conversation.ID), debuglog.SummarizePayload(err))
 	}
 }
 
@@ -332,30 +446,30 @@ func (s *Server) resetThreadMapping(ctx context.Context, activity Activity) {
 	}
 	mapping, ok := s.store.GetByThread(conversationID, rootID)
 	if !ok {
-		s.logger.Printf("[teams] new-thread ignored for unmapped thread conversation=%s root=%s", conversationID, rootID)
+		s.logger.Printf("[teams] new-thread ignored for unmapped thread conversation=%s root=%s", debuglog.RedactID(conversationID), debuglog.RedactID(rootID))
 		_, _ = s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "❌ this thread is not mapped to a Direct room.")
 		return
 	}
 	if err := s.store.Forget(mapping.AccountID, mapping.TalkID); err != nil {
-		s.logger.Printf("[teams] new-thread failed account=%s talk=%s err=%v", mapping.AccountID, mapping.TalkID, err)
+		s.logger.Printf("[teams] new-thread failed account=%s talk=%s err=%s", debuglog.RedactID(mapping.AccountID), debuglog.RedactID(mapping.TalkID), debuglog.SummarizePayload(err))
 		return
 	}
 	text := "✅ reset thread mapping. The next Direct message for this room will start a new Teams thread."
 	if _, err := s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, text); err != nil {
-		s.logger.Printf("[teams] new-thread response failed account=%s talk=%s err=%v", mapping.AccountID, mapping.TalkID, err)
+		s.logger.Printf("[teams] new-thread response failed account=%s talk=%s err=%s", debuglog.RedactID(mapping.AccountID), debuglog.RedactID(mapping.TalkID), debuglog.SummarizePayload(err))
 	}
 }
 
 func (s *Server) unbindChannel(ctx context.Context, alias string, activity Activity) {
 	if activity.ReplyToID != "" {
 		if _, err := s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "❌ unbind must be sent as a new channel message, not as a thread reply."); err != nil {
-			s.logger.Printf("[teams] unbind placement response failed alias=%s err=%v", alias, err)
+			s.logger.Printf("[teams] unbind placement response failed alias=%s err=%s", debuglog.RedactID(alias), debuglog.SummarizePayload(err))
 		}
 		return
 	}
 	if !s.hasChannel(alias) {
 		if _, err := s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "❌ unknown channel alias: "+alias); err != nil {
-			s.logger.Printf("[teams] unknown unbind alias response failed alias=%s err=%v", alias, err)
+			s.logger.Printf("[teams] unknown unbind alias response failed alias=%s err=%s", debuglog.RedactID(alias), debuglog.SummarizePayload(err))
 		}
 		return
 	}
@@ -363,18 +477,18 @@ func (s *Server) unbindChannel(ctx context.Context, alias string, activity Activ
 	conversationID := channelConversationID(activity)
 	if !ok || binding.ConversationID != conversationID {
 		if _, err := s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "❌ channel alias is not bound here: "+alias); err != nil {
-			s.logger.Printf("[teams] unbind not-bound response failed alias=%s err=%v", alias, err)
+			s.logger.Printf("[teams] unbind not-bound response failed alias=%s err=%s", debuglog.RedactID(alias), debuglog.SummarizePayload(err))
 		}
 		return
 	}
 	removed, err := s.store.UnbindChannel(alias, conversationID)
 	if err != nil {
-		s.logger.Printf("[teams] unbind failed alias=%s err=%v", alias, err)
+		s.logger.Printf("[teams] unbind failed alias=%s err=%s", debuglog.RedactID(alias), debuglog.SummarizePayload(err))
 		return
 	}
 	text := "✅ unbound channel alias: " + alias + "; removed " + strconv.Itoa(removed) + " thread mappings"
 	if _, err := s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, text); err != nil {
-		s.logger.Printf("[teams] unbind response failed alias=%s err=%v", alias, err)
+		s.logger.Printf("[teams] unbind response failed alias=%s err=%s", debuglog.RedactID(alias), debuglog.SummarizePayload(err))
 	}
 }
 
@@ -401,13 +515,13 @@ func threadReplyUsageText() string {
 func (s *Server) bindChannel(ctx context.Context, alias string, activity Activity) {
 	if activity.ReplyToID != "" {
 		if _, err := s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "❌ bind must be sent as a new channel message, not as a thread reply."); err != nil {
-			s.logger.Printf("[teams] bind placement response failed alias=%s err=%v", alias, err)
+			s.logger.Printf("[teams] bind placement response failed alias=%s err=%s", debuglog.RedactID(alias), debuglog.SummarizePayload(err))
 		}
 		return
 	}
 	if !s.hasChannel(alias) {
 		if _, err := s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "❌ unknown channel alias: "+alias); err != nil {
-			s.logger.Printf("[teams] unknown alias response failed alias=%s err=%v", alias, err)
+			s.logger.Printf("[teams] unknown alias response failed alias=%s err=%s", debuglog.RedactID(alias), debuglog.SummarizePayload(err))
 		}
 		return
 	}
@@ -421,11 +535,11 @@ func (s *Server) bindChannel(ctx context.Context, alias string, activity Activit
 		BotID:          activity.Recipient.ID,
 	}
 	if err := s.store.PutChannelBinding(binding); err != nil {
-		s.logger.Printf("[teams] bind failed alias=%s err=%v", alias, err)
+		s.logger.Printf("[teams] bind failed alias=%s err=%s", debuglog.RedactID(alias), debuglog.SummarizePayload(err))
 		return
 	}
 	if _, err := s.client.SendText(ctx, activity.ServiceURL, activity.Conversation.ID, activity.ID, "✅ bound channel alias: "+alias); err != nil {
-		s.logger.Printf("[teams] bind response failed alias=%s err=%v", alias, err)
+		s.logger.Printf("[teams] bind response failed alias=%s err=%s", debuglog.RedactID(alias), debuglog.SummarizePayload(err))
 	}
 }
 
@@ -456,7 +570,7 @@ func (s *Server) attachmentsFromActivity(ctx context.Context, activity Activity)
 			item.Data = data
 			item.ContentType = firstNonEmpty(contentType, item.ContentType)
 		} else {
-			s.logger.Printf("[teams] attachment download failed content_type=%s name=%s url=%s err=%v", att.ContentType, att.Name, item.URL, err)
+			s.logger.Printf("[teams] attachment download failed content_type=%s name=%s url=%s err=%s", att.ContentType, debuglog.SummarizePayload(att.Name), debuglog.RedactID(item.URL), debuglog.SummarizePayload(err))
 		}
 		if strings.TrimSpace(item.Name) == "" && strings.TrimSpace(item.URL) == "" && len(item.Data) == 0 {
 			continue

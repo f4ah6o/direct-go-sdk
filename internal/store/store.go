@@ -53,6 +53,19 @@ type TeamsMessageRef struct {
 	ReactedAt       time.Time `json:"reacted_at,omitempty"`
 }
 
+type CodexThreadMapping struct {
+	QuestionConversationID string    `json:"question_conversation_id"`
+	QuestionRootID         string    `json:"question_root_id"`
+	QuestionServiceURL     string    `json:"question_service_url"`
+	AnswerConversationID   string    `json:"answer_conversation_id,omitempty"`
+	AnswerRootID           string    `json:"answer_root_id,omitempty"`
+	AnswerServiceURL       string    `json:"answer_service_url,omitempty"`
+	CodexThreadID          string    `json:"codex_thread_id"`
+	Status                 string    `json:"status"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
+}
+
 type State struct {
 	TalkThreads           map[string]ThreadMapping       `json:"talk_threads"`
 	TeamsThreadIndex      map[string]string              `json:"teams_thread_index"`
@@ -62,6 +75,8 @@ type State struct {
 	DirectToTeamsMessages map[string]TeamsMessageRef     `json:"direct_to_teams_messages"`
 	Subscriptions         map[string]string              `json:"subscriptions"`
 	DirectDevices         map[string]string              `json:"direct_devices"`
+	CodexThreads          map[string]CodexThreadMapping  `json:"codex_threads"`
+	CodexAnswerIndex      map[string]string              `json:"codex_answer_index"`
 }
 
 type Store struct {
@@ -100,6 +115,8 @@ func newState() State {
 		DirectToTeamsMessages: map[string]TeamsMessageRef{},
 		Subscriptions:         map[string]string{},
 		DirectDevices:         map[string]string{},
+		CodexThreads:          map[string]CodexThreadMapping{},
+		CodexAnswerIndex:      map[string]string{},
 	}
 }
 
@@ -128,6 +145,12 @@ func (s *Store) ensure() {
 	if s.state.DirectDevices == nil {
 		s.state.DirectDevices = map[string]string{}
 	}
+	if s.state.CodexThreads == nil {
+		s.state.CodexThreads = map[string]CodexThreadMapping{}
+	}
+	if s.state.CodexAnswerIndex == nil {
+		s.state.CodexAnswerIndex = map[string]string{}
+	}
 }
 
 func talkKey(accountID, talkID string) string {
@@ -136,6 +159,14 @@ func talkKey(accountID, talkID string) string {
 
 func threadKey(conversationID, rootID string) string {
 	return conversationID + ":" + rootID
+}
+
+func codexQuestionKey(conversationID, rootID string) string {
+	return threadKey(conversationID, rootID)
+}
+
+func codexAnswerKey(conversationID, rootID string) string {
+	return threadKey(conversationID, rootID)
 }
 
 func directMessageKey(accountID, messageID string) string {
@@ -251,6 +282,51 @@ func (s *Store) ListMappings() []ThreadMapping {
 		out = append(out, m)
 	}
 	return out
+}
+
+func (s *Store) GetCodexByQuestion(conversationID, rootID string) (CodexThreadMapping, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.state.CodexThreads[codexQuestionKey(conversationID, rootID)]
+	return m, ok
+}
+
+func (s *Store) GetCodexByAnswer(conversationID, rootID string) (CodexThreadMapping, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	qKey, ok := s.state.CodexAnswerIndex[codexAnswerKey(conversationID, rootID)]
+	if !ok {
+		return CodexThreadMapping{}, false
+	}
+	m, ok := s.state.CodexThreads[qKey]
+	return m, ok
+}
+
+func (s *Store) PutCodexMapping(m CodexThreadMapping) error {
+	if m.QuestionConversationID == "" || m.QuestionRootID == "" || m.CodexThreadID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	key := codexQuestionKey(m.QuestionConversationID, m.QuestionRootID)
+	if existing, ok := s.state.CodexThreads[key]; ok {
+		if m.CreatedAt.IsZero() {
+			m.CreatedAt = existing.CreatedAt
+		}
+		if existing.AnswerConversationID != "" && existing.AnswerRootID != "" {
+			delete(s.state.CodexAnswerIndex, codexAnswerKey(existing.AnswerConversationID, existing.AnswerRootID))
+		}
+	}
+	if m.CreatedAt.IsZero() {
+		m.CreatedAt = now
+	}
+	m.UpdatedAt = now
+	s.state.CodexThreads[key] = m
+	if m.AnswerConversationID != "" && m.AnswerRootID != "" {
+		s.state.CodexAnswerIndex[codexAnswerKey(m.AnswerConversationID, m.AnswerRootID)] = key
+	}
+	return s.saveLocked()
 }
 
 func (s *Store) DirectDevice(accountID string) (string, bool) {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
+	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 )
 
 type Server struct {
@@ -159,7 +160,7 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	messageID, err := client.SendText(r.Context(), talkID, text)
 	if err != nil {
-		s.logger.Printf("[slackcompat] chat.postMessage failed account=%s talk=%s err=%v", accountID, talkID, err)
+		s.logger.Printf("[slackcompat] chat.postMessage failed account=%s talk=%s err=%s", debuglog.RedactID(accountID), debuglog.RedactID(talkID), debuglog.SummarizePayload(err))
 		writeJSON(w, SlackResponse{OK: false, Error: "direct_error"})
 		return
 	}
@@ -180,7 +181,7 @@ func (s *Server) handleConversationsList(w http.ResponseWriter, r *http.Request)
 	for _, client := range s.clients {
 		talks, err := client.GetTalks(r.Context())
 		if err != nil {
-			s.logger.Printf("[slackcompat] conversations.list failed account=%s err=%v", client.AccountID(), err)
+			s.logger.Printf("[slackcompat] conversations.list failed account=%s err=%s", debuglog.RedactID(client.AccountID()), debuglog.SummarizePayload(err))
 			writeJSON(w, SlackResponse{OK: false, Error: "direct_error"})
 			return
 		}
@@ -217,7 +218,7 @@ func (s *Server) handleConversationsHistory(w http.ResponseWriter, r *http.Reque
 	}
 	messages, err := client.GetMessages(r.Context(), domainID, talkID, &direct.GetMessagesOptions{Order: direct.MessageOrderDesc})
 	if err != nil {
-		s.logger.Printf("[slackcompat] conversations.history failed account=%s talk=%s err=%v", accountID, talkID, err)
+		s.logger.Printf("[slackcompat] conversations.history failed account=%s talk=%s err=%s", debuglog.RedactID(accountID), debuglog.RedactID(talkID), debuglog.SummarizePayload(err))
 		writeJSON(w, SlackResponse{OK: false, Error: "direct_error"})
 		return
 	}
@@ -240,7 +241,7 @@ func (s *Server) handleUsersList(w http.ResponseWriter, r *http.Request) {
 	for _, client := range s.clients {
 		users, err := client.GetUsers(r.Context())
 		if err != nil {
-			s.logger.Printf("[slackcompat] users.list failed account=%s err=%v", client.AccountID(), err)
+			s.logger.Printf("[slackcompat] users.list failed account=%s err=%s", debuglog.RedactID(client.AccountID()), debuglog.SummarizePayload(err))
 			writeJSON(w, SlackResponse{OK: false, Error: "direct_error"})
 			return
 		}

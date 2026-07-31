@@ -15,6 +15,7 @@ import (
 
 	"github.com/f4ah6o/direct-go-sdk/daab-go/bot"
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
+	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 )
 
 const (
@@ -69,11 +70,10 @@ type caseStudySearchResult struct {
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
-	debugServer := os.Getenv("DEBUG_SERVER")
-	if debugServer == "" {
-		debugServer = "http://localhost:9999"
+	// Enable safe diagnostics only when explicitly configured.
+	if debugServer := os.Getenv("DEBUG_SERVER"); debugServer != "" {
+		direct.EnableDebugServer(debugServer)
 	}
-	direct.EnableDebugServer(debugServer)
 
 	robot := bot.New(
 		bot.WithName("selectbot"),
@@ -91,7 +91,7 @@ func main() {
 	})
 
 	if err := robot.Run(context.Background()); err != nil {
-		log.Fatalf("Bot error: %v", err)
+		log.Fatalf("Bot error: %s", debuglog.SummarizePayload(err))
 	}
 }
 
@@ -99,7 +99,7 @@ func main() {
 func sendMenu(res bot.Response, tracker *menuTracker) {
 	id, err := res.SendSelect(menuQuestion, menuOptions)
 	if err != nil {
-		log.Printf("Error sending select stamp: %v", err)
+		log.Printf("Error sending select stamp: %s", debuglog.SummarizePayload(err))
 		_ = res.Send("セレクトスタンプの送信に失敗しました。トークIDや権限を確認してください。")
 		return
 	}
@@ -108,11 +108,11 @@ func sendMenu(res bot.Response, tracker *menuTracker) {
 
 func handleSelectAction(ctx context.Context, res bot.Response, tracker *menuTracker) {
 	// Debug: show message type
-	log.Printf("[SELECT DEBUG] Message type: %d, Text: %q", res.Message.Type, res.Message.Text)
+	log.Printf("[SELECT DEBUG] Message type: %d, Text: %s", res.Message.Type, debuglog.SummarizePayload(res.Message.Text))
 
 	content, err := extractSelectContent(res.Message)
 	if err != nil {
-		log.Printf("[SELECT DEBUG] extractSelectContent error: %v", err)
+		log.Printf("[SELECT DEBUG] extractSelectContent error: %s", debuglog.SummarizePayload(err))
 		return
 	}
 	if content == nil {
@@ -120,11 +120,11 @@ func handleSelectAction(ctx context.Context, res bot.Response, tracker *menuTrac
 		return
 	}
 	if content.Response == nil {
-		log.Printf("[SELECT DEBUG] content.Response is nil, Question=%q, Options=%v, InReplyTo=%q", content.Question, content.Options, content.InReplyTo)
+		log.Printf("[SELECT DEBUG] content.Response is nil, Question=%s, Options=%s, InReplyTo=%s", debuglog.SummarizePayload(content.Question), debuglog.SummarizePayload(content.Options), debuglog.RedactID(content.InReplyTo))
 		return
 	}
 
-	log.Printf("[SELECT DEBUG] Got response: idx=%d, Question=%q, Options=%v, InReplyTo=%q", *content.Response, content.Question, content.Options, content.InReplyTo)
+	log.Printf("[SELECT DEBUG] Got response: idx=%d, Question=%s, Options=%s, InReplyTo=%s", *content.Response, debuglog.SummarizePayload(content.Question), debuglog.SummarizePayload(content.Options), debuglog.RedactID(content.InReplyTo))
 
 	// Ensure this is the menu we sent.
 	if content.Question != menuQuestion && !tracker.matches(content.InReplyTo) {
@@ -167,8 +167,7 @@ func extractSelectContent(msg direct.ReceivedMessage) (*selectContent, error) {
 	}
 
 	// Debug: show all keys in contentMap
-	log.Printf("[SELECT DEBUG] contentMap keys: %v", getMapKeys(contentMap))
-	log.Printf("[SELECT DEBUG] contentMap full: %+v", contentMap)
+	log.Printf("[SELECT DEBUG] contentMap key_count=%d", len(contentMap))
 
 	sc := &selectContent{
 		Question: stringValue(contentMap["question"]),
@@ -273,7 +272,7 @@ func intValue(v interface{}) (int, bool) {
 func handleUUIDFortune(ctx context.Context, res bot.Response) {
 	uuidBytes, err := newUUIDv4()
 	if err != nil {
-		log.Printf("Failed to generate UUID: %v", err)
+		log.Printf("Failed to generate UUID: %s", debuglog.SummarizePayload(err))
 		return
 	}
 
@@ -293,7 +292,7 @@ func handleUUIDFortune(ctx context.Context, res bot.Response) {
 		fmt.Sprintf("運勢: %s", fortunes[idx]),
 	}
 	if err := res.Send(strings.Join(lines, "\n")); err != nil {
-		log.Printf("Error sending fortune: %v", err)
+		log.Printf("Error sending fortune: %s", debuglog.SummarizePayload(err))
 	}
 }
 
@@ -323,14 +322,14 @@ func handleMirasapoCase(ctx context.Context, res bot.Response) {
 	cs, err := fetchRandomCaseStudy(ctx, client)
 	if err != nil {
 		if sendErr := res.Send(fmt.Sprintf("事例ナビの取得に失敗しました: %v", err)); sendErr != nil {
-			log.Printf("Error sending failure message: %v", sendErr)
+			log.Printf("Error sending failure message: %s", debuglog.SummarizePayload(sendErr))
 		}
 		return
 	}
 
 	summary := summarizeCaseStudy(*cs)
 	if err := res.Send(summary); err != nil {
-		log.Printf("Error sending case study: %v", err)
+		log.Printf("Error sending case study: %s", debuglog.SummarizePayload(err))
 	}
 }
 

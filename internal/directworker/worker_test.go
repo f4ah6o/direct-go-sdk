@@ -555,6 +555,10 @@ func (c *fakeDirectClient) Connect() error {
 	return nil
 }
 
+func (c *fakeDirectClient) ConnectWithContext(context.Context) error {
+	return c.Connect()
+}
+
 func (c *fakeDirectClient) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -591,7 +595,7 @@ func (c *fakeDirectClient) CreateUploadAuth(context.Context, string, string, int
 	return nil, errors.New("not implemented")
 }
 
-func (c *fakeDirectClient) Call(method string, _ []interface{}) (interface{}, error) {
+func (c *fakeDirectClient) CallWithContext(_ context.Context, method string, _ []interface{}) (interface{}, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.calls[method]++

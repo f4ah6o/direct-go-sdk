@@ -28,6 +28,10 @@ func (c *ProductionDirectClient) Connect() error {
 	return c.client.Connect()
 }
 
+func (c *ProductionDirectClient) ConnectWithContext(ctx context.Context) error {
+	return c.client.ConnectWithContext(ctx)
+}
+
 func (c *ProductionDirectClient) Close() error {
 	c.client.Close()
 	return nil
@@ -71,7 +75,7 @@ func NewConnectedProductionClients(ctx context.Context, cfg *Config, tokens map[
 			return nil, fmt.Errorf("missing resolved token for account %q", account.ID)
 		}
 		client := NewProductionDirectClient(account, token)
-		if err := client.Connect(); err != nil {
+		if err := client.ConnectWithContext(ctx); err != nil {
 			for _, c := range clients {
 				_ = c.Close()
 			}

@@ -7,6 +7,7 @@ package direct
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -24,21 +25,28 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// EnableDebugServer enables sending logs to a debug WebSocket server.
-// The debug server receives all WebSocket messages for debugging purposes.
+// EnableDebugServer enables metadata-safe logs to an HTTP debug server through
+// the process-wide compatibility logger. Prefer Options.DebugLogger when
+// multiple clients need independent diagnostic configuration.
 //
-// The url parameter should be a WebSocket server URL (e.g., "ws://localhost:8080").
+// The url parameter should be an HTTP server URL (e.g., "http://localhost:3939").
 // Use the direct-logserver tool to start a debug server.
 func EnableDebugServer(url string) {
 	debuglog.SetServer(url)
 }
 
 // dlog is a helper for debug logging (level 1 = normal)
-func dlog(format string, v ...interface{}) {
-	debuglog.Printf(format, v...)
+func (c *Client) dlog(format string, v ...interface{}) {
+	c.debugLogger.Printf(format, v...)
 }
 
 // vlog is a helper for verbose debug logging (level 2 = verbose, includes ping/pong)
+func (c *Client) vlog(format string, v ...interface{}) {
+	c.debugLogger.Verbose(format, v...)
+}
+
+// vlog keeps the legacy package-level helper used by authentication file
+// diagnostics. Client traffic uses the client-scoped method above.
 func vlog(format string, v ...interface{}) {
 	debuglog.Verbose(format, v...)
 }
@@ -78,9 +86,25 @@ type Options struct {
 	// Name is the bot name, used in log messages for debugging.
 	Name string
 
+	// MessageChannelSize controls the bounded Messages channel buffer.
+	// If zero or negative, DefaultMessageChannelSize is used. Incoming message
+	// delivery blocks when this buffer is full until the connection closes.
+	MessageChannelSize int
+
+	// WriteTimeout is the maximum duration allowed for a WebSocket write.
+	// If zero or negative, DefaultWriteTimeout is used.
+	WriteTimeout time.Duration
+
 	// TracerProvider is an optional OpenTelemetry tracer provider used to create
 	// spans for RPC calls. If nil, the global OpenTelemetry tracer provider is used.
 	TracerProvider trace.TracerProvider
+
+	// DebugLogger optionally scopes diagnostics to this client. If nil, the
+	// process-wide debuglog.Default logger is used for compatibility.
+	// Safe metadata-only logging is the default. Use the logger's explicit
+	// EnableUnsafePayloadTracing method only in an isolated troubleshooting
+	// environment; the client itself never logs payloads through the safe API.
+	DebugLogger *debuglog.Logger
 }
 
 // ResponseHandler handles RPC responses for async requests.
@@ -100,6 +124,13 @@ type ResponseHandler struct {
 }
 
 // Client is a direct API client.
+//
+// The lifecycle is reconnectable: after Close returns, or after a transport
+// or session-authentication failure, Connect may be called again. Each
+// successful Connect creates a new connection generation. Close clears the
+// authenticated state and fails in-flight RPCs with ErrConnectionClosed.
+// Messages remains usable across generations; Done is closed when the current
+// generation ends and replaced by the next successful Connect.
 type Client struct {
 	options          Options
 	conn             *websocket.Conn
@@ -109,12 +140,21 @@ type Client struct {
 	msgID            int64
 	closed           bool
 	connected        bool
-	closeOnce        sync.Once
+	connDone         chan struct{}
+	connReady        *connectionReadiness
+	connWriteMu      *sync.Mutex
+	connWriteTimeout time.Duration
+	connecting       bool
+	connectCancel    context.CancelFunc
+	connectAttempt   uint64
+	messageHandlers  []func(ReceivedMessage)
 
 	// talkDomains maps talk_id to domain_id for user lookups
 	talkDomains map[string]string
 
-	// Channels for events
+	// Channels for events. Messages remains usable across reconnects and is not
+	// closed when one connection ends; Done belongs to the current connection
+	// and is replaced on the next successful Connect.
 	Messages chan ReceivedMessage
 	Done     chan struct{}
 
@@ -123,6 +163,9 @@ type Client struct {
 
 	// tracer records OpenTelemetry spans for RPC calls.
 	tracer trace.Tracer
+
+	// debugLogger records metadata-safe client diagnostics.
+	debugLogger *debuglog.Logger
 }
 
 // EventHandler is a callback for events.
@@ -151,10 +194,18 @@ func NewClient(opts Options) *Client {
 			opts.Host = u.Host
 		}
 	}
+	messageChannelSize := opts.MessageChannelSize
+	if messageChannelSize <= 0 {
+		messageChannelSize = DefaultMessageChannelSize
+	}
 
 	tracerProvider := opts.TracerProvider
 	if tracerProvider == nil {
 		tracerProvider = otel.GetTracerProvider()
+	}
+	debugLogger := opts.DebugLogger
+	if debugLogger == nil {
+		debugLogger = debuglog.Default()
 	}
 
 	return &Client{
@@ -162,34 +213,85 @@ func NewClient(opts Options) *Client {
 		handlers:         make(map[string][]EventHandler),
 		responseHandlers: make(map[int64]*ResponseHandler),
 		talkDomains:      make(map[string]string),
-		Messages:         make(chan ReceivedMessage, DefaultMessageChannelSize),
+		Messages:         make(chan ReceivedMessage, messageChannelSize),
 		Done:             make(chan struct{}),
 		metrics:          &NoopMetrics{},
 		tracer:           tracerProvider.Tracer(instrumentationName),
+		debugLogger:      debugLogger,
 	}
 }
 
-// Connect establishes a WebSocket connection to the direct API.
-// It starts the message reader and ping keepalive loops.
-// If an access token is provided in Options, it automatically creates a session.
+// Connect establishes a WebSocket connection to the direct API and returns
+// after the WebSocket handshake completes. If an access token is provided,
+// authentication and notification initialization continue asynchronously.
+// Use ConnectWithContext or WaitReady when authenticated API calls must not
+// begin until startup is complete.
 // Returns ErrAlreadyConnected if the client is already connected.
 // Returns a ConnectionError if the WebSocket connection fails.
+// Connect may be called again after Close or a failed connection attempt.
 func (c *Client) Connect() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	return c.connect(context.Background())
+}
 
-	if c.conn != nil {
+// ConnectWithContext establishes a WebSocket connection and waits until the
+// client is authenticated and notification initialization is complete.
+// When the context is canceled while dialing or waiting, the connection is
+// closed and the context error is returned.
+func (c *Client) ConnectWithContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := c.connect(ctx); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return err
+	}
+	if err := c.WaitReady(ctx); err != nil {
+		_ = c.Close()
+		return err
+	}
+	return nil
+}
+
+func (c *Client) connect(ctx context.Context) error {
+	c.mu.Lock()
+	if c.conn != nil || c.connecting {
+		c.mu.Unlock()
 		return ErrAlreadyConnected
 	}
+	connectCtx, cancel := context.WithCancel(ctx)
+	c.connecting = true
+	c.connectCancel = cancel
+	c.connectAttempt++
+	attempt := c.connectAttempt
+	endpoint := c.options.Endpoint
+	accessToken := c.options.AccessToken
+	proxyURLString := c.options.ProxyURL
+	writeTimeout := c.options.WriteTimeout
+	if writeTimeout <= 0 {
+		writeTimeout = DefaultWriteTimeout
+	}
+	c.mu.Unlock()
 
 	dialer := websocket.Dialer{
 		HandshakeTimeout: DefaultHandshakeTimeout,
 	}
 
 	// Set up proxy if configured
-	if c.options.ProxyURL != "" {
-		proxyURL, err := url.Parse(c.options.ProxyURL)
+	if proxyURLString != "" {
+		proxyURL, err := url.Parse(proxyURLString)
 		if err != nil {
+			c.mu.Lock()
+			if c.connectAttempt == attempt {
+				c.connecting = false
+				c.connectCancel = nil
+			}
+			c.mu.Unlock()
+			cancel()
 			return fmt.Errorf("invalid proxy URL: %w", err)
 		}
 		dialer.Proxy = http.ProxyURL(proxyURL)
@@ -200,113 +302,290 @@ func (c *Client) Connect() error {
 	// header.Set("Origin", "https://"+c.options.Host)
 
 	// HTTP response from dialer is not needed after connection is established
-	conn, _ /* *http.Response */, err := dialer.Dial(c.options.Endpoint, header)
+	conn, _ /* *http.Response */, err := dialer.DialContext(connectCtx, endpoint, header)
 	if err != nil {
+		c.mu.Lock()
+		if c.connectAttempt == attempt {
+			c.connecting = false
+			c.connectCancel = nil
+		}
+		c.mu.Unlock()
+		cancel()
 		return NewConnectionError(err)
 	}
+	cancel()
 
+	c.mu.Lock()
+	if c.connectAttempt != attempt || !c.connecting {
+		c.mu.Unlock()
+		_ = conn.Close()
+		return ErrConnectionClosed
+	}
+	c.connecting = false
+	c.connectCancel = nil
 	c.conn = conn
 	c.closed = false
+	c.connected = false
+	c.connDone = make(chan struct{})
+	ready := newConnectionReadiness()
+	c.connReady = ready
+	c.connWriteMu = &sync.Mutex{}
+	c.connWriteTimeout = writeTimeout
+	c.Done = c.connDone
+	done := c.connDone
+	writeMu := c.connWriteMu
+	metrics := c.metrics
+	c.mu.Unlock()
 
 	// Record connection
-	c.metrics.RecordConnectionState("connected")
+	metrics.RecordConnectionState("connected")
 
 	// Set up pong handler
-	c.conn.SetPongHandler(func(appData string) error {
-		vlog("[DEBUG] Received pong: %s", appData)
+	conn.SetPongHandler(func(appData string) error {
+		c.vlog("[DEBUG] Received pong: app_data=%s", debuglog.SummarizePayload(appData))
 		return nil
 	})
 
 	// Start message reader
-	go c.readLoop()
+	go c.readLoop(conn)
 
 	// Start ping keepalive (every 45 seconds like direct-js)
-	go c.pingLoop()
+	go c.pingLoop(conn, done, writeMu, writeTimeout)
 
 	// Create session if access token is provided
-	if c.options.AccessToken != "" {
-		go c.createSession()
+	if accessToken != "" {
+		go c.createSession(conn)
+	} else {
+		ready.complete(nil)
 	}
 
 	return nil
 }
 
 // pingLoop sends periodic pings to keep the connection alive
-func (c *Client) pingLoop() {
+func (c *Client) pingLoop(conn *websocket.Conn, done <-chan struct{}, writeMu *sync.Mutex, writeTimeout time.Duration) {
 	ticker := time.NewTicker(DefaultPingInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			c.mu.RLock()
-			closed := c.closed
-			conn := c.conn
-			c.mu.RUnlock()
-
-			if closed || conn == nil {
+			if !c.isCurrentConnection(conn) {
 				return
 			}
 
-			vlog("[DEBUG] Sending ping...")
-			if err := conn.WriteMessage(websocket.PingMessage, []byte("PING")); err != nil {
-				vlog("[DEBUG] Ping error: %v", err)
-				// Close connection to trigger proper cleanup
-				c.Close()
+			c.vlog("[DEBUG] Sending ping...")
+			if err := writeMessage(conn, writeMu, writeTimeout, websocket.PingMessage, []byte("PING")); err != nil {
+				c.vlog("[DEBUG] Ping error: %s", debuglog.SummarizePayload(err))
+				// Close this connection to trigger proper cleanup.
+				_ = c.closeConnection(conn, newConnectionWriteError(err))
 				return
 			}
-		case <-c.Done:
+		case <-done:
 			return
 		}
 	}
 }
 
+func writeMessage(conn *websocket.Conn, writeMu *sync.Mutex, timeout time.Duration, messageType int, data []byte) error {
+	if conn == nil || writeMu == nil {
+		return ErrConnectionClosed
+	}
+	if timeout <= 0 {
+		timeout = DefaultWriteTimeout
+	}
+
+	writeMu.Lock()
+	defer writeMu.Unlock()
+
+	if err := conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+		return err
+	}
+	err := conn.WriteMessage(messageType, data)
+	clearErr := conn.SetWriteDeadline(time.Time{})
+	if err != nil {
+		return err
+	}
+	return clearErr
+}
+
+func writeCloseMessage(conn *websocket.Conn, writeMu *sync.Mutex, timeout time.Duration) error {
+	if conn == nil || writeMu == nil {
+		return ErrConnectionClosed
+	}
+	if timeout <= 0 {
+		timeout = DefaultWriteTimeout
+	}
+
+	writeMu.Lock()
+	defer writeMu.Unlock()
+
+	deadline := time.Now().Add(timeout)
+	if err := conn.SetWriteDeadline(deadline); err != nil {
+		return err
+	}
+	err := conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), deadline)
+	clearErr := conn.SetWriteDeadline(time.Time{})
+	if err != nil {
+		return err
+	}
+	return clearErr
+}
+
+type connectionWriteError struct {
+	cause error
+}
+
+func (e *connectionWriteError) Error() string {
+	return fmt.Sprintf("websocket write failed: %v", e.cause)
+}
+
+func (e *connectionWriteError) Unwrap() error {
+	return errors.Join(ErrConnectionClosed, e.cause)
+}
+
+func newConnectionWriteError(err error) error {
+	return &connectionWriteError{cause: err}
+}
+
+func isConnectionWriteError(err error) bool {
+	var writeErr *connectionWriteError
+	return errors.As(err, &writeErr)
+}
+
+type connectionReadiness struct {
+	done chan struct{}
+	err  error
+	once sync.Once
+}
+
+func newConnectionReadiness() *connectionReadiness {
+	return &connectionReadiness{done: make(chan struct{})}
+}
+
+func (r *connectionReadiness) complete(err error) {
+	r.once.Do(func() {
+		r.err = err
+		close(r.done)
+	})
+}
+
+// WaitReady waits until the current connection is authenticated and its
+// notification initialization has completed. Clients without an access token
+// are ready as soon as the WebSocket connection is established.
+//
+// If the connection closes before readiness, the close or startup error is
+// returned. A canceled context returns its context error and leaves the
+// connection open for other waiters.
+func (c *Client) WaitReady(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	c.mu.RLock()
+	ready := c.connReady
+	connected := c.conn != nil && !c.closed
+	closed := c.closed
+	c.mu.RUnlock()
+	if ready == nil || !connected {
+		if closed {
+			return ErrConnectionClosed
+		}
+		return ErrNotConnected
+	}
+
+	select {
+	case <-ready.done:
+		return ready.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *Client) completeReady(conn *websocket.Conn, err error) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn != conn || c.closed || c.connReady == nil {
+		return false
+	}
+	c.connReady.complete(err)
+	return true
+}
+
+func (c *Client) failReady(conn *websocket.Conn, err error) {
+	if err == nil {
+		err = ErrConnectionClosed
+	}
+	if !c.completeReady(conn, err) {
+		return
+	}
+	_ = c.closeConnection(conn, err)
+}
+
+func (c *Client) isCurrentConnection(conn *websocket.Conn) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.conn == conn && !c.closed
+}
+
 // createSession authenticates with the server.
-func (c *Client) createSession() {
-	dlog("[DEBUG] Creating session with token: ***...")
+func (c *Client) createSession(conn *websocket.Conn) {
+	c.dlog("[DEBUG] Creating session: access_token=configured")
 	osString := DefaultBotOS
 	params := []interface{}{c.options.AccessToken, APIVersion, osString}
 
-	c.call("create_session", params, func(result interface{}) {
-		dlog("[DEBUG] Session created successfully: %+v", result)
+	c.callOnConnection(conn, "create_session", params, func(result interface{}) {
+		if !c.isCurrentConnection(conn) {
+			return
+		}
+		c.dlog("[DEBUG] Session created successfully: result=%s", debuglog.SummarizePayload(result))
 		c.mu.Lock()
+		if c.conn != conn || c.closed {
+			c.mu.Unlock()
+			return
+		}
 		c.connected = true
 		c.mu.Unlock()
 
 		c.emit("session_created", result)
 
 		// Start notification after session is created
-		c.startNotification()
+		c.startNotification(conn)
 	}, func(err interface{}) {
-		dlog("[DEBUG] Session error: %+v", err)
+		if !c.isCurrentConnection(conn) {
+			return
+		}
+		c.dlog("[DEBUG] Session error: %s", debuglog.SummarizePayload(err))
 		c.emit("session_error", err)
+		c.failReady(conn, fmt.Errorf("direct: session authentication failed: %v", err))
 	})
 }
 
 // startNotification tells the server to start sending notifications.
-func (c *Client) startNotification() {
-	dlog("[DEBUG] Starting notification...")
+func (c *Client) startNotification(conn *websocket.Conn) {
+	c.dlog("[DEBUG] Starting notification...")
 
 	// First, get domains to initialize data
-	c.call("get_domains", []interface{}{}, func(result interface{}) {
-		dlog("[DEBUG] get_domains success: %d domains", countItems(result))
+	c.callOnConnection(conn, "get_domains", []interface{}{}, func(result interface{}) {
+		if !c.isCurrentConnection(conn) {
+			return
+		}
+		c.dlog("[DEBUG] get_domains success: %d domains", countItems(result))
 
 		// Then get talks
-		c.call("get_talks", []interface{}{}, func(result interface{}) {
-			dlog("[DEBUG] get_talks success: %d talks", countItems(result))
+		c.callOnConnection(conn, "get_talks", []interface{}{}, func(result interface{}) {
+			if !c.isCurrentConnection(conn) {
+				return
+			}
+			c.dlog("[DEBUG] get_talks success: %d talks", countItems(result))
 
-			// Log talk details and cache talk->domain mapping
-			if talks, ok := result.([]interface{}); ok && len(talks) > 0 {
-				for i, talk := range talks {
+			// Cache talk->domain mappings needed by notification parsing.
+			if talks, ok := result.([]interface{}); ok {
+				for _, talk := range talks {
 					if talkMap, ok := talk.(map[string]interface{}); ok {
-						// Print all keys in the map
-						keys := make([]string, 0, len(talkMap))
-						for k := range talkMap {
-							keys = append(keys, k)
-						}
-						dlog("[DEBUG] Talk %d keys: %v", i, keys)
-						dlog("[DEBUG] Talk %d: %+v", i, talkMap)
-
 						// Cache talk_id -> domain_id mapping
 						var talkID, domainID string
 						if id, ok := talkMap["talk_id"]; ok {
@@ -319,89 +598,115 @@ func (c *Client) startNotification() {
 						}
 						if talkID != "" && domainID != "" {
 							c.mu.Lock()
-							c.talkDomains[talkID] = domainID
+							if c.conn == conn && !c.closed {
+								c.talkDomains[talkID] = domainID
+							}
 							c.mu.Unlock()
-							dlog("[DEBUG] Cached talk->domain: %s -> %s", talkID, domainID)
+							c.dlog("[DEBUG] Cached talk->domain: talk=%s domain=%s", debuglog.RedactID(talkID), debuglog.RedactID(domainID))
 						}
-					} else {
-						dlog("[DEBUG] Talk %d: unexpected type %T: %v", i, talk, talk)
-					}
-				}
-
-				// Try to send a test message to the first talk
-				if firstTalk, ok := talks[0].(map[string]interface{}); ok {
-					// Find the talk ID - might be "id" or encoded differently
-					var talkID interface{}
-					for k, v := range firstTalk {
-						dlog("[DEBUG] First talk field: %s = %v (type %T)", k, v, v)
-						if k == "id" || k == "talk_id" || k == "talkId" {
-							talkID = v
-						}
-					}
-
-					if talkID != nil {
-						dlog("[DEBUG] Sending test message to talk: %v", talkID)
-						c.call("create_message", []interface{}{}, func(result interface{}) {
-							dlog("[DEBUG] create_message success: %+v", result)
-						}, func(err interface{}) {
-							dlog("[DEBUG] create_message error: %+v", err)
-						})
-					} else {
-						dlog("[DEBUG] Could not find talk ID in first talk")
 					}
 				}
 			} else {
-				dlog("[DEBUG] get_talks result is not []interface{}, type=%T", result)
+				c.dlog("[DEBUG] get_talks result is not []interface{}, type=%T", result)
 			}
 
 			// Then get talk statuses
-			c.call("get_talk_statuses", []interface{}{}, func(result interface{}) {
-				dlog("[DEBUG] get_talk_statuses success")
+			c.callOnConnection(conn, "get_talk_statuses", []interface{}{}, func(result interface{}) {
+				if !c.isCurrentConnection(conn) {
+					return
+				}
+				c.dlog("[DEBUG] get_talk_statuses success")
 
 				// Try start_notification first
-				c.call("start_notification", []interface{}{}, func(result interface{}) {
-					dlog("[DEBUG] start_notification result: %+v", result)
+				c.callOnConnection(conn, "start_notification", []interface{}{}, func(result interface{}) {
+					if !c.isCurrentConnection(conn) {
+						return
+					}
+					c.dlog("[DEBUG] start_notification result: %s", debuglog.SummarizePayload(result))
 
 					// If false, try reset_notification and then start_notification again
 					if result == false {
-						dlog("[DEBUG] start_notification returned false, trying reset_notification...")
-						c.call("reset_notification", []interface{}{}, func(result interface{}) {
-							dlog("[DEBUG] reset_notification result: %+v", result)
+						c.dlog("[DEBUG] start_notification returned false, trying reset_notification...")
+						c.callOnConnection(conn, "reset_notification", []interface{}{}, func(result interface{}) {
+							if !c.isCurrentConnection(conn) {
+								return
+							}
+							c.dlog("[DEBUG] reset_notification result: %s", debuglog.SummarizePayload(result))
 
 							// After reset, call start_notification again
-							c.call("start_notification", []interface{}{}, func(result interface{}) {
-								dlog("[DEBUG] start_notification (after reset) result: %+v", result)
+							c.callOnConnection(conn, "start_notification", []interface{}{}, func(result interface{}) {
+								if !c.isCurrentConnection(conn) {
+									return
+								}
+								c.dlog("[DEBUG] start_notification (after reset) result: %s", debuglog.SummarizePayload(result))
 
 								// Call update_last_used_at to mark session as active
-								c.call("update_last_used_at", []interface{}{}, func(result interface{}) {
-									dlog("[DEBUG] update_last_used_at result: %+v", result)
+								c.callOnConnection(conn, "update_last_used_at", []interface{}{}, func(result interface{}) {
+									if !c.isCurrentConnection(conn) {
+										return
+									}
+									c.dlog("[DEBUG] update_last_used_at result: %s", debuglog.SummarizePayload(result))
+									c.completeReady(conn, nil)
 									c.emit("data_recovered", result)
 								}, func(err interface{}) {
-									dlog("[DEBUG] update_last_used_at error: %+v", err)
+									if !c.isCurrentConnection(conn) {
+										return
+									}
+									c.dlog("[DEBUG] update_last_used_at error: %s", debuglog.SummarizePayload(err))
+									c.completeReady(conn, nil)
 									c.emit("data_recovered", nil)
 								})
 							}, func(err interface{}) {
-								dlog("[DEBUG] start_notification (after reset) error: %+v", err)
+								if !c.isCurrentConnection(conn) {
+									return
+								}
+								c.dlog("[DEBUG] start_notification (after reset) error: %s", debuglog.SummarizePayload(err))
 								c.emit("notification_error", err)
+								c.failReady(conn, fmt.Errorf("direct: notification initialization failed: %v", err))
 							})
 						}, func(err interface{}) {
-							dlog("[DEBUG] reset_notification error: %+v", err)
+							if !c.isCurrentConnection(conn) {
+								return
+							}
+							c.dlog("[DEBUG] reset_notification error: %s", debuglog.SummarizePayload(err))
+							c.emit("notification_error", err)
+							c.failReady(conn, fmt.Errorf("direct: notification initialization failed: %v", err))
 						})
 					} else {
+						c.completeReady(conn, nil)
 						c.emit("data_recovered", result)
 					}
 				}, func(err interface{}) {
-					dlog("[DEBUG] start_notification error: %+v", err)
+					if !c.isCurrentConnection(conn) {
+						return
+					}
+					c.dlog("[DEBUG] start_notification error: %s", debuglog.SummarizePayload(err))
 					c.emit("notification_error", err)
+					c.failReady(conn, fmt.Errorf("direct: notification initialization failed: %v", err))
 				})
 			}, func(err interface{}) {
-				dlog("[DEBUG] get_talk_statuses error: %+v", err)
+				if !c.isCurrentConnection(conn) {
+					return
+				}
+				c.dlog("[DEBUG] get_talk_statuses error: %s", debuglog.SummarizePayload(err))
+				c.emit("notification_error", err)
+				c.failReady(conn, fmt.Errorf("direct: notification initialization failed: %v", err))
 			})
 		}, func(err interface{}) {
-			dlog("[DEBUG] get_talks error: %+v", err)
+			if !c.isCurrentConnection(conn) {
+				return
+			}
+			c.dlog("[DEBUG] get_talks error: %s", debuglog.SummarizePayload(err))
+			c.emit("notification_error", err)
+			c.failReady(conn, fmt.Errorf("direct: notification initialization failed: %v", err))
 		})
 	}, func(err interface{}) {
-		dlog("[DEBUG] get_domains error: %+v", err)
+		if !c.isCurrentConnection(conn) {
+			return
+		}
+		c.dlog("[DEBUG] get_domains error: %s", debuglog.SummarizePayload(err))
+		c.emit("notification_error", err)
+		c.failReady(conn, fmt.Errorf("direct: notification initialization failed: %v", err))
 	})
 }
 
@@ -422,32 +727,86 @@ func min(a, b int) int {
 // Close closes the WebSocket connection and stops all background goroutines.
 // It is safe to call Close multiple times.
 func (c *Client) Close() error {
-	c.mu.Lock()
-	conn := c.conn
-	wasClosed := c.closed
-	c.closed = true
-	c.mu.Unlock()
+	return c.closeConnection(nil, ErrConnectionClosed)
+}
 
-	if conn == nil || wasClosed {
-		return nil
+// closeConnection closes the specified active connection, or the current
+// connection when conn is nil. A stale read/ping loop cannot close a newer
+// connection because the pointer must still match the active connection.
+func (c *Client) closeConnection(conn *websocket.Conn, cause error) error {
+	if cause == nil {
+		cause = ErrConnectionClosed
 	}
 
-	// Clear response handlers map to free memory
 	c.mu.Lock()
+	if conn != nil && c.conn != conn {
+		c.mu.Unlock()
+		return nil
+	}
+	activeConn := c.conn
+	if activeConn == nil && !c.connecting && c.closed {
+		c.mu.Unlock()
+		return nil
+	}
+	connectCancel := c.connectCancel
+	wasActive := activeConn != nil || c.connecting
+	writeMu := c.connWriteMu
+	writeTimeout := c.connWriteTimeout
+	ready := c.connReady
+	c.connectAttempt++
+	c.connecting = false
+	c.connectCancel = nil
+	c.conn = nil
+	c.connDone = nil
+	c.connReady = nil
+	c.connWriteMu = nil
+	c.connWriteTimeout = 0
+	c.closed = true
+	c.connected = false
+	done := c.Done
+	if done != nil {
+		close(done)
+	}
+	pending := make([]*ResponseHandler, 0, len(c.responseHandlers))
+	for _, handler := range c.responseHandlers {
+		pending = append(pending, handler)
+	}
 	c.responseHandlers = make(map[int64]*ResponseHandler)
-	// Clear talkDomains cache to free memory
 	c.talkDomains = make(map[string]string)
+	if ready != nil {
+		ready.complete(cause)
+	}
+	metrics := c.metrics
 	c.mu.Unlock()
 
-	// Record disconnection
-	c.metrics.RecordConnectionState("disconnected")
+	if connectCancel != nil {
+		connectCancel()
+	}
 
-	// Close Done channel without holding the lock to avoid deadlock
-	c.closeOnce.Do(func() {
-		close(c.Done)
-	})
+	for _, handler := range pending {
+		if handler != nil && handler.OnError != nil {
+			handler.OnError(cause)
+		}
+	}
 
-	return conn.Close()
+	if wasActive {
+		metrics.RecordConnectionState("disconnected")
+	}
+
+	if activeConn != nil {
+		var closeErr error
+		if writeMu != nil {
+			closeErr = writeCloseMessage(activeConn, writeMu, writeTimeout)
+		}
+		if err := activeConn.Close(); closeErr == nil {
+			closeErr = err
+		}
+		if causeWrite := isConnectionWriteError(cause); causeWrite {
+			c.emit("error", map[string]string{"error": cause.Error()})
+		}
+		return closeErr
+	}
+	return nil
 }
 
 // SetMetrics sets the metrics implementation for this client.
@@ -510,27 +869,43 @@ func (c *Client) On(event string, handler EventHandler) {
 }
 
 // OnMessage registers a callback for incoming messages.
-// The handler is called for each message received from the Messages channel.
-// The handler runs in a separate goroutine.
+// The handler runs in a separate goroutine for each message and remains
+// registered across reconnects. Callback panics are recovered and written to
+// the debug log; a panicking callback does not stop message delivery.
 func (c *Client) OnMessage(handler func(ReceivedMessage)) {
-	go func() {
-		for msg := range c.Messages {
-			handler(msg)
-		}
-	}()
+	c.mu.Lock()
+	c.messageHandlers = append(c.messageHandlers, handler)
+	c.mu.Unlock()
 }
 
-// call sends an RPC request to the server.
+// call sends an RPC request to the current connection.
 func (c *Client) call(method string, params []interface{}, onSuccess func(interface{}), onError func(interface{})) int64 {
+	return c.callOnConnection(nil, method, params, onSuccess, onError)
+}
+
+// callOnConnection sends an RPC request only if expected is still the active
+// connection. This prevents callbacks from an older connection from issuing
+// requests on a newer one after reconnect.
+func (c *Client) callOnConnection(expected *websocket.Conn, method string, params []interface{}, onSuccess func(interface{}), onError func(interface{})) int64 {
 	c.mu.Lock()
 
-	if c.conn == nil {
+	conn := c.conn
+	if conn == nil {
 		c.mu.Unlock()
 		if onError != nil {
 			onError(map[string]string{"message": "not connected"})
 		}
 		return 0
 	}
+	if c.closed || (expected != nil && conn != expected) {
+		c.mu.Unlock()
+		if onError != nil {
+			onError(ErrConnectionClosed)
+		}
+		return 0
+	}
+	writeMu := c.connWriteMu
+	writeTimeout := c.connWriteTimeout
 
 	msgID := atomic.AddInt64(&c.msgID, 1)
 
@@ -558,16 +933,21 @@ func (c *Client) call(method string, params []interface{}, onSuccess func(interf
 	}
 
 	c.mu.Lock()
-	err = c.conn.WriteMessage(websocket.BinaryMessage, data)
+	validConnection := c.conn == conn && !c.closed && (expected == nil || c.conn == expected)
 	c.mu.Unlock()
-
-	if err != nil {
+	if !validConnection {
 		c.mu.Lock()
 		delete(c.responseHandlers, msgID)
 		c.mu.Unlock()
 		if onError != nil {
-			onError(map[string]string{"message": err.Error()})
+			onError(ErrConnectionClosed)
 		}
+		return 0
+	}
+	err = writeMessage(conn, writeMu, writeTimeout, websocket.BinaryMessage, data)
+
+	if err != nil {
+		_ = c.closeConnection(conn, newConnectionWriteError(err))
 	}
 
 	return msgID
@@ -575,16 +955,47 @@ func (c *Client) call(method string, params []interface{}, onSuccess func(interf
 
 // Call sends a synchronous RPC request to the direct API server.
 // It blocks until a response is received or the 30-second timeout expires.
+// If an access token is configured, it also waits for authenticated readiness.
 // Method names are defined as constants (e.g., MethodGetTalks, MethodCreateMessage).
 // Returns the result on success, or an error on failure or timeout.
 // Returns ErrNotConnected if the client is not connected.
 // Returns ErrTimeout if the request times out.
+//
+// Deprecated: Use CallWithContext to control cancellation and deadlines.
 func (c *Client) Call(method string, params []interface{}) (interface{}, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultRequestTimeout)
+	defer cancel()
+
+	result, err := c.CallWithContext(ctx, method, params)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return nil, fmt.Errorf("RPC error: %w", ErrTimeout)
+	}
+	return result, err
+}
+
+// CallWithContext sends a synchronous RPC request using the supplied context.
+// Cancellation and deadlines stop waiting for the response and remove the
+// request handler so a late response cannot be delivered to a canceled call.
+// If an access token is configured, it waits for authenticated readiness before
+// sending the request.
+// The span created for the RPC inherits the caller's context.
+func (c *Client) CallWithContext(ctx context.Context, method string, params []interface{}) (interface{}, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := c.waitForAuthenticatedReady(ctx); err != nil {
+		return nil, err
+	}
+
 	start := time.Now()
 	c.mu.RLock()
 	tracer := c.tracer
+	metrics := c.metrics
 	c.mu.RUnlock()
-	_, span := tracer.Start(context.Background(), "direct.rpc", trace.WithAttributes(attribute.String("rpc.system", "direct"), attribute.String("rpc.method", method)))
+	_, span := tracer.Start(ctx, "direct.rpc", trace.WithAttributes(attribute.String("rpc.system", "direct"), attribute.String("rpc.method", method)))
 	defer span.End()
 	resultCh := make(chan interface{}, DefaultResultChannelSize)
 	errCh := make(chan interface{}, DefaultResultChannelSize)
@@ -597,28 +1008,42 @@ func (c *Client) Call(method string, params []interface{}) (interface{}, error) 
 
 	select {
 	case result := <-resultCh:
-		c.metrics.RecordRequest(method, time.Since(start))
+		metrics.RecordRequest(method, time.Since(start))
 		span.SetStatus(codes.Ok, "")
 		return result, nil
 	case err := <-errCh:
-		rpcErr := fmt.Errorf("RPC error: %v", err)
-		c.metrics.RecordError(method, rpcErr)
+		var rpcErr error
+		if errValue, ok := err.(error); ok {
+			rpcErr = fmt.Errorf("RPC error: %w", errValue)
+		} else {
+			rpcErr = fmt.Errorf("RPC error: %v", err)
+		}
+		metrics.RecordError(method, rpcErr)
 		span.RecordError(rpcErr)
 		span.SetStatus(codes.Error, rpcErr.Error())
 		return nil, rpcErr
-	case <-time.After(DefaultRequestTimeout):
-		// Clean up the handler on timeout
+	case <-ctx.Done():
+		err := ctx.Err()
 		if msgID != 0 {
 			c.mu.Lock()
 			delete(c.responseHandlers, msgID)
 			c.mu.Unlock()
 		}
-		rpcErr := fmt.Errorf("RPC error: %w", ErrTimeout)
-		c.metrics.RecordError(method, ErrTimeout)
-		span.RecordError(rpcErr)
-		span.SetStatus(codes.Error, rpcErr.Error())
-		return nil, rpcErr
+		metrics.RecordError(method, err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
 	}
+}
+
+func (c *Client) waitForAuthenticatedReady(ctx context.Context) error {
+	c.mu.RLock()
+	needsReady := c.conn != nil && !c.closed && c.options.AccessToken != ""
+	c.mu.RUnlock()
+	if !needsReady {
+		return nil
+	}
+	return c.WaitReady(ctx)
 }
 
 // Send sends a message with custom type and content to the specified room.
@@ -645,60 +1070,58 @@ func (c *Client) SendText(roomID string, text string) error {
 }
 
 // readLoop continuously reads messages from the WebSocket.
-func (c *Client) readLoop() {
-	defer close(c.Messages)
-
+func (c *Client) readLoop(conn *websocket.Conn) {
 	for {
-		c.mu.RLock()
-		if c.closed {
-			c.mu.RUnlock()
+		if !c.isCurrentConnection(conn) {
 			return
 		}
-		conn := c.conn
-		c.mu.RUnlock()
 
 		msgType, data, err := conn.ReadMessage()
 		if err != nil {
-			if !c.closed {
-				dlog("[DEBUG] ReadMessage error: %v", err)
+			if c.isCurrentConnection(conn) {
+				c.dlog("[DEBUG] ReadMessage error: %s", debuglog.SummarizePayload(err))
 				c.emit("error", map[string]string{"error": err.Error()})
-				// Close connection to trigger proper cleanup
-				c.Close()
+				// Close only this connection. A newer connection may already be active.
+				_ = c.closeConnection(conn, fmt.Errorf("%w: %v", ErrConnectionClosed, err))
 			}
 			return
 		}
 
-		dlog("[DEBUG] Raw WebSocket message: type=%d len=%d", msgType, len(data))
+		c.dlog("[DEBUG] Raw WebSocket message: type=%d len=%d", msgType, len(data))
 
-		c.handleMessage(data)
+		c.handleMessage(conn, data)
 	}
 }
 
 // handleMessage processes an incoming WebSocket message.
-func (c *Client) handleMessage(data []byte) {
+func (c *Client) handleMessage(conn *websocket.Conn, data []byte) {
+	if !c.isCurrentConnection(conn) {
+		return
+	}
+
 	// Decode MessagePack
 	var message []interface{}
 	if err := msgpack.Unmarshal(data, &message); err != nil {
-		dlog("[DEBUG] msgpack decode error: %v", err)
+		c.dlog("[DEBUG] msgpack decode error: %s", debuglog.SummarizePayload(err))
 		c.emit("decode_error", map[string]string{"error": err.Error()})
 		return
 	}
 
-	dlog("[DEBUG] Received message: len=%d type=%T", len(message), message)
+	c.dlog("[DEBUG] Received message: len=%d type=%T", len(message), message)
 
 	if len(message) < 4 {
-		dlog("[DEBUG] Message too short: %v", message)
+		c.dlog("[DEBUG] Message too short: type=%s len=%d", debuglog.SummarizePayload(message), len(message))
 		return
 	}
 
 	// Get message type
 	msgType, ok := toInt64(message[0])
 	if !ok {
-		dlog("[DEBUG] Could not get message type: %v", message[0])
+		c.dlog("[DEBUG] Could not get message type: value=%s", debuglog.SummarizePayload(message[0]))
 		return
 	}
 
-	dlog("[DEBUG] Message type: %d", msgType)
+	c.dlog("[DEBUG] Message type: %d", msgType)
 
 	switch msgType {
 	case RpcResponse:
@@ -707,7 +1130,7 @@ func (c *Client) handleMessage(data []byte) {
 
 	case RpcRequest:
 		// Request from server (notification): [0, msgId, method, params]
-		c.handleNotification(message)
+		c.handleNotification(conn, message)
 	}
 }
 
@@ -742,95 +1165,161 @@ func (c *Client) handleResponse(message []interface{}) {
 }
 
 // handleNotification processes a notification from the server.
-func (c *Client) handleNotification(message []interface{}) {
+func (c *Client) handleNotification(conn *websocket.Conn, message []interface{}) {
+	if !c.isCurrentConnection(conn) {
+		return
+	}
+
 	if len(message) < 4 {
-		dlog("[DEBUG] Notification too short: %v", message)
+		c.dlog("[DEBUG] Notification too short: type=%s len=%d", debuglog.SummarizePayload(message), len(message))
 		return
 	}
 
 	msgID, _ := toInt64(message[1])
 	method, ok := message[2].(string)
 	if !ok {
-		dlog("[DEBUG] Method not a string: %v", message[2])
+		c.dlog("[DEBUG] Method not a string: type=%s", debuglog.SummarizePayload(message[2]))
 		return
 	}
 
-	dlog("[DEBUG] <<< SERVER NOTIFICATION: method=%s, msgID=%d", method, msgID)
+	c.dlog("[DEBUG] <<< SERVER NOTIFICATION: method=%s, msgID=%s", method, debuglog.RedactID(msgID))
 
 	params, ok := message[3].([]interface{})
 	if !ok || len(params) == 0 {
-		dlog("[DEBUG] %s: params invalid or empty: %T %v", method, message[3], message[3])
+		c.dlog("[DEBUG] %s: params invalid or empty: type=%s", method, debuglog.SummarizePayload(message[3]))
 		return
 	}
 
-	dlog("[DEBUG] Received notification: %s, params count: %d", method, len(params))
+	c.dlog("[DEBUG] Received notification: %s, params count: %d", method, len(params))
+	if !c.isCurrentConnection(conn) {
+		return
+	}
 
 	// Emit the notification event
 	c.emit(method, params[0])
 
 	// Handle message notifications specially
 	if method == "notify_create_message" || method == "create_message" {
-		dlog("[DEBUG] Message notification received: %s", method)
-		dlog("[DEBUG] Data: %+v", params[0])
-		c.handleMessageNotification(params[0])
+		c.dlog("[DEBUG] Message notification received: %s", method)
+		c.dlog("[DEBUG] Notification data: %s", debuglog.SummarizePayload(params[0]))
+		c.handleMessageNotification(conn, params[0])
 	}
 
 	// Send acknowledgment response: [1, msgId, null, true]
 	response := []interface{}{RpcResponse, msgID, nil, true}
 	data, err := msgpack.Marshal(response)
-	if err == nil {
-		c.mu.Lock()
-		if c.conn != nil {
-			c.conn.WriteMessage(websocket.BinaryMessage, data)
-		}
-		c.mu.Unlock()
+	if err != nil {
+		c.dlog("[DEBUG] Could not encode notification acknowledgment: %s", debuglog.SummarizePayload(err))
+		return
+	}
+	writeMu, writeTimeout := c.connectionWriter(conn)
+	if writeMu == nil {
+		return
+	}
+	if err := writeMessage(conn, writeMu, writeTimeout, websocket.BinaryMessage, data); err != nil {
+		c.dlog("[DEBUG] Notification acknowledgment write failed: %s", debuglog.SummarizePayload(err))
+		_ = c.closeConnection(conn, newConnectionWriteError(err))
 	}
 }
 
 // handleMessageNotification parses and queues a message notification.
-func (c *Client) handleMessageNotification(data interface{}) {
-	dlog("[DEBUG] handleMessageNotification: raw data: %+v", data)
-	msg := parseMessage(data)
+func (c *Client) handleMessageNotification(conn *websocket.Conn, data interface{}) {
+	if !c.isCurrentConnection(conn) {
+		return
+	}
+
+	c.dlog("[DEBUG] handleMessageNotification: data=%s", debuglog.SummarizePayload(data))
+	msg := parseMessage(data, c.debugLogger)
 
 	// If DomainID is not in the message, look it up from cached talks
 	if msg.DomainID == "" && msg.TalkID != "" {
 		c.mu.RLock()
-		dlog("[DEBUG] Looking up domain for talk_id=%s, cached talks count=%d", msg.TalkID, len(c.talkDomains))
-		// Log all cached talk IDs for debugging
-		for tid := range c.talkDomains {
-			dlog("[DEBUG] Cached talk_id: %s", tid)
-		}
+		c.dlog("[DEBUG] Looking up domain for talk_id=%s, cached talks count=%d", debuglog.RedactID(msg.TalkID), len(c.talkDomains))
 		if domID, ok := c.talkDomains[msg.TalkID]; ok {
 			msg.DomainID = domID
-			dlog("[DEBUG] Resolved DomainID from talkDomains: %s", domID)
+			c.dlog("[DEBUG] Resolved DomainID from talkDomains: %s", debuglog.RedactID(domID))
 		} else {
-			dlog("[DEBUG] talk_id %s not found in cache", msg.TalkID)
+			c.dlog("[DEBUG] talk_id %s not found in cache", debuglog.RedactID(msg.TalkID))
 		}
 		c.mu.RUnlock()
 	}
 
-	dlog("[DEBUG] handleMessageNotification: parsed msg: ID=%s UserID=%s TalkID=%s DomainID=%s Text=%s",
-		msg.ID, msg.UserID, msg.TalkID, msg.DomainID, msg.Text)
+	c.dlog("[DEBUG] handleMessageNotification: parsed msg: id=%s user=%s talk=%s domain=%s text=%s",
+		debuglog.RedactID(msg.ID), debuglog.RedactID(msg.UserID), debuglog.RedactID(msg.TalkID), debuglog.RedactID(msg.DomainID), debuglog.SummarizePayload(msg.Text))
 	if msg.ID != "" {
+		c.mu.RLock()
+		handlers := append([]func(ReceivedMessage){}, c.messageHandlers...)
+		c.mu.RUnlock()
+		for _, handler := range handlers {
+			go c.runMessageHandler(handler, msg)
+		}
+
+		done := c.connectionDone(conn)
+		if done == nil {
+			c.recordMessageDrop("connection_closed")
+			c.dlog("[DEBUG] Message delivery canceled: connection is no longer active")
+			return
+		}
 		select {
 		case c.Messages <- msg:
-		default:
-			// Channel full, drop message
+		case <-done:
+			c.recordMessageDrop("connection_closed")
+			c.dlog("[DEBUG] Message delivery canceled during connection shutdown")
 		}
 	}
 }
 
+func (c *Client) connectionDone(conn *websocket.Conn) <-chan struct{} {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.conn != conn || c.closed {
+		return nil
+	}
+	return c.connDone
+}
+
+func (c *Client) connectionWriter(conn *websocket.Conn) (*sync.Mutex, time.Duration) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.conn != conn || c.closed {
+		return nil, 0
+	}
+	return c.connWriteMu, c.connWriteTimeout
+}
+
+func (c *Client) recordMessageDrop(reason string) {
+	c.mu.RLock()
+	metrics := c.metrics
+	c.mu.RUnlock()
+	if messageMetrics, ok := metrics.(MessageMetrics); ok {
+		messageMetrics.RecordMessageDrop(reason)
+	}
+}
+
+func (c *Client) runMessageHandler(handler func(ReceivedMessage), msg ReceivedMessage) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			c.dlog("[DEBUG] OnMessage handler panicked: %s", debuglog.SummarizePayload(recovered))
+		}
+	}()
+	handler(msg)
+}
+
 // parseMessage converts a raw notification to a ReceivedMessage.
-func parseMessage(data interface{}) ReceivedMessage {
+func parseMessage(data interface{}, loggers ...*debuglog.Logger) ReceivedMessage {
 	msg := ReceivedMessage{}
+	logger := debuglog.Default()
+	if len(loggers) > 0 && loggers[0] != nil {
+		logger = loggers[0]
+	}
 
 	m, ok := data.(map[string]interface{})
 	if !ok {
-		dlog("[DEBUG] parseMessage: data not a map, type=%T", data)
+		logger.Printf("[DEBUG] parseMessage: data not a map, type=%s", debuglog.SummarizePayload(data))
 		return msg
 	}
 
-	dlog("[DEBUG] parseMessage: keys = %v", getMapKeys(m))
+	logger.Printf("[DEBUG] parseMessage: key_count=%d", len(m))
 
 	if id, ok := m["message_id"]; ok {
 		msg.ID = fmt.Sprintf("%v", id)
@@ -848,7 +1337,7 @@ func parseMessage(data interface{}) ReceivedMessage {
 		msg.DomainID = fmt.Sprintf("%v", domainId)
 	}
 	if content, ok := m["content"]; ok {
-		dlog("[DEBUG] content type=%T value=%v", content, content)
+		logger.Printf("[DEBUG] content: %s", debuglog.SummarizePayload(content))
 		msg.Content = content
 		if text, ok := content.(string); ok {
 			msg.Text = text
@@ -864,7 +1353,7 @@ func parseMessage(data interface{}) ReceivedMessage {
 		}
 	}
 
-	dlog("[DEBUG] parsed: ID=%s TalkID=%s Text=%s", msg.ID, msg.TalkID, msg.Text)
+	logger.Printf("[DEBUG] parsed: id=%s talk=%s text=%s", debuglog.RedactID(msg.ID), debuglog.RedactID(msg.TalkID), debuglog.SummarizePayload(msg.Text))
 
 	// Store raw data for custom parsing
 	if rawData, err := json.Marshal(m); err == nil {
@@ -930,7 +1419,7 @@ func (c *Client) emit(event string, data interface{}) {
 // Each Talk contains room metadata including participants, type (pair/group), and settings.
 // This is the preferred method over the legacy GetTalks().
 func (c *Client) GetTalksWithContext(ctx context.Context) ([]Talk, error) {
-	result, err := c.Call(MethodGetTalks, []interface{}{})
+	result, err := c.CallWithContext(ctx, MethodGetTalks, []interface{}{})
 	if err != nil {
 		return nil, err
 	}
@@ -951,7 +1440,7 @@ func (c *Client) GetTalksWithContext(ctx context.Context) ([]Talk, error) {
 // GetTalkStatusesWithContext retrieves the status of all talks with context support.
 // Status includes unread count and latest message ID for each talk.
 func (c *Client) GetTalkStatusesWithContext(ctx context.Context) ([]TalkStatus, error) {
-	result, err := c.Call(MethodGetTalkStatuses, []interface{}{})
+	result, err := c.CallWithContext(ctx, MethodGetTalkStatuses, []interface{}{})
 	if err != nil {
 		return nil, err
 	}
@@ -982,7 +1471,7 @@ func (c *Client) GetTalkStatusesWithContext(ctx context.Context) ([]TalkStatus, 
 // Returns user information including display name, email, status, and other profile details.
 // This is the preferred method over the legacy GetMe().
 func (c *Client) GetMeWithContext(ctx context.Context) (*UserInfo, error) {
-	result, err := c.Call(MethodGetMe, []interface{}{})
+	result, err := c.CallWithContext(ctx, MethodGetMe, []interface{}{})
 	if err != nil {
 		return nil, err
 	}
@@ -1010,7 +1499,7 @@ func (c *Client) CreateTextMessageWithContext(ctx context.Context, roomID string
 	if id, err := strconv.ParseUint(roomID, 10, 64); err == nil {
 		talkID = id
 	}
-	result, err := c.Call(MethodCreateMessage, []interface{}{talkID, 1, text})
+	result, err := c.CallWithContext(ctx, MethodCreateMessage, []interface{}{talkID, 1, text})
 	if err != nil {
 		return "", err
 	}

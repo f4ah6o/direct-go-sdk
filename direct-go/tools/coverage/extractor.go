@@ -118,13 +118,14 @@ func ExtractGoMethods(goPath string) ([]string, error) {
 func collectRPCCalls(file *ast.File, constants map[string]string, methodSet map[string]bool) {
 	ast.Inspect(file, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
-		if !ok || len(call.Args) == 0 {
+		if !ok {
 			return true
 		}
-		if !isRPCCall(call) {
+		methodExpr, ok := rpcMethodExpr(call)
+		if !ok {
 			return true
 		}
-		if method, ok := rpcMethodName(call.Args[0], constants); ok {
+		if method, ok := rpcMethodName(methodExpr, constants); ok {
 			methodSet[method] = true
 		}
 		return true
@@ -154,12 +155,26 @@ func collectStringConstants(file *ast.File, constants map[string]string) {
 	}
 }
 
-func isRPCCall(call *ast.CallExpr) bool {
+func rpcMethodExpr(call *ast.CallExpr) (ast.Expr, bool) {
 	selector, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
-		return false
+		return nil, false
 	}
-	return selector.Sel.Name == "Call" || selector.Sel.Name == "call"
+
+	switch selector.Sel.Name {
+	case "Call", "call":
+		if len(call.Args) < 1 {
+			return nil, false
+		}
+		return call.Args[0], true
+	case "CallWithContext", "callWithContext", "callOnConnection":
+		if len(call.Args) < 2 {
+			return nil, false
+		}
+		return call.Args[1], true
+	default:
+		return nil, false
+	}
 }
 
 func rpcMethodName(expr ast.Expr, constants map[string]string) (string, bool) {

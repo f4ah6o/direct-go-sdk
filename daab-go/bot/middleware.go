@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 )
 
 // Middleware wraps a Handler to add cross-cutting behavior.
@@ -39,12 +41,12 @@ func LoggingMiddleware(logger *log.Logger) Middleware {
 			start := time.Now()
 			msg := res.Message
 
-			logger.Printf("[START] Handler for message: %q from user: %s in room: %s",
-				msg.Text, msg.UserID, msg.TalkID)
+			logger.Printf("[START] Handler for message=%s from user=%s in room=%s",
+				debuglog.SummarizePayload(msg.Text), debuglog.RedactID(msg.UserID), debuglog.RedactID(msg.TalkID))
 
 			defer func() {
 				if p := recover(); p != nil {
-					logger.Printf("[PANIC] Handler recovered: %v", p)
+					logger.Printf("[PANIC] Handler recovered: %s", debuglog.SummarizePayload(p))
 					panic(p) // Re-panic after logging
 				}
 				logger.Printf("[END] Handler completed in %v", time.Since(start))
@@ -62,8 +64,8 @@ func RecoveryMiddleware(logger *log.Logger) Middleware {
 		return func(ctx context.Context, res Response) {
 			defer func() {
 				if p := recover(); p != nil {
-					logger.Printf("[RECOVER] Panic in handler: %v\nMessage: %q from: %s",
-						p, res.Message.Text, res.Message.UserID)
+					logger.Printf("[RECOVER] Panic in handler=%s message=%s from=%s",
+						debuglog.SummarizePayload(p), debuglog.SummarizePayload(res.Message.Text), debuglog.RedactID(res.Message.UserID))
 				}
 			}()
 			next(ctx, res)
@@ -77,7 +79,8 @@ func FilterMiddleware(filter func(context.Context, Response) bool) Middleware {
 	return func(next Handler) Handler {
 		return func(ctx context.Context, res Response) {
 			if !filter(ctx, res) {
-				log.Printf("[FILTER] Message filtered: %q", res.Message.Text)
+				log.Printf("[FILTER] Message filtered user=%s talk=%s text=%s",
+					debuglog.RedactID(res.Message.UserID), debuglog.RedactID(res.Message.TalkID), debuglog.SummarizePayload(res.Message.Text))
 				return
 			}
 			next(ctx, res)
@@ -101,7 +104,7 @@ func RateLimitMiddleware(cooldown time.Duration) Middleware {
 			// Check if user is in cooldown
 			if tracker, ok := trackers[userID]; ok {
 				if time.Since(tracker.lastTime) < cooldown {
-					log.Printf("[RATELIMIT] User %s is in cooldown, skipping", userID)
+					log.Printf("[RATELIMIT] User %s is in cooldown, skipping", debuglog.RedactID(userID))
 					return
 				}
 			}

@@ -16,6 +16,22 @@ teams_channels:
   # Add aliases here while the bridge is running, then bind them in Teams with:
   # @direct bind <alias>
   # trial: {}
+  # codex-question: {}
+  # codex-answer: {}
+
+codex:
+  enabled: false
+  binary: "codex"
+  cwd: ""
+  model: ""
+  question_alias: "codex-question"
+  answer_alias: "codex-answer"
+  allowed_user_ids: []
+  base_instructions: |
+    You answer Teams questions as a read-only assistant. If the available
+    context is enough, answer directly. If a human answer is required, respond
+    exactly with "ESCALATE:" followed by the specific question for the human
+    responder. Do not modify files or run unsafe actions.
 
 accounts:
   - id: "account-a"

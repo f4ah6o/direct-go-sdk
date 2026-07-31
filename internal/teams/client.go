@@ -60,6 +60,11 @@ func (c *Client) CreateRootThread(ctx context.Context, serviceURL string, bindin
 	return c.createConversation(ctx, serviceURL, binding.ConversationParameters(activity))
 }
 
+func (c *Client) CreateRootThreadText(ctx context.Context, serviceURL string, binding ChannelThreadBinding, text string) (string, error) {
+	activity := NewMessageActivity(text)
+	return c.createConversation(ctx, serviceURL, binding.ConversationParameters(activity))
+}
+
 func (c *Client) ReplyToThread(ctx context.Context, serviceURL, conversationID, rootID string, msg model.DirectMessage) (string, error) {
 	activity := NewMessageActivity(c.formatDirectReplyMessage(msg))
 	return c.sendActivity(ctx, serviceURL, teamsThreadConversationID(conversationID, rootID), "", activity)
@@ -127,7 +132,7 @@ func (c *Client) DownloadAttachment(ctx context.Context, activity Attachment, ma
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, "", fmt.Errorf("attachment download status=%d body=%s", resp.StatusCode, string(b))
+		return nil, "", fmt.Errorf("attachment download status=%d response_body_bytes=%d", resp.StatusCode, len(b))
 	}
 	reader := io.Reader(resp.Body)
 	if maxBytes > 0 {
@@ -169,7 +174,7 @@ func (c *Client) sendActivity(ctx context.Context, serviceURL, conversationID, r
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("bot connector status=%d body=%s", resp.StatusCode, string(b))
+		return "", fmt.Errorf("bot connector status=%d response_body_bytes=%d", resp.StatusCode, len(b))
 	}
 	var out struct {
 		ID string `json:"id"`
@@ -217,7 +222,7 @@ func (c *Client) addReaction(ctx context.Context, serviceURL, conversationID, ac
 			}
 			continue
 		}
-		return fmt.Errorf("bot connector reaction status=%d body=%s", resp.StatusCode, string(body))
+		return fmt.Errorf("bot connector reaction status=%d response_body_bytes=%d", resp.StatusCode, len(body))
 	}
 	return nil
 }
@@ -260,7 +265,7 @@ func (c *Client) createConversation(ctx context.Context, serviceURL string, para
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("bot connector create conversation status=%d body=%s", resp.StatusCode, string(b))
+		return "", fmt.Errorf("bot connector create conversation status=%d response_body_bytes=%d", resp.StatusCode, len(b))
 	}
 	var out struct {
 		ActivityID string `json:"activityId"`
@@ -308,7 +313,7 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("bot token url=%s status=%d body=%s", c.cfg.TokenURL, resp.StatusCode, string(b))
+		return "", fmt.Errorf("bot token request failed status=%d response_body_bytes=%d", resp.StatusCode, len(b))
 	}
 	var tr struct {
 		AccessToken string `json:"access_token"`

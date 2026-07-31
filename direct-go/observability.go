@@ -29,6 +29,15 @@ type Metrics interface {
 	RecordConnectionState(state string)
 }
 
+// MessageMetrics is an optional extension to Metrics for message-delivery
+// observability. It is intentionally separate from Metrics so existing custom
+// Metrics implementations remain source-compatible.
+type MessageMetrics interface {
+	// RecordMessageDrop records a message that could not be delivered because
+	// the connection was shut down while applying channel backpressure.
+	RecordMessageDrop(reason string)
+}
+
 // NoopMetrics is a no-op implementation of Metrics that discards all metrics.
 // Use this as the default or for testing.
 type NoopMetrics struct{}
@@ -42,6 +51,9 @@ func (m *NoopMetrics) RecordError(method string, err error) {}
 // RecordConnectionState does nothing.
 func (m *NoopMetrics) RecordConnectionState(state string) {}
 
+// RecordMessageDrop does nothing.
+func (m *NoopMetrics) RecordMessageDrop(reason string) {}
+
 // OpenTelemetryMetrics records Direct RPC and connection metrics using
 // OpenTelemetry. It uses the global MeterProvider by default, so applications
 // only need to configure their OpenTelemetry exporter/provider once.
@@ -50,6 +62,7 @@ type OpenTelemetryMetrics struct {
 	requestCount          metric.Int64Counter
 	requestErrorCount     metric.Int64Counter
 	connectionStateChange metric.Int64Counter
+	messageDropCount      metric.Int64Counter
 }
 
 // OpenTelemetryMetricsOption configures OpenTelemetryMetrics.
@@ -112,12 +125,21 @@ func NewOpenTelemetryMetrics(opts ...OpenTelemetryMetricsOption) (*OpenTelemetry
 	if err != nil {
 		return nil, err
 	}
+	messageDropCount, err := meter.Int64Counter(
+		"direct.message.drop.count",
+		metric.WithDescription("Number of incoming messages canceled during delivery"),
+		metric.WithUnit("{message}"),
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	return &OpenTelemetryMetrics{
 		requestDuration:       requestDuration,
 		requestCount:          requestCount,
 		requestErrorCount:     requestErrorCount,
 		connectionStateChange: connectionStateChange,
+		messageDropCount:      messageDropCount,
 	}, nil
 }
 
@@ -141,6 +163,11 @@ func (m *OpenTelemetryMetrics) RecordError(method string, err error) {
 // RecordConnectionState records a WebSocket connection state change.
 func (m *OpenTelemetryMetrics) RecordConnectionState(state string) {
 	m.connectionStateChange.Add(context.Background(), 1, metric.WithAttributes(attribute.String("connection.state", state)))
+}
+
+// RecordMessageDrop records an incoming message canceled during connection shutdown.
+func (m *OpenTelemetryMetrics) RecordMessageDrop(reason string) {
+	m.messageDropCount.Add(context.Background(), 1, metric.WithAttributes(attribute.String("reason", reason)))
 }
 
 // HealthChecker defines the interface for health status checks.

@@ -254,6 +254,46 @@ To remove a Teams binding from a channel:
 `unbind` must be sent as a new channel message. It removes the channel binding
 and existing direct talk/thread mappings for that alias in that Teams channel.
 
+### 4c. Optional Codex bridge hidden behind the same Teams bot
+
+The same Microsoft Teams bot app can also route selected `@direct` mentions to
+Codex app-server. No separate Teams bot registration is required, but the same
+bridge process must own the bot messaging endpoint.
+
+Add two aliases and enable Codex:
+
+```yaml
+teams_channels:
+  support: {}
+  codex-question: {}
+  codex-answer: {}
+
+codex:
+  enabled: true
+  binary: "codex"
+  cwd: "/path/to/context/repo"
+  question_alias: "codex-question"
+  answer_alias: "codex-answer"
+  allowed_user_ids: []
+  base_instructions: |
+    You answer Teams questions as a read-only assistant. If the available
+    context is enough, answer directly. If a human answer is required, respond
+    exactly with "ESCALATE:" followed by the specific question for the human
+    responder.
+```
+
+Bind the two Teams channels:
+
+```text
+@direct bind codex-question
+@direct bind codex-answer
+```
+
+Questions sent in the question channel are handled by Codex. If Codex responds
+with `ESCALATE:`, the bridge opens a thread in the answer channel. A responder's
+reply in that answer thread is fed back to Codex, and Codex posts the final
+answer back to the original question thread.
+
 ### 5. Expose the bridge with Cloudflare Tunnel
 
 For Azure Bot / Teams, the endpoint must be reachable from Microsoft's cloud.

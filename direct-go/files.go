@@ -40,7 +40,7 @@ type FilePreview struct {
 // The useType parameter specifies how the file will be used (e.g., "message", "profile").
 func (c *Client) CreateUploadAuth(ctx context.Context, filename, contentType string, size int64, useType string) (*UploadAuth, error) {
 	params := []interface{}{filename, contentType, size, 0, useType}
-	result, err := c.Call(MethodCreateUploadAuth, params)
+	result, err := c.CallWithContext(ctx, MethodCreateUploadAuth, params)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +73,7 @@ func (c *Client) CreateUploadAuth(ctx context.Context, filename, contentType str
 // The limit parameter controls how many attachments to return (most recent first).
 func (c *Client) GetAttachments(ctx context.Context, talkID interface{}, limit int) ([]Attachment, error) {
 	params := []interface{}{talkID, limit}
-	result, err := c.Call(MethodGetAttachments, params)
+	result, err := c.CallWithContext(ctx, MethodGetAttachments, params)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +94,7 @@ func (c *Client) GetAttachments(ctx context.Context, talkID interface{}, limit i
 // DeleteAttachment removes a file attachment from the system.
 func (c *Client) DeleteAttachment(ctx context.Context, attachmentID interface{}) error {
 	params := []interface{}{attachmentID}
-	_, err := c.Call(MethodDeleteAttachment, params)
+	_, err := c.CallWithContext(ctx, MethodDeleteAttachment, params)
 	return err
 }
 
@@ -102,7 +102,7 @@ func (c *Client) DeleteAttachment(ctx context.Context, attachmentID interface{})
 // Returns matching Attachment objects with file metadata and download URLs.
 func (c *Client) SearchAttachments(ctx context.Context, query string, talkID interface{}) ([]Attachment, error) {
 	params := []interface{}{query, talkID}
-	result, err := c.Call(MethodSearchAttachments, params)
+	result, err := c.CallWithContext(ctx, MethodSearchAttachments, params)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +124,7 @@ func (c *Client) SearchAttachments(ctx context.Context, query string, talkID int
 // This is useful for displaying image or document previews in the UI.
 func (c *Client) CreateFilePreview(ctx context.Context, fileID interface{}) (*FilePreview, error) {
 	params := []interface{}{fileID}
-	result, err := c.Call(MethodCreateFilePreview, params)
+	result, err := c.CallWithContext(ctx, MethodCreateFilePreview, params)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +140,7 @@ func (c *Client) CreateFilePreview(ctx context.Context, fileID interface{}) (*Fi
 // Returns FilePreview with the preview URL and status.
 func (c *Client) GetFilePreview(ctx context.Context, fileID interface{}) (*FilePreview, error) {
 	params := []interface{}{fileID}
-	result, err := c.Call(MethodGetFilePreview, params)
+	result, err := c.CallWithContext(ctx, MethodGetFilePreview, params)
 	if err != nil {
 		return nil, err
 	}

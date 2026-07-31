@@ -1,14 +1,20 @@
 package direct
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"pgregory.net/rapid"
 
+	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 	"github.com/f4ah6o/direct-go-sdk/direct-go/testutil"
 )
 
@@ -29,7 +35,12 @@ func TestClientConnect(t *testing.T) {
 		"token":   "test-token",
 	})
 	mockServer.OnSimple("get_domains", []interface{}{})
-	mockServer.OnSimple("get_talks", []interface{}{})
+	mockServer.OnSimple("get_talks", []interface{}{
+		map[string]interface{}{
+			"id":        "talk-1",
+			"domain_id": "domain-1",
+		},
+	})
 	mockServer.OnSimple("get_talk_statuses", []interface{}{})
 	mockServer.OnSimple("start_notification", true)
 
@@ -40,8 +51,14 @@ func TestClientConnect(t *testing.T) {
 	}
 	defer client.Close()
 
-	// Give some time for session creation
-	time.Sleep(100 * time.Millisecond)
+	// Wait until notification startup has reached the final initialization RPC.
+	deadline := time.Now().Add(time.Second)
+	for mockServer.GetCallCount("start_notification") == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := mockServer.GetCallCount("start_notification"); got == 0 {
+		t.Fatal("start_notification was not called")
+	}
 
 	// Verify create_session was called
 	messages := mockServer.GetReceivedMessages()
@@ -60,6 +77,227 @@ func TestClientConnect(t *testing.T) {
 
 	if !foundCreateSession {
 		t.Error("create_session was not called")
+	}
+
+	if got := mockServer.GetCallCount("create_message"); got != 0 {
+		t.Fatalf("startup sent create_message %d times", got)
+	}
+
+	client.mu.RLock()
+	domainID := client.talkDomains["talk-1"]
+	client.mu.RUnlock()
+	if domainID != "domain-1" {
+		t.Fatalf("talk-domain cache = %q, want domain-1", domainID)
+	}
+}
+
+func TestClientDiagnosticsRedactCredentialsAndMessages(t *testing.T) {
+	const (
+		accessToken = "access-token-secret"
+		messageBody = "private message body"
+	)
+
+	for _, level := range []int{debuglog.LevelNormal, debuglog.LevelVerbose} {
+		t.Run(fmt.Sprintf("level-%d", level), func(t *testing.T) {
+			mockServer := testutil.NewMockServer()
+			defer mockServer.Close()
+			mockServer.OnSimple("create_session", map[string]interface{}{
+				"user_id": "user-1",
+				"token":   accessToken,
+			})
+			mockServer.OnSimple("get_domains", []interface{}{})
+			mockServer.OnSimple("get_talks", []interface{}{})
+			mockServer.OnSimple("get_talk_statuses", []interface{}{})
+			mockServer.OnSimple("start_notification", true)
+
+			var output synchronizedBuffer
+			logger := debuglog.NewLogger(debuglog.LoggerOptions{Level: level, Writer: &output})
+			client := NewClient(Options{
+				Endpoint:    mockServer.URL(),
+				AccessToken: accessToken,
+				DebugLogger: logger,
+			})
+			if err := client.ConnectWithContext(context.Background()); err != nil {
+				t.Fatalf("ConnectWithContext failed: %v", err)
+			}
+			defer client.Close()
+
+			if err := mockServer.SendNotification("notify_create_message", map[string]interface{}{
+				"message_id": "message-1",
+				"talk_id":    "talk-1",
+				"user_id":    "user-1",
+				"content":    messageBody,
+			}); err != nil {
+				t.Fatalf("SendNotification failed: %v", err)
+			}
+
+			deadline := time.Now().Add(time.Second)
+			for !strings.Contains(output.String(), "parsed msg") && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			got := output.String()
+			for _, unwanted := range []string{accessToken, messageBody} {
+				if strings.Contains(got, unwanted) {
+					t.Fatalf("client diagnostics leaked %q: %q", unwanted, got)
+				}
+			}
+			if !strings.Contains(got, "access_token=configured") || !strings.Contains(got, "text=string(len=") {
+				t.Fatalf("client diagnostics did not preserve safe metadata: %q", got)
+			}
+		})
+	}
+}
+
+type synchronizedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func configureSessionStartup(mockServer *testutil.MockServer) {
+	mockServer.OnSimple("get_domains", []interface{}{})
+	mockServer.OnSimple("get_talks", []interface{}{})
+	mockServer.OnSimple("get_talk_statuses", []interface{}{})
+	mockServer.OnSimple("start_notification", true)
+}
+
+func TestClientConnectWithContextWaitsForReady(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+
+	createReceived := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	mockServer.On("create_session", func(params []interface{}) (interface{}, error) {
+		close(createReceived)
+		<-release
+		return map[string]interface{}{"user_id": "user123"}, nil
+	})
+	mockServer.OnSimple("get_me", map[string]interface{}{"user_id": "user123"})
+	configureSessionStartup(mockServer)
+
+	client := NewClient(Options{Endpoint: mockServer.URL(), AccessToken: "token"})
+	defer client.Close()
+	readyErr := make(chan error, 1)
+	go func() {
+		readyErr <- client.ConnectWithContext(context.Background())
+	}()
+	select {
+	case <-createReceived:
+	case <-time.After(time.Second):
+		t.Fatal("create_session was not called")
+	}
+	select {
+	case err := <-readyErr:
+		t.Fatalf("ConnectWithContext returned before authentication: %v", err)
+	default:
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	_, err := client.GetMeWithContext(ctx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("API call before readiness error = %v, want context deadline", err)
+	}
+	if got := mockServer.GetCallCount("get_me"); got != 0 {
+		t.Fatalf("get_me was sent before readiness: %d calls", got)
+	}
+	releaseOnce.Do(func() { close(release) })
+
+	select {
+	case err := <-readyErr:
+		if err != nil {
+			t.Fatalf("ConnectWithContext failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ConnectWithContext did not wait for readiness")
+	}
+	if health := client.Health(); !health.Connected || !health.Authenticated {
+		t.Fatalf("health after readiness = %+v", health)
+	}
+}
+
+func TestClientWaitReadyUnblocksOnCancellationAndClose(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+
+	createReceived := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	mockServer.On("create_session", func(params []interface{}) (interface{}, error) {
+		close(createReceived)
+		<-release
+		return map[string]interface{}{"user_id": "user123"}, nil
+	})
+	configureSessionStartup(mockServer)
+
+	client := NewClient(Options{Endpoint: mockServer.URL(), AccessToken: "token"})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close()
+	select {
+	case <-createReceived:
+	case <-time.After(time.Second):
+		t.Fatal("create_session was not called")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	waitErr := make(chan error, 1)
+	go func() { waitErr <- client.WaitReady(ctx) }()
+	cancel()
+	select {
+	case err := <-waitErr:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("WaitReady cancellation error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WaitReady did not unblock on cancellation")
+	}
+
+	closeErr := make(chan error, 1)
+	go func() { closeErr <- client.WaitReady(context.Background()) }()
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	select {
+	case err := <-closeErr:
+		if !errors.Is(err, ErrConnectionClosed) {
+			t.Fatalf("WaitReady close error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WaitReady did not unblock on close")
+	}
+	releaseOnce.Do(func() { close(release) })
+}
+
+func TestClientConnectWithContextReturnsSessionError(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+	mockServer.OnError("create_session", "invalid token")
+
+	client := NewClient(Options{Endpoint: mockServer.URL(), AccessToken: "bad-token"})
+	err := client.ConnectWithContext(context.Background())
+	if err == nil {
+		t.Fatal("ConnectWithContext unexpectedly succeeded")
+	}
+	if !strings.Contains(err.Error(), "invalid token") {
+		t.Fatalf("session error = %v, want invalid token", err)
+	}
+	if health := client.Health(); health.Connected || health.Authenticated {
+		t.Fatalf("health after session failure = %+v", health)
 	}
 }
 
@@ -158,6 +396,511 @@ func TestClientRPCError(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error, got nil")
 	}
+}
+
+func TestCallWithContextPreCanceledDoesNotSendRequest(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+	mockServer.OnSimple("ping", true)
+
+	client := NewClient(Options{Endpoint: mockServer.URL()})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close()
+	if _, err := client.Call("ping", []interface{}{}); err != nil {
+		t.Fatalf("connection synchronization call failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	started := time.Now()
+	_, err := client.GetMeWithContext(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("pre-canceled call took %v", elapsed)
+	}
+	if got := mockServer.GetCallCount("get_me"); got != 0 {
+		t.Fatalf("pre-canceled call sent get_me %d times", got)
+	}
+
+	client.mu.RLock()
+	defer client.mu.RUnlock()
+	if got := len(client.responseHandlers); got != 0 {
+		t.Fatalf("response handlers after pre-canceled call = %d, want 0", got)
+	}
+}
+
+func TestCallWithContextDeadlineCleansUpHandler(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	mockServer.On("get_me", func(params []interface{}) (interface{}, error) {
+		close(started)
+		<-release
+		close(finished)
+		return map[string]interface{}{"id": "user123"}, nil
+	})
+
+	client := NewClient(Options{Endpoint: mockServer.URL()})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := client.CallWithContext(ctx, "get_me", []interface{}{})
+		errCh <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("mock server did not receive get_me")
+	}
+
+	err := <-errCh
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context.DeadlineExceeded", err)
+	}
+	client.mu.RLock()
+	handlerCount := len(client.responseHandlers)
+	client.mu.RUnlock()
+	if handlerCount != 0 {
+		t.Fatalf("response handlers after deadline = %d, want 0", handlerCount)
+	}
+
+	close(release)
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("mock server handler did not finish")
+	}
+}
+
+func TestCallWithContextPropagatesTraceParent(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+	mockServer.OnSimple("get_me", map[string]interface{}{"id": "user123"})
+
+	provider := &recordingTracerProvider{}
+	client := NewClient(Options{Endpoint: mockServer.URL(), TracerProvider: provider})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close()
+
+	parent := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    trace.TraceID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+		SpanID:     trace.SpanID{1, 2, 3, 4, 5, 6, 7, 8},
+		TraceFlags: trace.FlagsSampled,
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), parent)
+	if _, err := client.GetMeWithContext(ctx); err != nil {
+		t.Fatalf("GetMeWithContext failed: %v", err)
+	}
+	got := provider.parent
+	if got.TraceID() != parent.TraceID() || got.SpanID() != parent.SpanID() || got.TraceFlags() != parent.TraceFlags() {
+		t.Fatalf("trace parent = %v, want %v", got, parent)
+	}
+}
+
+func TestClientReconnectAfterClose(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+	mockServer.OnSimple("get_me", map[string]interface{}{"id": "user123"})
+
+	client := NewClient(Options{Endpoint: mockServer.URL()})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("first Connect failed: %v", err)
+	}
+	firstDone := client.Done
+	if _, err := client.Call("get_me", []interface{}{}); err != nil {
+		t.Fatalf("first RPC failed: %v", err)
+	}
+	if health := client.Health(); !health.Connected || health.Authenticated {
+		t.Fatalf("health after first connect = %+v", health)
+	}
+
+	if err := client.Close(); err != nil {
+		t.Fatalf("first Close failed: %v", err)
+	}
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("first Done channel was not closed")
+	}
+	if health := client.Health(); health.Connected || health.Authenticated {
+		t.Fatalf("health after close = %+v", health)
+	}
+	select {
+	case _, ok := <-client.Messages:
+		if !ok {
+			t.Fatal("Messages was closed during reconnectable Close")
+		}
+	default:
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("second Close failed: %v", err)
+	}
+
+	if err := client.Connect(); err != nil {
+		t.Fatalf("reconnect failed: %v", err)
+	}
+	if client.Done == firstDone {
+		t.Fatal("reconnect reused the closed Done channel")
+	}
+	if _, err := client.Call("get_me", []interface{}{}); err != nil {
+		t.Fatalf("RPC after reconnect failed: %v", err)
+	}
+	if health := client.Health(); !health.Connected || health.Authenticated {
+		t.Fatalf("health after reconnect = %+v", health)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("final Close failed: %v", err)
+	}
+}
+
+func TestClientCloseReleasesPendingCall(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	mockServer.On("get_me", func(params []interface{}) (interface{}, error) {
+		close(started)
+		<-release
+		return map[string]interface{}{"id": "late"}, nil
+	})
+
+	client := NewClient(Options{Endpoint: mockServer.URL()})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := client.CallWithContext(context.Background(), "get_me", []interface{}{})
+		errCh <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		client.Close()
+		close(release)
+		t.Fatal("mock server did not receive get_me")
+	}
+
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, ErrConnectionClosed) {
+			t.Fatalf("pending call error = %v, want ErrConnectionClosed", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("pending call was not released by Close")
+	}
+
+	client.mu.RLock()
+	handlerCount := len(client.responseHandlers)
+	client.mu.RUnlock()
+	if handlerCount != 0 {
+		t.Fatalf("response handlers after close = %d, want 0", handlerCount)
+	}
+	close(release)
+}
+
+func TestClientFailedDialCanRetry(t *testing.T) {
+	failedServer := testutil.NewMockServer()
+	failedURL := failedServer.URL()
+	failedServer.Close()
+
+	workingServer := testutil.NewMockServer()
+	defer workingServer.Close()
+	workingServer.OnSimple("get_me", map[string]interface{}{"id": "user123"})
+
+	client := NewClient(Options{Endpoint: failedURL})
+	err := client.Connect()
+	if err == nil {
+		t.Fatal("Connect unexpectedly succeeded against a closed server")
+	}
+	if health := client.Health(); health.Connected || health.Authenticated {
+		t.Fatalf("health after failed dial = %+v", health)
+	}
+
+	client.mu.Lock()
+	client.options.Endpoint = workingServer.URL()
+	client.mu.Unlock()
+	if err := client.Connect(); err != nil {
+		t.Fatalf("retry Connect failed: %v", err)
+	}
+	defer client.Close()
+	if _, err := client.Call("get_me", []interface{}{}); err != nil {
+		t.Fatalf("RPC after dial retry failed: %v", err)
+	}
+}
+
+func TestClientFailedAuthenticationCanRetry(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+
+	mockServer.On("create_session", func(params []interface{}) (interface{}, error) {
+		if mockServer.GetCallCount("create_session") == 1 {
+			return nil, fmt.Errorf("invalid token")
+		}
+		return map[string]interface{}{"user_id": "user123"}, nil
+	})
+	mockServer.OnSimple("get_domains", []interface{}{})
+	mockServer.OnSimple("get_talks", []interface{}{})
+	mockServer.OnSimple("get_talk_statuses", []interface{}{})
+	mockServer.OnSimple("start_notification", true)
+
+	client := NewClient(Options{Endpoint: mockServer.URL(), AccessToken: "token"})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("first Connect failed: %v", err)
+	}
+	firstDone := client.Done
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("failed authentication did not close Done")
+	}
+	if health := client.Health(); health.Connected || health.Authenticated {
+		t.Fatalf("health after failed authentication = %+v", health)
+	}
+
+	sessionCreated := make(chan struct{}, 1)
+	client.On("session_created", func(data interface{}) {
+		sessionCreated <- struct{}{}
+	})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("retry after failed authentication failed: %v", err)
+	}
+	defer client.Close()
+	select {
+	case <-sessionCreated:
+	case <-time.After(time.Second):
+		t.Fatal("retry did not authenticate")
+	}
+	if health := client.Health(); !health.Connected || !health.Authenticated {
+		t.Fatalf("health after authentication retry = %+v", health)
+	}
+}
+
+func TestMessageDeliveryFanoutBackpressureAndShutdown(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+	mockServer.OnSimple("ping", true)
+
+	drops := make(chan string, 1)
+	metrics := &messageDropMetrics{drops: drops}
+	client := NewClient(Options{
+		Endpoint:           mockServer.URL(),
+		MessageChannelSize: 1,
+	})
+	client.SetMetrics(metrics)
+	if cap(client.Messages) != 1 {
+		t.Fatalf("message channel capacity = %d, want 1", cap(client.Messages))
+	}
+
+	firstHandler := make(chan string, 2)
+	secondHandler := make(chan string, 2)
+	client.OnMessage(func(msg ReceivedMessage) {
+		firstHandler <- msg.ID
+	})
+	client.OnMessage(func(msg ReceivedMessage) {
+		secondHandler <- msg.ID
+	})
+	client.OnMessage(func(msg ReceivedMessage) {
+		panic("handler failure")
+	})
+
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close()
+	if _, err := client.Call("ping", []interface{}{}); err != nil {
+		t.Fatalf("connection synchronization call failed: %v", err)
+	}
+
+	client.mu.RLock()
+	conn := client.conn
+	client.mu.RUnlock()
+	if conn == nil {
+		t.Fatal("client connection is nil")
+	}
+
+	client.handleMessageNotification(conn, map[string]interface{}{
+		"message_id": "first",
+		"talk_id":    "talk-1",
+		"content":    "one",
+	})
+	if got := <-firstHandler; got != "first" {
+		t.Fatalf("first handler message = %q, want first", got)
+	}
+	if got := <-secondHandler; got != "first" {
+		t.Fatalf("second handler message = %q, want first", got)
+	}
+	if got := len(client.Messages); got != 1 {
+		t.Fatalf("channel length after first message = %d, want 1", got)
+	}
+
+	deliveryDone := make(chan struct{})
+	go func() {
+		client.handleMessageNotification(conn, map[string]interface{}{
+			"message_id": "second",
+			"talk_id":    "talk-1",
+			"content":    "two",
+		})
+		close(deliveryDone)
+	}()
+	if got := <-firstHandler; got != "second" {
+		t.Fatalf("first handler message = %q, want second", got)
+	}
+	if got := <-secondHandler; got != "second" {
+		t.Fatalf("second handler message = %q, want second", got)
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- client.Close()
+	}()
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close blocked on a full message channel")
+	}
+	select {
+	case <-deliveryDone:
+	case <-time.After(time.Second):
+		t.Fatal("message delivery did not stop after connection shutdown")
+	}
+	select {
+	case reason := <-drops:
+		if reason != "connection_closed" {
+			t.Fatalf("message drop reason = %q, want connection_closed", reason)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled message delivery was not observable")
+	}
+
+	if got := (<-client.Messages).ID; got != "first" {
+		t.Fatalf("channel message = %q, want first", got)
+	}
+	select {
+	case msg := <-client.Messages:
+		t.Fatalf("second message unexpectedly reached channel: %q", msg.ID)
+	default:
+	}
+}
+
+type messageDropMetrics struct {
+	NoopMetrics
+	drops chan<- string
+}
+
+func (m *messageDropMetrics) RecordMessageDrop(reason string) {
+	m.drops <- reason
+}
+
+func TestClientConcurrentRPCAndNotificationWrites(t *testing.T) {
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+	mockServer.OnSimple("ping", true)
+	mockServer.On("echo", func(params []interface{}) (interface{}, error) {
+		if len(params) != 1 {
+			return nil, fmt.Errorf("got %d params", len(params))
+		}
+		return params[0], nil
+	})
+
+	client := NewClient(Options{Endpoint: mockServer.URL(), WriteTimeout: time.Second})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close()
+	if _, err := client.Call("ping", []interface{}{}); err != nil {
+		t.Fatalf("connection synchronization call failed: %v", err)
+	}
+
+	client.mu.RLock()
+	conn := client.conn
+	client.mu.RUnlock()
+	if conn == nil {
+		t.Fatal("client connection is nil")
+	}
+
+	const writers = 32
+	errs := make(chan error, writers)
+	var wg sync.WaitGroup
+	wg.Add(writers * 2)
+	for i := 0; i < writers; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			result, err := client.Call("echo", []interface{}{i})
+			if err != nil {
+				errs <- err
+				return
+			}
+			got, ok := toInt64(result)
+			if !ok || got != int64(i) {
+				errs <- fmt.Errorf("echo result = %v, want %d", result, i)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			client.handleNotification(conn, []interface{}{
+				RpcRequest,
+				int64(i),
+				"notify_test",
+				[]interface{}{map[string]interface{}{"id": i}},
+			})
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if health := client.Health(); !health.Connected {
+		t.Fatalf("health after concurrent writes = %+v", health)
+	}
+}
+
+type recordingTracerProvider struct {
+	trace.TracerProvider
+	parent trace.SpanContext
+}
+
+func (p *recordingTracerProvider) Tracer(name string, options ...trace.TracerOption) trace.Tracer {
+	return &recordingTracer{
+		Tracer: trace.NewNoopTracerProvider().Tracer(name, options...),
+		parent: &p.parent,
+	}
+}
+
+type recordingTracer struct {
+	trace.Tracer
+	parent *trace.SpanContext
+}
+
+func (t *recordingTracer) Start(ctx context.Context, name string, options ...trace.SpanStartOption) (context.Context, trace.Span) {
+	*t.parent = trace.SpanFromContext(ctx).SpanContext()
+	return t.Tracer.Start(ctx, name, options...)
 }
 
 func TestGetMeWithContext(t *testing.T) {

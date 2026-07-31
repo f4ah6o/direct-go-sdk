@@ -19,6 +19,9 @@ var (
 	// ErrAlreadyConnected is returned when trying to connect an already connected client.
 	ErrAlreadyConnected = errors.New("direct: already connected")
 
+	// ErrConnectionClosed is returned when an active RPC is interrupted by connection closure.
+	ErrConnectionClosed = errors.New("direct: connection closed")
+
 	// ErrRoomNotFound is returned when a room/talk cannot be found.
 	ErrRoomNotFound = errors.New("direct: room not found")
 

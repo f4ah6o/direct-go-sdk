@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
+	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 )
 
 // Errors returned by bot operations.
@@ -168,7 +169,7 @@ func (r *Robot) emit(event EventType) {
 			defer r.wg.Done()
 			defer func() {
 				if p := recover(); p != nil {
-					log.Printf("[PANIC] Event handler recovered: %v", p)
+					log.Printf("[PANIC] Event handler recovered: %s", debuglog.SummarizePayload(p))
 				}
 			}()
 			select {
@@ -205,7 +206,7 @@ func (r *Robot) Respond(pattern string, handler Handler) {
 func (r *Robot) Run(ctx context.Context) error {
 	// Load environment
 	if err := r.auth.LoadEnv(); err != nil {
-		log.Printf("Warning: could not load .env: %v", err)
+		log.Printf("Warning: could not load .env: %s", debuglog.SummarizePayload(err))
 	}
 
 	// Get token
@@ -263,7 +264,7 @@ func (r *Robot) Run(ctx context.Context) error {
 
 	// Connect
 	fmt.Printf("%s is starting...\n", r.Name)
-	if err := r.client.Connect(); err != nil {
+	if err := r.client.ConnectWithContext(ctx); err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
 	defer func() {
@@ -300,7 +301,8 @@ func (r *Robot) handleMessage(ctx context.Context, msg direct.ReceivedMessage) {
 	for _, listener := range r.listeners {
 		matches := listener.Pattern.FindStringSubmatch(msg.Text)
 		if matches != nil {
-			log.Printf("[DEBUG] Matched pattern: %s with text: %s", listener.Pattern.String(), msg.Text)
+			log.Printf("[DEBUG] Matched pattern: %s with text=%s user=%s talk=%s",
+				listener.Pattern.String(), debuglog.SummarizePayload(msg.Text), debuglog.RedactID(msg.UserID), debuglog.RedactID(msg.TalkID))
 			response := Response{
 				Message: msg,
 				Match:   matches,

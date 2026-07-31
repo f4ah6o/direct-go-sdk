@@ -10,21 +10,20 @@ import (
 	"github.com/f4ah6o/direct-go-sdk/daab-go/bot"
 	"github.com/f4ah6o/direct-go-sdk/daab-go/webhook"
 	direct "github.com/f4ah6o/direct-go-sdk/direct-go"
+	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 )
 
 func main() {
-	// Enable debug server if running
-	debugServer := os.Getenv("DEBUG_SERVER")
-	if debugServer == "" {
-		debugServer = "http://localhost:9999"
+	// Enable safe diagnostics only when explicitly configured.
+	if debugServer := os.Getenv("DEBUG_SERVER"); debugServer != "" {
+		direct.EnableDebugServer(debugServer)
 	}
-	direct.EnableDebugServer(debugServer)
 
 	// Check for N8N_WEBHOOK_URL (will be loaded from .env by robot.Run())
 	// We do an early check here to fail fast with a clear error message
 	auth := direct.NewAuth()
 	if err := auth.LoadEnv(); err != nil {
-		log.Printf("Warning: could not load .env: %v", err)
+		log.Printf("Warning: could not load .env: %s", debuglog.SummarizePayload(err))
 	}
 
 	n8nWebhookURL := os.Getenv("N8N_WEBHOOK_URL")
@@ -46,7 +45,7 @@ func main() {
 
 	// Run the bot
 	if err := robot.Run(context.Background()); err != nil {
-		log.Fatalf("Bot error: %v", err)
+		log.Fatalf("Bot error: %s", debuglog.SummarizePayload(err))
 	}
 }
 
@@ -68,12 +67,12 @@ func handleMessage(ctx context.Context, res bot.Response, client *webhook.Client
 	payload := webhook.NewPayload("message_created", client.BotName, msgData)
 
 	log.Printf("[N8N PROXY] Forwarding message: type=%s user=%s talk=%s",
-		msgData.TypeName, msgData.UserID, msgData.TalkID)
+		msgData.TypeName, debuglog.RedactID(msgData.UserID), debuglog.RedactID(msgData.TalkID))
 
 	// Send to n8n
 	resp, err := client.Send(payload)
 	if err != nil {
-		log.Printf("[N8N PROXY] Error sending to n8n: %v", err)
+		log.Printf("[N8N PROXY] Error sending to n8n: %s", debuglog.SummarizePayload(err))
 		return
 	}
 
@@ -85,7 +84,7 @@ func handleMessage(ctx context.Context, res bot.Response, client *webhook.Client
 
 	// Execute action from n8n
 	if err := executeAction(ctx, res, resp); err != nil {
-		log.Printf("[N8N PROXY] Error executing action: %v", err)
+		log.Printf("[N8N PROXY] Error executing action: %s", debuglog.SummarizePayload(err))
 	}
 }
 
@@ -105,46 +104,46 @@ func executeAction(ctx context.Context, res bot.Response, resp *webhook.WebhookR
 
 	case "send_select":
 		// TODO: Implement SendSelect in bot package with Question and Options
-		log.Printf("[N8N PROXY] send_select not fully implemented yet: question=%s options=%v",
-			resp.Question, resp.Options)
+		log.Printf("[N8N PROXY] send_select not fully implemented yet: question=%s options=%s",
+			debuglog.SummarizePayload(resp.Question), debuglog.SummarizePayload(resp.Options))
 		return nil
 
 	case "send_yesno":
 		// TODO: Implement SendYesNo in bot package
-		log.Printf("[N8N PROXY] send_yesno not fully implemented yet: question=%s", resp.Question)
+		log.Printf("[N8N PROXY] send_yesno not fully implemented yet: question=%s", debuglog.SummarizePayload(resp.Question))
 		return nil
 
 	case "send_task":
 		// TODO: Implement SendTask in bot package
-		log.Printf("[N8N PROXY] send_task not fully implemented yet: title=%s", resp.Title)
+		log.Printf("[N8N PROXY] send_task not fully implemented yet: title=%s", debuglog.SummarizePayload(resp.Title))
 		return nil
 
 	case "reply_select":
 		// TODO: Implement ReplySelect in bot package
-		log.Printf("[N8N PROXY] reply_select not fully implemented yet: inReplyTo=%s response=%v",
-			resp.InReplyTo, resp.Response)
+		log.Printf("[N8N PROXY] reply_select not fully implemented yet: inReplyTo=%s response=%s",
+			debuglog.RedactID(resp.InReplyTo), debuglog.SummarizePayload(resp.Response))
 		return nil
 
 	case "reply_yesno":
 		// TODO: Implement ReplyYesNo in bot package
-		log.Printf("[N8N PROXY] reply_yesno not fully implemented yet: inReplyTo=%s response=%v",
-			resp.InReplyTo, resp.ResponseBool)
+		log.Printf("[N8N PROXY] reply_yesno not fully implemented yet: inReplyTo=%s response=%s",
+			debuglog.RedactID(resp.InReplyTo), debuglog.SummarizePayload(resp.ResponseBool))
 		return nil
 
 	case "reply_task":
 		// TODO: Implement ReplyTask in bot package
-		log.Printf("[N8N PROXY] reply_task not fully implemented yet: inReplyTo=%s done=%v",
-			resp.InReplyTo, resp.Done)
+		log.Printf("[N8N PROXY] reply_task not fully implemented yet: inReplyTo=%s done=%s",
+			debuglog.RedactID(resp.InReplyTo), debuglog.SummarizePayload(resp.Done))
 		return nil
 
 	case "close_select":
 		// TODO: Implement CloseSelect in bot package
-		log.Printf("[N8N PROXY] close_select not fully implemented yet: messageId=%s", resp.MessageID)
+		log.Printf("[N8N PROXY] close_select not fully implemented yet: messageId=%s", debuglog.RedactID(resp.MessageID))
 		return nil
 
 	case "close_yesno":
 		// TODO: Implement CloseYesNo in bot package
-		log.Printf("[N8N PROXY] close_yesno not fully implemented yet: messageId=%s", resp.MessageID)
+		log.Printf("[N8N PROXY] close_yesno not fully implemented yet: messageId=%s", debuglog.RedactID(resp.MessageID))
 		return nil
 
 	default:
