@@ -35,6 +35,33 @@ func (c *Client) GetUsers() {
 	assertNotContains(t, methods, "unused_method")
 }
 
+func TestExtractGoMethodsFindsContextAwareCalls(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "constants.go"), `package direct
+
+const MethodGetUsers = "get_users"
+`)
+	writeFile(t, filepath.Join(dir, "users.go"), `package direct
+
+import "context"
+
+type Client struct{}
+
+func (c *Client) GetUsers(ctx context.Context) {
+	c.CallWithContext(ctx, MethodGetUsers, nil)
+	c.callWithContext(ctx, "get_profile", nil)
+}
+`)
+
+	methods, err := ExtractGoMethods(dir)
+	if err != nil {
+		t.Fatalf("ExtractGoMethods returned error: %v", err)
+	}
+
+	assertContains(t, methods, "get_users")
+	assertContains(t, methods, "get_profile")
+}
+
 func TestExtractGoMethodsSkipsTestsAndTools(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "client.go"), `package direct
