@@ -62,6 +62,35 @@ func (c *Client) GetUsers(ctx context.Context) {
 	assertContains(t, methods, "get_profile")
 }
 
+func TestExtractGoMethodsFindsConnectionBoundCalls(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "constants.go"), `package direct
+
+const MethodStartNotification = "start_notification"
+`)
+	writeFile(t, filepath.Join(dir, "client.go"), `package direct
+
+type Client struct{}
+
+func (c *Client) initialize(conn interface{}) {
+	c.callOnConnection(conn, "create_session", nil, nil, nil)
+	c.callOnConnection(conn, MethodStartNotification, nil, nil, nil)
+	c.callOnConnection(conn, "reset_notification", nil, nil, nil)
+	c.callOnConnection(conn, "update_last_used_at", nil, nil, nil)
+}
+`)
+
+	methods, err := ExtractGoMethods(dir)
+	if err != nil {
+		t.Fatalf("ExtractGoMethods returned error: %v", err)
+	}
+
+	assertContains(t, methods, "create_session")
+	assertContains(t, methods, "start_notification")
+	assertContains(t, methods, "reset_notification")
+	assertContains(t, methods, "update_last_used_at")
+}
+
 func TestExtractGoMethodsSkipsTestsAndTools(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "client.go"), `package direct
