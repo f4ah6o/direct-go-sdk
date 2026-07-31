@@ -167,7 +167,7 @@ func rpcMethodExpr(call *ast.CallExpr) (ast.Expr, bool) {
 			return nil, false
 		}
 		return call.Args[0], true
-	case "CallWithContext", "callWithContext":
+	case "CallWithContext", "callWithContext", "callOnConnection":
 		if len(call.Args) < 2 {
 			return nil, false
 		}
