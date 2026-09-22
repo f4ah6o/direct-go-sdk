@@ -6,13 +6,47 @@ on:
   pull_request:
     branches: [main, master, develop]
 
+env:
+  # Pinned for reproducibility: govulncheck v1.8.0+ requires Go >= 1.26.
+  GOVULNCHECK_VERSION: v1.7.0
+
 jobs:
-  test-direct-go:
-    name: Test direct-go
+  modules:
+    name: Module Inventory
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.emit.outputs.matrix }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Verify every go.mod is listed in .github/ci-modules.json
+        run: |
+          find . -name go.mod -not -path './vendor/*' -print0 \
+            | xargs -0 -n1 dirname | sed 's|^\./||' | sort > /tmp/discovered.txt
+          jq -r '.modules[].dir' .github/ci-modules.json | sort > /tmp/listed.txt
+          echo "## Modules covered by CI" >> "$GITHUB_STEP_SUMMARY"
+          sed 's/^/- /' /tmp/listed.txt >> "$GITHUB_STEP_SUMMARY"
+          if ! diff -u /tmp/listed.txt /tmp/discovered.txt; then
+            echo "::error::Every go.mod directory must be listed in .github/ci-modules.json so CI covers it."
+            exit 1
+          fi
+
+      - name: Emit module matrix
+        id: emit
+        run: |
+          jq -c '{include: [.modules[] | .dir as $d | .go[] | {dir: $d, go: .}]}' \
+            .github/ci-modules.json > /tmp/matrix.json
+          echo "matrix=$(cat /tmp/matrix.json)" >> "$GITHUB_OUTPUT"
+          cat /tmp/matrix.json >> "$GITHUB_STEP_SUMMARY"
+
+  test:
+    name: Test ${{ matrix.dir }} (Go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    needs: modules
     strategy:
-      matrix:
-        go: ["1.24", "1.25"]
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.modules.outputs.matrix) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -33,63 +67,29 @@ jobs:
             ${{ runner.os }}-go-${{ matrix.go }}-
 
       - name: Install dependencies
-        working-directory: ./direct-go
+        working-directory: ${{ matrix.dir }}
         run: go mod download
 
       - name: Run tests
-        working-directory: ./direct-go
+        working-directory: ${{ matrix.dir }}
         run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
+
+      - name: Compute coverage artifact slug
+        id: slug
+        run: echo "slug=$(echo '${{ matrix.dir }}' | sed 's|^\.$|root|; s|[/.]|-|g')" >> "$GITHUB_OUTPUT"
 
       - name: Upload coverage to artifact
         uses: actions/upload-artifact@v7
         with:
-          name: coverage-direct-go-${{ matrix.go }}
-          path: direct-go/coverage.txt
+          name: coverage-${{ steps.slug.outputs.slug }}-${{ matrix.go }}
+          path: ${{ matrix.dir }}/coverage.txt
           retention-days: 7
-
-  test-daab-go:
-    name: Test daab-go
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go: ["1.24", "1.25"]
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Setup Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: ${{ matrix.go }}
-
-      - name: Cache Go modules
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ matrix.go }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-${{ matrix.go }}-
-
-      - name: Install dependencies
-        working-directory: ./daab-go
-        run: go mod download
-
-      - name: Run tests
-        working-directory: ./daab-go
-        run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
-
-      - name: Upload coverage to artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: coverage-daab-go-${{ matrix.go }}
-          path: daab-go/coverage.txt
-          retention-days: 7
+          if-no-files-found: ignore
 
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    needs: modules
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -97,37 +97,50 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.24"
+          go-version: "1.25"  # latest 1.25 patch
 
-      - name: Run go vet (direct-go)
-        working-directory: ./direct-go
-        run: go vet ./...
-
-      - name: Run go vet (daab-go)
-        working-directory: ./daab-go
-        run: go vet ./...
-
-      - name: Check formatting (direct-go)
-        working-directory: ./direct-go
+      - name: Run go vet (all modules)
         run: |
-          if [ -n "$(gofmt -l .)" ]; then
+          while IFS= read -r dir; do
+            echo "::group::go vet $dir"
+            (cd "$dir" && go vet ./...) || exit 1
+            echo "::endgroup::"
+          done < <(jq -r '.modules[].dir' .github/ci-modules.json)
+
+      - name: Check formatting (all modules)
+        run: |
+          unformatted=$(gofmt -l $(git ls-files '*.go'))
+          if [ -n "$unformatted" ]; then
             echo "The following files need formatting:"
-            gofmt -l .
+            echo "$unformatted"
             exit 1
           fi
 
-      - name: Check formatting (daab-go)
-        working-directory: ./daab-go
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: modules
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.25"  # latest 1.25 patch
+
+      - name: Build all packages and command binaries (all modules)
         run: |
-          if [ -n "$(gofmt -l .)" ]; then
-            echo "The following files need formatting:"
-            gofmt -l .
-            exit 1
-          fi
+          while IFS= read -r dir; do
+            echo "::group::go build $dir"
+            (cd "$dir" && go build ./...) || exit 1
+            echo "::endgroup::"
+          done < <(jq -r '.modules[].dir' .github/ci-modules.json)
 
   porting-coverage:
     name: Porting Coverage
     runs-on: ubuntu-latest
+    needs: modules
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -167,10 +180,15 @@ jobs:
   coverage-report:
     name: Coverage Report
     runs-on: ubuntu-latest
-    needs: [test-direct-go, test-daab-go]
+    needs: [test]
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.25"  # latest 1.25 patch
 
       - name: Download all coverage reports
         uses: actions/download-artifact@v8
@@ -179,21 +197,22 @@ jobs:
 
       - name: Display coverage summary
         run: |
-          echo "## Test Coverage Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### direct-go (Go 1.24)" >> $GITHUB_STEP_SUMMARY
-          if [ -f coverage-reports/coverage-direct-go-1.24/coverage.txt ]; then
-            go tool cover -func=coverage-reports/coverage-direct-go-1.24/coverage.txt | tail -1 >> $GITHUB_STEP_SUMMARY
-          fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### daab-go (Go 1.24)" >> $GITHUB_STEP_SUMMARY
-          if [ -f coverage-reports/coverage-daab-go-1.24/coverage.txt ]; then
-            go tool cover -func=coverage-reports/coverage-daab-go-1.24/coverage.txt | tail -1 >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "## Test Coverage Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          for dir in coverage-reports/*/; do
+            name=$(basename "$dir")
+            file="$dir/coverage.txt"
+            if [ -f "$file" ]; then
+              echo "### $name" >> "$GITHUB_STEP_SUMMARY"
+              go tool cover -func="$file" | tail -1 >> "$GITHUB_STEP_SUMMARY"
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
 
   security:
     name: Security Scan
     runs-on: ubuntu-latest
+    needs: modules
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -201,16 +220,15 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.25.12"
+          go-version: "1.25"  # latest 1.25 patch
 
-      - name: Run govulncheck (direct-go)
-        working-directory: ./direct-go
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+      - name: Install pinned govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }}
 
-      - name: Run govulncheck (daab-go)
-        working-directory: ./daab-go
+      - name: Run govulncheck (all modules)
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+          while IFS= read -r dir; do
+            echo "::group::govulncheck $dir"
+            (cd "$dir" && govulncheck ./...) || exit 1
+            echo "::endgroup::"
+          done < <(jq -r '.modules[].dir' .github/ci-modules.json)

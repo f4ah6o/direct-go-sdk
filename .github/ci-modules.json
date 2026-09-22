@@ -1,0 +1,10 @@
+{
+  "comment": "Single source of truth for the Go modules CI covers. The Module Inventory job fails if a go.mod exists in the repo but is not listed here. Each entry lists the Go versions the module is tested on: its declared minimum and the newest supported release.",
+  "modules": [
+    { "dir": ".", "go": ["1.25"] },
+    { "dir": "direct-go", "go": ["1.24", "1.25"] },
+    { "dir": "daab-go", "go": ["1.24", "1.25"] },
+    { "dir": "daab-go-examples", "go": ["1.25"] },
+    { "dir": "bench/runtime/go-ping", "go": ["1.25"] }
+  ]
+}
