@@ -26,6 +26,9 @@ const authInfoKey contextKey = "mcp-auth-info"
 type AuthInfo struct {
 	Subject string
 	Scopes  map[string]bool
+	// Principals are the identities used for account authorization: the values
+	// of the configured subject claim (string or list claim, e.g. groups).
+	Principals []string
 }
 
 type Authenticator struct {
@@ -104,7 +107,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, r *http.Request) (cont
 	if err != nil {
 		return ctx, err
 	}
-	claims := &tokenClaims{}
+	claims := jwt.MapClaims{}
 	parser := jwt.NewParser(
 		jwt.WithAudience(a.cfg.JWTAudience),
 		jwt.WithIssuer(a.cfg.JWTIssuer),
@@ -136,8 +139,63 @@ func (a *Authenticator) Authenticate(ctx context.Context, r *http.Request) (cont
 		}
 		return ctx, fmt.Errorf("%w: %v", ErrUnauthorized, err)
 	}
-	info := &AuthInfo{Subject: claims.Subject, Scopes: parseScopes(claims.Scope, claims.Scp)}
+	subject, _ := claims.GetSubject()
+	info := &AuthInfo{
+		Subject:    subject,
+		Scopes:     parseScopes(append(claimStrings(claims["scope"]), claimStrings(claims["scp"])...)...),
+		Principals: principalValues(claims[a.cfg.SubjectClaim]),
+	}
+	if a.cfg.SubjectClaim != "sub" && info.Principals == nil {
+		// The configured claim is absent or malformed: fall back to sub so a
+		// wrongly configured claim does not silently grant principals.
+		info.Principals = principalValues(subject)
+	}
 	return context.WithValue(ctx, authInfoKey, info), nil
+}
+
+// claimStrings normalizes a claim that may be a string or a list of strings
+// (e.g. OAuth "scp" appears in both forms) into a flat list.
+func claimStrings(value interface{}) []string {
+	switch v := value.(type) {
+	case string:
+		return []string{v}
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// principalValues extracts principal identities from a claim value: a string
+// claim yields one principal; a list claim yields one per string element;
+// anything else yields nil so authorization fails closed.
+func principalValues(value interface{}) []string {
+	switch v := value.(type) {
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return nil
+		}
+		return []string{v}
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+				out = append(out, s)
+			}
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func bearerToken(r *http.Request) (string, error) {

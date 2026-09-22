@@ -181,6 +181,25 @@ cp mcp.config.example.yaml mcp.config.yaml
 go run ./cmd/direct-mcp-server --config mcp.config.yaml
 ```
 
+In addition to scope checks, every account-scoped tool enforces a
+subject-to-account authorization policy configured under `mcp.`:
+
+- `subject_claim` (default `"sub"`): the JWT claim that identifies the caller.
+  A string claim yields one principal; a list claim (e.g. `groups`) yields one
+  per element.
+- `account_subjects`: map of principal → list of allowed account IDs. The `*`
+  key grants its accounts to any authenticated caller.
+- `single_tenant` (default `false`): when true, every authenticated caller may
+  use all configured accounts — an explicit compatibility mode for
+  single-tenant deployments.
+
+The default is fail-closed: with neither `account_subjects` nor
+`single_tenant` set, all account-scoped tool calls are denied and
+`direct_list_accounts` returns an empty list. `direct_list_accounts` only
+reveals accounts the caller may use, denied calls return a generic error that
+does not reveal account IDs, and each decision is audit-logged with hashed
+identifiers (no message content). See `mcp.config.example.yaml` for examples.
+
 Protected resource metadata is served at:
 
 ```text

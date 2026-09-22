@@ -14,6 +14,25 @@ mcp:
   read_scope: "direct:read"
   write_scope: "direct:write"
 
+  # Account authorization: which configured accounts each token principal may
+  # use, keyed by the value of `subject_claim` (default "sub"). Scopes gate
+  # read/write; they never grant account access on their own.
+  #
+  #   subject_claim: "sub"            # claim identifying the caller (string)
+  #                                  # or a list claim such as "groups".
+  #   account_subjects:
+  #     "alice@example.com":           # one principal -> its accounts
+  #       - "account-a"
+  #     "ops-group":                   # works when subject_claim is a list
+  #       - "account-a"
+  #     "*":                           # granted to every authenticated caller
+  #       - "account-b"
+  #   single_tenant: false            # true = every caller may use all accounts
+  #                                  # (explicit single-tenant compatibility)
+  #
+  # With no account_subjects and single_tenant unset/false the server is
+  # fail-closed: every account-scoped tool call is denied.
+
 accounts:
   - id: "account-a"
     token_env: "DIRECT_TOKEN_ACCOUNT_A"

@@ -40,6 +40,18 @@ type MCPConfig struct {
 	// MaxJWKSBytes bounds the JWKS document size the server will accept.
 	// Defaults to 1 MiB when unset or non-positive.
 	MaxJWKSBytes int64 `yaml:"max_jwks_bytes"`
+	// SubjectClaim names the JWT claim used to identify the caller for account
+	// authorization ("sub" by default). A string claim produces one principal;
+	// a list claim (e.g. groups) produces one principal per element.
+	SubjectClaim string `yaml:"subject_claim"`
+	// AccountSubjects maps a principal (subject_claim value) to the account IDs
+	// it may use. The "*" key grants listed accounts to any authenticated
+	// principal. When empty and SingleTenant is false, every account call is
+	// denied (fail-closed).
+	AccountSubjects map[string][]string `yaml:"account_subjects"`
+	// SingleTenant is an explicit compatibility mode for single-tenant
+	// deployments: every authenticated principal may use all accounts.
+	SingleTenant bool `yaml:"single_tenant"`
 }
 
 type AccountConfig struct {
@@ -82,6 +94,9 @@ func (c *Config) Defaults() {
 	if c.MCP.MaxJWKSBytes <= 0 {
 		c.MCP.MaxJWKSBytes = 1 << 20
 	}
+	if c.MCP.SubjectClaim == "" {
+		c.MCP.SubjectClaim = "sub"
+	}
 	for i := range c.Accounts {
 		if c.Accounts[i].Endpoint == "" {
 			c.Accounts[i].Endpoint = direct.DefaultEndpoint
@@ -121,6 +136,19 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("account %q requires token_env or token_ref", account.ID)
 		}
 	}
+	for principal, ids := range c.MCP.AccountSubjects {
+		if strings.TrimSpace(principal) == "" {
+			return errors.New("account_subjects contains an empty principal")
+		}
+		if len(ids) == 0 {
+			return fmt.Errorf("account_subjects[%q] lists no accounts", principal)
+		}
+		for _, id := range ids {
+			if !seen[id] {
+				return fmt.Errorf("account_subjects[%q] references unknown account %q", principal, id)
+			}
+		}
+	}
 	return nil
 }
 
@@ -131,6 +159,29 @@ func (c *Config) Account(id string) (AccountConfig, bool) {
 		}
 	}
 	return AccountConfig{}, false
+}
+
+// AllowedAccountIDs returns the set of configured account IDs the given
+// principals may access. In single-tenant mode all accounts are allowed.
+// Otherwise the "*" entry grants its accounts to any authenticated principal
+// and each principal grants its mapped accounts. An empty mapping denies all.
+func (c *Config) AllowedAccountIDs(principals []string) map[string]bool {
+	allowed := map[string]bool{}
+	if c.MCP.SingleTenant {
+		for _, account := range c.Accounts {
+			allowed[account.ID] = true
+		}
+		return allowed
+	}
+	for _, id := range c.MCP.AccountSubjects["*"] {
+		allowed[id] = true
+	}
+	for _, principal := range principals {
+		for _, id := range c.MCP.AccountSubjects[principal] {
+			allowed[id] = true
+		}
+	}
+	return allowed
 }
 
 func (c *Config) ResourceURL() string {
