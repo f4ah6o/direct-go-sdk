@@ -496,7 +496,7 @@ cd direct-go && go test -v -cover  # With coverage
 cd direct-go && go test -race
 
 # Run CI locally (if act is installed)
-act -j test-direct-go
+act -j test
 ```
 
 **Test Coverage**: ~24% (18 tests across 3 test files)
@@ -512,10 +512,15 @@ act -j test-direct-go
 - `Reset()`: Test isolation
 
 **CI/CD**: GitHub Actions workflow (`.github/workflows/ci.yaml`)
-- Test matrix: Go 1.24, 1.25
-- Coverage reporting
+- Every Go module is tested, built, vetted, formatted, and vulnerability-scanned; the
+  module list lives in `.github/ci-modules.json` (the Module Inventory job fails if a
+  `go.mod` is missing from it — add new modules there, with their Go versions)
+- Test matrix: per-module Go versions from `ci-modules.json` (minimum + latest supported)
+- Coverage reporting per module
 - Race detection
 - Lint checks (go vet, gofmt)
+- Security scan: `govulncheck` pinned via `GOVULNCHECK_VERSION` in the workflow env
+  (do not use `@latest`; v1.8.0+ requires Go >= 1.26)
 
 ### Linting
 
