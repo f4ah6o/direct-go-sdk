@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +35,16 @@ type Authenticator struct {
 	mu         sync.Mutex
 	keys       map[string]jwk
 	fetchedAt  time.Time
+	ttl        time.Duration
+	// inflight deduplicates concurrent JWKS fetches: the first caller fetches
+	// while the mutex is released, and waiters share the result.
+	inflight *jwksFetch
+}
+
+type jwksFetch struct {
+	done chan struct{}
+	keys map[string]jwk
+	err  error
 }
 
 type tokenClaims struct {
@@ -62,6 +74,7 @@ func NewAuthenticator(cfg MCPConfig) *Authenticator {
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 		now:        time.Now,
 		keys:       map[string]jwk{},
+		ttl:        defaultJWKSCacheTTL,
 	}
 }
 
@@ -166,54 +179,168 @@ func (a *Authenticator) keyForToken(ctx context.Context, token *jwt.Token, refre
 	return jwk{}, errors.New("signing key not found")
 }
 
+const (
+	defaultJWKSCacheTTL = time.Hour
+	minJWKSCacheTTL     = time.Minute
+	maxJWKSCacheTTL     = time.Hour
+)
+
+// loadKeys serves cached keys when fresh, otherwise fetches the JWKS once
+// per refresh round even under concurrent callers. A failed refresh keeps
+// the last-known-good key set: callers still fail closed on unknown kids
+// because the stale set simply will not contain them.
 func (a *Authenticator) loadKeys(ctx context.Context, refresh bool) (map[string]jwk, error) {
 	a.mu.Lock()
-	if len(a.keys) > 0 && !refresh && a.now().Sub(a.fetchedAt) < time.Hour {
+	if len(a.keys) > 0 && !refresh && a.now().Before(a.fetchedAt.Add(a.ttl)) {
 		keys := a.keys
 		a.mu.Unlock()
 		return keys, nil
 	}
+	if a.inflight != nil {
+		f := a.inflight
+		a.mu.Unlock()
+		select {
+		case <-f.done:
+			if f.err != nil {
+				if stale := a.staleKeys(); len(stale) > 0 {
+					return stale, nil
+				}
+				return nil, f.err
+			}
+			return f.keys, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	f := &jwksFetch{done: make(chan struct{})}
+	a.inflight = f
 	a.mu.Unlock()
 
+	keys, ttl, err := a.fetchKeys(ctx)
+
+	a.mu.Lock()
+	a.inflight = nil
+	f.keys = keys
+	f.err = err
+	if err == nil {
+		a.keys = keys
+		a.fetchedAt = a.now()
+		a.ttl = ttl
+	}
+	a.mu.Unlock()
+	close(f.done)
+
+	if err != nil {
+		if stale := a.staleKeys(); len(stale) > 0 {
+			return stale, nil
+		}
+		return nil, err
+	}
+	return keys, nil
+}
+
+func (a *Authenticator) staleKeys() map[string]jwk {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.keys
+}
+
+// fetchKeys retrieves and validates the JWKS document. The response body is
+// bounded by mcp.max_jwks_bytes and the resulting key set must be non-empty,
+// free of duplicate identifiers, and contain only usable RSA signing keys.
+func (a *Authenticator) fetchKeys(ctx context.Context) (map[string]jwk, time.Duration, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.cfg.JWKSURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("GET JWKS status=%d", resp.StatusCode)
+		return nil, 0, fmt.Errorf("GET JWKS status=%d", resp.StatusCode)
+	}
+	max := a.cfg.MaxJWKSBytes
+	if max <= 0 {
+		max = 1 << 20
+	}
+	if resp.ContentLength > max {
+		return nil, 0, fmt.Errorf("jwks response exceeds %d bytes", max)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, max+1))
+	if err != nil {
+		return nil, 0, err
+	}
+	if int64(len(body)) > max {
+		return nil, 0, fmt.Errorf("jwks response exceeds %d bytes", max)
 	}
 	var jwks jwksResponse
-	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
-		return nil, err
+	if err := json.Unmarshal(body, &jwks); err != nil {
+		return nil, 0, fmt.Errorf("malformed jwks document: %w", err)
 	}
+	keys, err := indexKeys(jwks.Keys)
+	if err != nil {
+		return nil, 0, err
+	}
+	return keys, jwksCacheTTL(resp.Header), nil
+}
+
+// indexKeys indexes usable RSA signing keys by kid and x5t. Keys without an
+// identifier or an unusable public key are skipped; a duplicate identifier
+// rejects the whole set since key selection would be ambiguous.
+func indexKeys(jwksKeys []jwk) (map[string]jwk, error) {
 	keys := map[string]jwk{}
-	for _, key := range jwks.Keys {
+	for _, key := range jwksKeys {
 		if key.KTY != "" && key.KTY != "RSA" {
 			continue
 		}
 		if key.Use != "" && key.Use != "sig" {
 			continue
 		}
-		if key.KID != "" {
-			keys[key.KID] = key
+		if _, err := key.publicKey(); err != nil {
+			continue
 		}
-		if key.X5T != "" {
-			keys[key.X5T] = key
+		for _, id := range []string{key.KID, key.X5T} {
+			if id == "" {
+				continue
+			}
+			if _, dup := keys[id]; dup {
+				return nil, fmt.Errorf("jwks contains duplicate key identifier")
+			}
+			keys[id] = key
 		}
 	}
 	if len(keys) == 0 {
-		return nil, errors.New("jwks contains no RSA signing keys")
+		return nil, errors.New("jwks contains no usable RSA signing keys")
 	}
-	a.mu.Lock()
-	a.keys = keys
-	a.fetchedAt = a.now()
-	a.mu.Unlock()
 	return keys, nil
+}
+
+// jwksCacheTTL honors Cache-Control max-age on the JWKS response, clamped to
+// [minJWKSCacheTTL, maxJWKSCacheTTL] so a misconfigured issuer can neither
+// stall key rotation nor induce a fetch storm. no-store/no-cache pins the
+// TTL to the minimum.
+func jwksCacheTTL(h http.Header) time.Duration {
+	ttl := defaultJWKSCacheTTL
+	for _, part := range strings.Split(h.Get("Cache-Control"), ",") {
+		part = strings.TrimSpace(strings.ToLower(part))
+		switch {
+		case part == "no-cache" || part == "no-store":
+			ttl = minJWKSCacheTTL
+		case strings.HasPrefix(part, "max-age="):
+			if secs, err := strconv.Atoi(strings.TrimPrefix(part, "max-age=")); err == nil && secs > 0 {
+				ttl = time.Duration(secs) * time.Second
+			}
+		}
+	}
+	if ttl < minJWKSCacheTTL {
+		return minJWKSCacheTTL
+	}
+	if ttl > maxJWKSCacheTTL {
+		return maxJWKSCacheTTL
+	}
+	return ttl
 }
 
 func (j jwk) publicKey() (*rsa.PublicKey, error) {

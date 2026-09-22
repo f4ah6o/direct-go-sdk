@@ -10,6 +10,7 @@ mcp:
   jwt_issuer: "https://auth.example.com"
   jwt_audience: "https://mcp.example.com/mcp"
   jwks_url: "https://auth.example.com/.well-known/jwks.json"
+  # max_jwks_bytes: 1048576           # bound on the JWKS document size (default 1 MiB)
   read_scope: "direct:read"
   write_scope: "direct:write"
 
