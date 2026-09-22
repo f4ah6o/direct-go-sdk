@@ -116,6 +116,9 @@ jobs:
             exit 1
           fi
 
+      - name: Compile-check README Go snippets
+        run: go run ./tools/doccheck
+
   build:
     name: Build
     runs-on: ubuntu-latest

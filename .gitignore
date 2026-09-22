@@ -5,4 +5,5 @@ config.yaml
 state/
 bin/
 .wt/
+docs/gen/
 testdata/rapid/

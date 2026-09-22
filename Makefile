@@ -1,70 +1,56 @@
-.PHONY: test test-direct-go test-daab-go lint lint-direct-go lint-daab-go build clean help fmt vet
+# Validate every module listed in .github/ci-modules.json (the same manifest CI uses).
+MODULES := $(shell jq -r '.modules[].dir' .github/ci-modules.json)
 
-# Default target
-all: test
+.PHONY: all test vet fmt fmt-fix build build-all doccheck bench tidy clean security install lint help
 
-# Run all tests
+all: vet fmt doccheck test build
+
+# Run all tests in every module
 test:
-	@echo "Running all tests..."
-	@$(MAKE) test-direct-go
-	@$(MAKE) test-daab-go
+	@for d in $(MODULES); do echo "== go test $$d =="; (cd $$d && go test ./...) || exit 1; done
 
-# Run tests for direct-go
+# Run tests for direct-go only
 test-direct-go:
-	@echo "Testing direct-go..."
 	@cd direct-go && go test -v -race -cover ./...
 
-# Run tests for daab-go
+# Run tests for daab-go only
 test-daab-go:
-	@echo "Testing daab-go..."
 	@cd daab-go && go test -v -race -cover ./...
 
-# Run linters
-lint:
-	@echo "Running linters..."
-	@$(MAKE) lint-direct-go
-	@$(MAKE) lint-daab-go
-
-# Lint direct-go
-lint-direct-go:
-	@echo "Linting direct-go..."
-	@cd direct-go && go vet ./...
-	@if [ -n "$$(gofmt -l direct-go)" ]; then \
-		echo "The following files need formatting:"; \
-		gofmt -l direct-go; \
-		exit 1; \
-	fi
-
-# Lint daab-go
-lint-daab-go:
-	@echo "Linting daab-go..."
-	@cd daab-go && go vet ./...
-	@if [ -n "$$(gofmt -l daab-go)" ]; then \
-		echo "The following files need formatting:"; \
-		gofmt -l daab-go; \
-		exit 1; \
-	fi
-
-# Format code
-fmt:
-	@echo "Formatting code..."
-	@go fmt ./direct-go/...
-	@go fmt ./daab-go/...
-
-# Run go vet
+# go vet across every module
 vet:
-	@echo "Running go vet..."
-	@cd direct-go && go vet ./...
-	@cd daab-go && go vet ./...
+	@for d in $(MODULES); do echo "== go vet $$d =="; (cd $$d && go vet ./...) || exit 1; done
+
+# gofmt check on all tracked files (same check CI runs)
+fmt:
+	@unformatted=$$(gofmt -l $$(git ls-files '*.go')); \
+	if [ -n "$$unformatted" ]; then \
+		echo "The following files need formatting:"; \
+		echo "$$unformatted"; \
+		exit 1; \
+	fi
+
+# Format code in place
+fmt-fix:
+	@gofmt -w $$(git ls-files '*.go')
+
+# go vet + gofmt check
+lint: vet fmt
+
+# Compile-check the Go snippets in README files (same check CI runs)
+doccheck:
+	go run ./tools/doccheck
+
+# Build every module
+build:
+	@for d in $(MODULES); do echo "== go build $$d =="; (cd $$d && go build ./...) || exit 1; done
 
 # Build daabgo CLI
-build:
-	@echo "Building daabgo..."
+build-daabgo:
 	@cd daab-go && go build -o bin/daabgo cmd/daabgo/main.go
 
-# Build for multiple platforms
+# Build daabgo for multiple platforms
 build-all:
-	@echo "Building daabgo for multiple platforms..."
 	@mkdir -p daab-go/bin
 	@echo "  -> linux/amd64"
 	@cd daab-go && GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o bin/daabgo-linux-amd64 cmd/daabgo/main.go
@@ -80,52 +66,46 @@ build-all:
 
 # Run benchmarks
 bench:
-	@echo "Running benchmarks..."
 	@cd direct-go && go test -bench=. -benchmem ./...
 	@cd daab-go && go test -bench=. -benchmem ./...
 
-# Run go mod tidy
+# Regenerate go.mod/go.sum for every module (e.g. after adding a module to the manifest)
 tidy:
-	@echo "Tidying go.mod files..."
-	@cd direct-go && go mod tidy
-	@cd daab-go && go mod tidy
+	@for d in $(MODULES); do echo "== go mod tidy $$d =="; (cd $$d && go mod tidy) || exit 1; done
 
 # Clean build artifacts
 clean:
-	@echo "Cleaning build artifacts..."
-	@rm -rf daab-go/bin
+	@rm -rf daab-go/bin docs/gen
 	@cd direct-go && go clean ./...
 	@cd daab-go && go clean ./...
 
-# Run security scan
+# Run govulncheck (pinned to match CI; v1.8.0+ requires Go >= 1.26)
 security:
-	@echo "Running security scan..."
-	@go install golang.org/x/vuln/cmd/govulncheck@latest
-	@cd direct-go && govulncheck ./...
-	@cd daab-go && govulncheck ./...
+	@go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+	@for d in $(MODULES); do echo "== govulncheck $$d =="; (cd $$d && govulncheck ./...) || exit 1; done
 
 # Install daabgo
 install:
-	@echo "Installing daabgo..."
 	@cd daab-go && go install ./cmd/daabgo
 
 # Show help
 help:
 	@echo "Available targets:"
-	@echo "  all            - Run all tests (default)"
-	@echo "  test           - Run all tests"
-	@echo "  test-direct-go - Run direct-go tests"
-	@echo "  test-daab-go   - Run daab-go tests"
-	@echo "  lint           - Run all linters"
-	@echo "  lint-direct-go - Lint direct-go"
-	@echo "  lint-daab-go   - Lint daab-go"
-	@echo "  fmt            - Format code"
-	@echo "  vet            - Run go vet"
-	@echo "  build          - Build daabgo CLI"
+	@echo "  all            - Run vet + fmt + doccheck + test + build"
+	@echo "  test           - Run go test ./... in every module"
+	@echo "  test-direct-go - Run direct-go tests only"
+	@echo "  test-daab-go   - Run daab-go tests only"
+	@echo "  vet            - Run go vet ./... in every module"
+	@echo "  fmt            - Check gofmt on tracked files (CI parity)"
+	@echo "  fmt-fix        - Format tracked files in place"
+	@echo "  lint           - Run vet + fmt checks"
+	@echo "  doccheck       - Compile-check README Go snippets"
+	@echo "  build          - Build every module"
+	@echo "  build-daabgo   - Build daabgo CLI"
 	@echo "  build-all      - Build daabgo for all platforms"
 	@echo "  bench          - Run benchmarks"
-	@echo "  tidy           - Run go mod tidy"
+	@echo "  tidy           - Run go mod tidy in every module"
 	@echo "  clean          - Clean build artifacts"
-	@echo "  security       - Run security scan"
+	@echo "  security       - Run govulncheck (pinned) in every module"
 	@echo "  install        - Install daabgo to GOPATH/bin"
 	@echo "  help           - Show this help message"

@@ -59,11 +59,27 @@ direct-go-sdk/
 │   │   ├── types.go        # Webhook payload/response types
 │   │   └── webhook_test.go # Webhook tests
 │   └── daab-source/        # Synced daab JS source for reference
-└── daab-go-examples/       # Bot examples (separate module)
-    ├── ping/               # Simple ping bot
-    ├── n8n-proxy/          # n8n webhook proxy bot
-    ├── selectstamp/        # SelectStamp interactive message example
-    └── teams-bridge/       # Teams message bridge bot
+├── daab-go-examples/       # Bot examples (separate module)
+│   ├── ping/               # Simple ping bot
+│   ├── n8n-proxy/          # n8n webhook proxy bot
+│   ├── selectstamp/        # SelectStamp interactive message example
+│   └── teams-bridge/       # Teams message bridge bot
+├── cmd/                    # Command binaries (root module: direct-teams-bridge)
+│   ├── direct-mcp-server/  # OAuth-protected MCP server (read/send tools)
+│   ├── direct-teams-bridge/# Multi-account direct4b ⇄ Teams bridge
+│   └── direct-slack-compat/# Slack-compatible Web/Events API adapter
+├── internal/               # Internal packages for the root module
+│   ├── mcpserver/          # MCP server: JWT auth, JWKS, account authz, tools
+│   ├── teams/              # Teams Bot Framework client
+│   ├── bridge/, directworker/, codex/, codexbridge/, config/, model/, secrets/, store/
+│   └── ...                 # Bridge worker plumbing
+├── slackcompat/            # Slack-compat adapter package (root module)
+├── bench/                  # Benchmarks (e.g. runtime/go-ping, its own module)
+├── docs/                   # Module for compile-checked README snippets (gen/ is gitignored)
+├── tools/
+│   └── doccheck/           # Extracts ```go blocks from READMEs and builds them in docs/
+├── Makefile                # test/vet/build/fmt/doccheck across all modules in ci-modules.json
+└── .github/ci-modules.json # Manifest of every Go module CI validates (add new modules here)
 ```
 
 ## Development Workflow
@@ -113,7 +129,7 @@ go run main.go
 
 # Run n8n webhook proxy example
 cd ../daab-go-examples/n8n-proxy
-# Set up .env with DIRECT_ACCESS_TOKEN and N8N_WEBHOOK_URL
+# Set up .env with HUBOT_DIRECT_TOKEN and N8N_WEBHOOK_URL
 go run main.go
 
 # Run SelectStamp example
@@ -129,7 +145,7 @@ go run main.go
 
 daab-go depends on direct-go using a local replace directive in `daab-go/go.mod`:
 
-```go
+```text
 replace github.com/f4ah6o/direct-go-sdk/direct-go => ../direct-go
 ```
 
@@ -148,11 +164,7 @@ These workflows are **manually triggered** only via GitHub Actions UI.
 
 ### Tracking Progress
 
-The **coverage tool** (`direct-go/tools/coverage/`) tracks porting progress by comparing RPC method calls:
-
-* JavaScript baseline: 82 RPC methods across 13 categories
-* Current Go implementation: ~88% coverage (72/82 methods)
-* Generates detailed reports in JSON/Markdown/Text formats
+The **coverage tool** (`direct-go/tools/coverage/`) tracks porting progress by comparing RPC method calls against the direct-js baseline and generates reports in JSON/Markdown/Text formats.
 
 Run coverage analysis:
 
@@ -161,7 +173,8 @@ cd direct-go/tools/coverage
 go run . -format markdown > ../../COVERAGE.md
 ```
 
-View `direct-go/COVERAGE.md` for current status and missing methods.
+`direct-go/COVERAGE.md` is the source of truth for current status, per-category
+counts, and missing methods — do not hard-code its numbers into this file.
 
 ### Runtime Test Coverage
 
@@ -180,55 +193,10 @@ cd direct-go/tools/testcov
 
 ### Implemented RPC Methods (direct-go)
 
-72 out of 82 methods implemented (~88% coverage):
-
-**Session & Auth (6/7)**
-* `create_session`, `start_notification`, `reset_notification`, `update_last_used_at`
-* `create_access_token`, `create_access_token_by_id`
-* Missing: account control request methods
-
-**User Management (10/11)**
-* `get_me`, `get_users`, `get_profile`, `update_profile`, `update_user`
-* `get_presences`, `get_user_identifiers`
-* `get_friends`, `add_friend`, `delete_friend`, `get_acquaintances`
-
-**Domain Management (7/7)** ✅
-* `get_domains`, `get_domain_invites`, `accept_domain_invite`, `delete_domain_invite`
-* `leave_domain`, `get_domain_users`, `search_domain_users`
-
-**Department Management (3/3)** ✅
-* `get_department_tree`, `get_department_users`, `get_department_user_count`
-
-**Talk/Room Management (8/9)**
-* `get_talks`, `get_talk_statuses`, `create_group_talk`, `create_pair_talk`
-* `update_group_talk`, `add_talkers`, `delete_talker`
-* `add_favorite_talk`, `delete_favorite_talk`
-
-**Message Operations (15/17)**
-* `create_message`, `get_messages`, `delete_message`, `search_messages`, `search_messages_around_datetime`
-* `get_favorite_messages`, `add_favorite_message`, `delete_favorite_message`
-* `get_scheduled_messages`, `schedule_message`, `delete_scheduled_message`, `reschedule_message`
-* `get_available_message_reactions`, `set_message_reaction`, `reset_message_reaction`, `get_message_reaction_users`
-* Missing: `get_read_status`, `update_read_status`
-
-**File & Attachment Management (6/6)** ✅
-* `create_upload_auth`, `get_attachments`, `delete_attachment`, `search_attachments`
-* `create_file_preview`, `get_file_preview`
-
-**Announcement Management (4/4)** ✅
-* `create_announcement`, `get_announcements`
-* `get_announcement_statuses`, `update_announcement_status`
-
-**Push Notification Management (2/2)** ✅
-* `enable_push_notification`, `disable_push_notification`
-
-**Conference/Call Management (5/5)** ✅
-* `get_conferences`, `get_conference_participants`
-* `join_conference`, `leave_conference`, `reject_conference`
-
-**Miscellaneous (2/5)**
-* `authorize_device`
-* Missing: note management (4 methods)
+Current implementation status — per-category counts, implemented method
+lists, and missing methods — is tracked in `direct-go/COVERAGE.md` and
+regenerated by the coverage tool. Update that report when RPC methods are
+added rather than duplicating numbers here.
 
 ## Key Architecture Patterns
 
@@ -477,32 +445,31 @@ cd daab-go
 go build -o daabgo cmd/daabgo/main.go
 
 # Install globally
-go install github.com/f4ah6o/daabgo/cmd/daabgo@latest
+go install github.com/f4ah6o/direct-go-sdk/daab-go/cmd/daabgo@latest
 ```
 
 ### Testing
 
-direct-go has comprehensive unit tests with mock server support:
+Every command below validates **all** modules via `.github/ci-modules.json`
+(the same manifest CI uses) — prefer the Makefile over `go test ./...`, which
+only covers the module you run it in:
 
 ```bash
-# Run all tests in workspace
-go test ./...
+make test      # go test ./... in every module
+make vet       # go vet ./... in every module
+make build     # go build ./... in every module
+make fmt       # gofmt check on tracked files
+make doccheck  # compile-check the Go snippets in README files
 
-# Run tests for specific module
-cd direct-go && go test ./...
-cd direct-go && go test -v -cover  # With coverage
-
-# Run tests with race detector
-cd direct-go && go test -race
+# Single-module equivalents
+cd direct-go && go test -race ./...
+cd daab-go && go test -race ./...
 
 # Run CI locally (if act is installed)
 act -j test
 ```
 
-**Test Coverage**: ~24% (18 tests across 3 test files)
-- `client_test.go`: Core client functionality (5 tests)
-- `users_test.go`: User management APIs (6 tests)  
-- `domains_test.go`: Domain management APIs (7 tests)
+direct-go has comprehensive unit tests with mock server support:
 
 **Test utilities**: `direct-go/testutil/` provides:
 - `MockServer`: WebSocket mock server for RPC testing
@@ -524,11 +491,18 @@ act -j test
 
 ### Linting
 
-No specific linter configuration exists yet. Standard Go tools:
+No specific linter configuration exists yet. Standard Go tools, run across all
+modules via the Makefile:
 
 ```bash
-go vet ./...
-go fmt ./...
+make vet    # go vet ./... per module
+make fmt    # gofmt -l on tracked files
+```
+
+CI also compile-checks every fenced Go snippet in the READMEs:
+
+```bash
+go run ./tools/doccheck   # extracts ```go blocks → docs/gen/ and builds them
 ```
 
 ## Important Notes
@@ -569,25 +543,10 @@ go run main.go
 
 ### Coverage Status
 
-Current implementation status by category:
-
-1. ✅ Domain Management (7/7) - 100%
-2. ✅ Department Management (3/3) - 100%
-3. ✅ File & Attachment Management (6/6) - 100%
-4. ✅ Announcement Management (4/4) - 100%
-5. ✅ Push Notification Management (2/2) - 100%
-6. ✅ Conference/Call Management (5/5) - 100%
-7. 🟡 User Management (10/11) - 91%
-8. 🟡 Talk/Room Management (8/9) - 89%
-9. 🟡 Message Operations (15/17) - 88%
-10. 🟡 Session & Auth (6/7) - 86%
-11. 🔴 Note Management (0/6) - 0%
-12. 🔴 Miscellaneous (1/5) - 20%
-
-**Missing Methods (10/82)**:
-* Note management: `create_note`, `get_notes`, `update_note`, `delete_note`, `get_note_comments`, `create_note_comment`
-* Session: account control request methods (3)
-* Message: `get_read_status`, `update_read_status`
+Per-category implementation status and missing methods are generated into
+`direct-go/COVERAGE.md` by the coverage tool (`direct-go/tools/coverage/`).
+See that file — it is checked into the repo and refreshed by CI — rather than
+maintaining numbers here.
 
 ## API Compatibility
 

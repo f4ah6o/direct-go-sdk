@@ -32,7 +32,7 @@ go run ./ping
 
 | 変数名 | 説明 |
 |--------|------|
-| `DIRECT_ACCESS_TOKEN` | directアクセストークン |
-| `DIRECT_ENDPOINT` | WebSocketエンドポイントURL |
+| `HUBOT_DIRECT_TOKEN` | directアクセストークン（`daabgo login`で`.env`にも保存される） |
+| `HUBOT_DIRECT_ENDPOINT` | WebSocketエンドポイントURL |
 
 各サンプル固有の環境変数については、各サンプルのディレクトリ内のREADMEを参照してください。
