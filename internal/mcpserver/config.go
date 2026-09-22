@@ -37,6 +37,9 @@ type MCPConfig struct {
 	JWKSURL              string   `yaml:"jwks_url"`
 	ReadScope            string   `yaml:"read_scope"`
 	WriteScope           string   `yaml:"write_scope"`
+	// MaxJWKSBytes bounds the JWKS document size the server will accept.
+	// Defaults to 1 MiB when unset or non-positive.
+	MaxJWKSBytes int64 `yaml:"max_jwks_bytes"`
 	// SubjectClaim names the JWT claim used to identify the caller for account
 	// authorization ("sub" by default). A string claim produces one principal;
 	// a list claim (e.g. groups) produces one principal per element.
@@ -87,6 +90,9 @@ func (c *Config) Defaults() {
 	}
 	if c.MCP.WriteScope == "" {
 		c.MCP.WriteScope = DefaultWriteScope
+	}
+	if c.MCP.MaxJWKSBytes <= 0 {
+		c.MCP.MaxJWKSBytes = 1 << 20
 	}
 	if c.MCP.SubjectClaim == "" {
 		c.MCP.SubjectClaim = "sub"
