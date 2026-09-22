@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -129,11 +130,17 @@ func (s *Server) listAccounts(ctx context.Context, _ *mcp.CallToolRequest, _ str
 	if err := RequireScope(ctx, s.cfg.MCP.ReadScope); err != nil {
 		return nil, listAccountsOutput{}, err
 	}
+	info, _ := AuthInfoFromContext(ctx)
+	allowed := s.allowedAccountIDs(ctx)
 	out := make([]accountOutput, 0, len(s.cfg.Accounts))
 	for _, account := range s.cfg.Accounts {
+		if !allowed[account.ID] {
+			continue
+		}
 		_, available := s.tokens[account.ID]
 		out = append(out, accountOutput{ID: account.ID, Endpoint: account.Endpoint, Available: available})
 	}
+	s.audit("direct_list_accounts", info, "", "allow")
 	return nil, listAccountsOutput{Accounts: out}, nil
 }
 
@@ -141,7 +148,7 @@ func (s *Server) getMe(ctx context.Context, _ *mcp.CallToolRequest, args account
 	if err := RequireScope(ctx, s.cfg.MCP.ReadScope); err != nil {
 		return nil, userOutput{}, err
 	}
-	client, closeClient, err := s.openClient(ctx, args.AccountID)
+	client, closeClient, err := s.openClient(ctx, "direct_get_me", args.AccountID)
 	if err != nil {
 		return nil, userOutput{}, err
 	}
@@ -154,7 +161,7 @@ func (s *Server) listDomains(ctx context.Context, _ *mcp.CallToolRequest, args a
 	if err := RequireScope(ctx, s.cfg.MCP.ReadScope); err != nil {
 		return nil, listDomainsOutput{}, err
 	}
-	client, closeClient, err := s.openClient(ctx, args.AccountID)
+	client, closeClient, err := s.openClient(ctx, "direct_list_domains", args.AccountID)
 	if err != nil {
 		return nil, listDomainsOutput{}, err
 	}
@@ -167,7 +174,7 @@ func (s *Server) listTalks(ctx context.Context, _ *mcp.CallToolRequest, args acc
 	if err := RequireScope(ctx, s.cfg.MCP.ReadScope); err != nil {
 		return nil, listTalksOutput{}, err
 	}
-	client, closeClient, err := s.openClient(ctx, args.AccountID)
+	client, closeClient, err := s.openClient(ctx, "direct_list_talks", args.AccountID)
 	if err != nil {
 		return nil, listTalksOutput{}, err
 	}
@@ -180,7 +187,7 @@ func (s *Server) getMessages(ctx context.Context, _ *mcp.CallToolRequest, args g
 	if err := RequireScope(ctx, s.cfg.MCP.ReadScope); err != nil {
 		return nil, getMessagesOutput{}, err
 	}
-	client, closeClient, err := s.openClient(ctx, args.AccountID)
+	client, closeClient, err := s.openClient(ctx, "direct_get_messages", args.AccountID)
 	if err != nil {
 		return nil, getMessagesOutput{}, err
 	}
@@ -201,7 +208,7 @@ func (s *Server) searchMessages(ctx context.Context, _ *mcp.CallToolRequest, arg
 	if strings.TrimSpace(args.Keyword) == "" {
 		return nil, searchMessagesOutput{}, fmt.Errorf("keyword is required")
 	}
-	client, closeClient, err := s.openClient(ctx, args.AccountID)
+	client, closeClient, err := s.openClient(ctx, "direct_search_messages", args.AccountID)
 	if err != nil {
 		return nil, searchMessagesOutput{}, err
 	}
@@ -224,7 +231,7 @@ func (s *Server) sendText(ctx context.Context, _ *mcp.CallToolRequest, args send
 	if strings.TrimSpace(args.Text) == "" {
 		return nil, sendTextOutput{}, fmt.Errorf("text is required")
 	}
-	client, closeClient, err := s.openClient(ctx, args.AccountID)
+	client, closeClient, err := s.openClient(ctx, "direct_send_text", args.AccountID)
 	if err != nil {
 		return nil, sendTextOutput{}, err
 	}
@@ -236,11 +243,21 @@ func (s *Server) sendText(ctx context.Context, _ *mcp.CallToolRequest, args send
 	return nil, sendTextOutput{MessageID: messageID}, nil
 }
 
-func (s *Server) openClient(ctx context.Context, accountID string) (directClient, func(), error) {
+// openClient enforces the account authorization policy for every
+// account-scoped tool before dialing Direct. Denials are logged via audit
+// without revealing which accounts exist or who was denied.
+func (s *Server) openClient(ctx context.Context, tool, accountID string) (directClient, func(), error) {
+	info, _ := AuthInfoFromContext(ctx)
+	if !s.allowedAccountIDs(ctx)[accountID] {
+		s.audit(tool, info, accountID, "deny")
+		return nil, nil, errors.New("account is not authorized for the authenticated principal")
+	}
 	account, ok := s.cfg.Account(accountID)
 	if !ok {
+		s.audit(tool, info, accountID, "deny")
 		return nil, nil, fmt.Errorf("unknown account %q", accountID)
 	}
+	s.audit(tool, info, accountID, "allow")
 	token, ok := s.tokens[account.ID]
 	if !ok || token == "" {
 		return nil, nil, fmt.Errorf("account %q token is not available", account.ID)

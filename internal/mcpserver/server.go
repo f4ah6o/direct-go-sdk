@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 	opsecret "github.com/f4ah6o/direct-go-sdk/direct-teams-bridge/internal/secrets/op"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
@@ -41,6 +42,9 @@ func New(ctx context.Context, cfg *Config, logger *log.Logger) (*Server, error) 
 		logger:        logger,
 	}
 	s.registerTools()
+	if !cfg.MCP.SingleTenant && len(cfg.MCP.AccountSubjects) == 0 {
+		logger.Printf("[mcp] no account_subjects configured and single_tenant is off; all account-scoped tool calls will be denied")
+	}
 	return s, nil
 }
 
@@ -83,6 +87,29 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		return err
 	}
+}
+
+// allowedAccountIDs resolves which configured accounts the authenticated
+// principal on ctx may use, per the mcp.subject_claim / mcp.account_subjects
+// policy (or all accounts when mcp.single_tenant is set).
+func (s *Server) allowedAccountIDs(ctx context.Context) map[string]bool {
+	info, ok := AuthInfoFromContext(ctx)
+	if !ok || info == nil {
+		return map[string]bool{}
+	}
+	return s.cfg.AllowedAccountIDs(info.Principals)
+}
+
+// audit writes one authorization decision line. Identifiers are redacted so
+// principals and account IDs stay correlatable but not readable, and no
+// message content is ever logged.
+func (s *Server) audit(tool string, info *AuthInfo, accountID, decision string) {
+	subject := ""
+	if info != nil {
+		subject = info.Subject
+	}
+	s.logger.Printf("[mcp] audit tool=%s subject=%s account=%s decision=%s",
+		tool, debuglog.RedactID(subject), debuglog.RedactID(accountID), decision)
 }
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
