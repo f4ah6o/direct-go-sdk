@@ -5,6 +5,7 @@
     { "dir": "direct-go", "go": ["1.24", "1.25"] },
     { "dir": "daab-go", "go": ["1.24", "1.25"] },
     { "dir": "daab-go-examples", "go": ["1.25"] },
-    { "dir": "bench/runtime/go-ping", "go": ["1.25"] }
+    { "dir": "bench/runtime/go-ping", "go": ["1.25"] },
+    { "dir": "docs", "go": ["1.25"] }
   ]
 }

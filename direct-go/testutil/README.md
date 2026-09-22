@@ -9,29 +9,43 @@
 ### 使用例
 
 ```go
-import "github.com/f4ah6o/direct-go-sdk/direct-go/testutil"
+package main
 
-func TestSomething(t *testing.T) {
+import (
+    "context"
+    "fmt"
+    "log"
+
+    direct "github.com/f4ah6o/direct-go-sdk/direct-go"
+    "github.com/f4ah6o/direct-go-sdk/direct-go/testutil"
+)
+
+func main() {
     // モックサーバーを作成
     mockServer := testutil.NewMockServer()
     defer mockServer.Close()
-    
+
     // RPCメソッドのレスポンスを設定
     mockServer.OnSimple("get_me", map[string]interface{}{
-        "id": "user123",
+        "id":           "user123",
         "display_name": "Test User",
     })
-    
+
     // クライアントを作成してモックサーバーに接続
     client := direct.NewClient(direct.Options{
         Endpoint: mockServer.URL(),
     })
-    client.Connect()
+    if err := client.ConnectWithContext(context.Background()); err != nil {
+        log.Fatal(err)
+    }
     defer client.Close()
-    
-    // テスト実行
+
+    // RPCを呼び出してモックレスポンスを確認
     user, err := client.GetMeWithContext(context.Background())
-    // assertions...
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println(user.ID)
 }
 ```
 

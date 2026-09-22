@@ -47,33 +47,31 @@ import (
     "log"
 
     direct "github.com/f4ah6o/direct-go-sdk/direct-go"
-    "github.com/f4ah6o/direct-go-sdk/direct-go/auth"
 )
 
 func main() {
-    // Load token from .env file or environment
-    a := auth.NewAuth()
-    token, err := a.GetToken()
-    if err != nil {
-        log.Fatal(err)
+    // Load token: HUBOT_DIRECT_TOKEN env var first, then the .env file
+    a := direct.NewAuth()
+    token := a.GetToken()
+    if token == "" {
+        log.Fatal("no access token: set HUBOT_DIRECT_TOKEN or run `daabgo login`")
     }
 
     // Create client
     client := direct.NewClient(direct.Options{
-        Token:    token,
-        Endpoint: direct.DefaultEndpoint,
+        AccessToken: token,
+        Endpoint:    direct.DefaultEndpoint,
     })
 
-    // Connect
+    // Connect and wait until the session is authenticated and ready
     ctx := context.Background()
-    if err := client.Connect(); err != nil {
+    if err := client.ConnectWithContext(ctx); err != nil {
         log.Fatal(err)
     }
     defer client.Close()
 
     // Send a message
-    err = client.SendText(roomID, "Hello, World!")
-    if err != nil {
+    if err := client.SendText("room-id", "Hello, World!"); err != nil {
         log.Fatal(err)
     }
 }
@@ -87,7 +85,6 @@ package main
 import (
     "context"
     "log"
-    "os"
 
     "github.com/f4ah6o/direct-go-sdk/daab-go/bot"
 )
@@ -119,9 +116,13 @@ func main() {
 ### Using Middleware
 
 ```go
+package main
+
 import (
+    "context"
     "log"
     "os"
+    "time"
 
     "github.com/f4ah6o/direct-go-sdk/daab-go/bot"
 )
@@ -223,13 +224,21 @@ modals, full threads, or interactive components.
 
 ## Environment Variables
 
+The access token resolves in this order: **`HUBOT_DIRECT_TOKEN` environment
+variable → `.env` file** (written by `daabgo login`).
+
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `DIRECT_TOKEN` | Access token for authentication | - |
+| `HUBOT_DIRECT_TOKEN` | Access token for authentication (env var wins over `.env`) | - |
+| `HUBOT_DIRECT_DEVICE_ID` | Stable device ID (auto-created in `.env` when unset) | - |
 | `HUBOT_DIRECT_ENDPOINT` | WebSocket endpoint URL | `wss://api.direct4b.com/albero-app-server/api` |
-| `HUBOT_DIRECT_PROXY_URL` | Proxy URL for connections | - |
-| `HTTPS_PROXY` | HTTPS proxy URL (fallback) | - |
-| `HTTP_PROXY` | HTTP proxy URL (fallback) | - |
+| `HUBOT_DIRECT_PROXY_URL` | Proxy URL for connections (bot framework) | - |
+| `HTTPS_PROXY` / `HTTP_PROXY` | Proxy URL fallbacks (bot framework) | - |
+| `DIRECT_PROXY_URL` | Proxy URL (`direct.LoadConfig`) | - |
+| `DIRECT_TIMEOUT` | Request timeout (duration, `direct.LoadConfig`) | - |
+| `DIRECT_DEBUG` | `"true"` enables debug logging (`direct.LoadConfig`) | - |
+| `DIRECT_NAME` | Client name (`direct.LoadConfig`) | - |
+| `DIRECT_TOKEN_<ACCOUNT_ID>` | Per-account token for `direct-mcp-server`, `direct-teams-bridge`, `direct-slack-compat` (uppercased account ID, `-`/`.` → `_`) | - |
 
 ## Documentation
 
@@ -241,33 +250,35 @@ modals, full threads, or interactive components.
 See [daab-go-examples](./daab-go-examples/) for complete example projects:
 
 - `ping` - Simple echo bot
-- `webhook` - Webhook server example
+- `selectstamp` - Interactive select-menu bot
+- `n8n-proxy` - n8n webhook proxy bot
+- `teams-bridge` - Teams bridge bot
+
+## Development
+
+The repository is a multi-module Go workspace; `.github/ci-modules.json` is the
+manifest of every module CI validates. The root Makefile runs commands across
+all of them:
+
+```bash
+make test      # go test ./... in every module
+make vet       # go vet ./... in every module
+make fmt       # gofmt check on tracked files
+make doccheck  # compile-check the Go snippets in README files
+make all       # everything above
+```
 
 ## Contributing
 
 1. Fork the repository
 2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Run tests: `go test ./...`
-4. Run linter: `golangci-lint run`
-5. Commit your changes
-6. Push to the branch
-7. Create a Pull Request
+3. Make your changes and verify with `make all`
+4. Commit your changes
+5. Push to the branch
+6. Create a Pull Request
 
-## Development
-
-```bash
-# Run tests
-go test ./...
-
-# Run tests with coverage
-go test -cover ./...
-
-# Run tests with race detector
-go test -race ./...
-
-# Build the CLI
-cd daab-go && go build -o daabgo cmd/daabgo/main.go
-```
+See [AGENTS.md](./AGENTS.md) for the full contributor guide (module layout,
+porting status, sync workflows).
 
 ## License
 

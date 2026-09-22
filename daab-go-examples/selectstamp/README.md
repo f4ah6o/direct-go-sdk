@@ -22,8 +22,8 @@ Botに対して「メニュー」とメッセージを送信すると、セレ�
 
 | 変数名 | 説明 | デフォルト |
 |--------|------|-----------|
-| `DIRECT_ACCESS_TOKEN` | directアクセストークン | 必須 |
-| `DIRECT_ENDPOINT` | WebSocketエンドポイント | 必須 |
+| `HUBOT_DIRECT_TOKEN` | directアクセストークン | 必須 |
+| `HUBOT_DIRECT_ENDPOINT` | WebSocketエンドポイント | `wss://api.direct4b.com/albero-app-server/api` |
 | `DEBUG_SERVER` | デバッグサーバーURL | `http://localhost:9999` |
 
 ## セレクトスタンプAPI
