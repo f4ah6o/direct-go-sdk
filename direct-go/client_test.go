@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,8 @@ import (
 
 	"github.com/f4ah6o/direct-go-sdk/direct-go/debuglog"
 	"github.com/f4ah6o/direct-go-sdk/direct-go/testutil"
+	"github.com/gorilla/websocket"
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 func TestClientConnect(t *testing.T) {
@@ -1132,11 +1135,18 @@ func TestToInt64_Int64(t *testing.T) {
 	})
 }
 
-// TestToInt64_Uint verifies uint values are correctly converted to int64
+// TestToInt64_Uint verifies uint values within int64 range are correctly
+// converted and out-of-range values are rejected rather than wrapped.
 func TestToInt64_Uint(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		val := rapid.Uint().Draw(t, "val")
 		result, ok := toInt64(val)
+		if uint64(val) > math.MaxInt64 {
+			if ok {
+				t.Fatalf("toInt64(%d) should reject out-of-range uint", val)
+			}
+			return
+		}
 		if !ok {
 			t.Fatalf("toInt64(%d) returned false", val)
 		}
@@ -1188,12 +1198,18 @@ func TestToInt64_Uint32(t *testing.T) {
 	})
 }
 
-// TestToInt64_Uint64 verifies uint64 values (within int64 range) are correctly converted
+// TestToInt64_Uint64 verifies uint64 values are correctly converted within
+// int64 range and rejected above it.
 func TestToInt64_Uint64(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
-		// Only test values within int64 range to avoid overflow
-		val := rapid.Uint64Range(0, 1<<63-1).Draw(t, "val")
+		val := rapid.Uint64().Draw(t, "val")
 		result, ok := toInt64(val)
+		if val > math.MaxInt64 {
+			if ok {
+				t.Fatalf("toInt64(%d) should reject uint64 > MaxInt64", val)
+			}
+			return
+		}
 		if !ok {
 			t.Fatalf("toInt64(%d) returned false", val)
 		}
@@ -1203,32 +1219,78 @@ func TestToInt64_Uint64(t *testing.T) {
 	})
 }
 
-// TestToInt64_Float32 verifies float32 values are correctly converted to int64
+// TestToInt64_Float32 verifies integral, finite, in-range float32 values are
+// correctly converted to int64 and everything else is rejected.
 func TestToInt64_Float32(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		val := rapid.Float32().Draw(t, "val")
 		result, ok := toInt64(val)
-		if !ok {
-			t.Fatalf("toInt64(%f) returned false", val)
+		if ok {
+			if result != int64(val) {
+				t.Fatalf("toInt64(%f) = %d, want %d", val, result, int64(val))
+			}
+			return
 		}
-		if result != int64(val) {
-			t.Fatalf("toInt64(%f) = %d, want %d", val, result, int64(val))
+		if !math.IsNaN(float64(val)) && !math.IsInf(float64(val), 0) &&
+			math.Trunc(float64(val)) == float64(val) &&
+			float64(val) < float64(math.MaxInt64) && float64(val) >= float64(math.MinInt64) {
+			t.Fatalf("toInt64(%f) should accept integral in-range value", val)
 		}
 	})
 }
 
-// TestToInt64_Float64 verifies float64 values are correctly converted to int64
+// TestToInt64_Float64 verifies integral, finite, in-range float64 values are
+// correctly converted to int64 and everything else is rejected.
 func TestToInt64_Float64(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		val := rapid.Float64().Draw(t, "val")
 		result, ok := toInt64(val)
-		if !ok {
-			t.Fatalf("toInt64(%f) returned false", val)
+		if ok {
+			if result != int64(val) {
+				t.Fatalf("toInt64(%f) = %d, want %d", val, result, int64(val))
+			}
+			return
 		}
-		if result != int64(val) {
-			t.Fatalf("toInt64(%f) = %d, want %d", val, result, int64(val))
+		if !math.IsNaN(val) && !math.IsInf(val, 0) && math.Trunc(val) == val &&
+			val < float64(math.MaxInt64) && val >= float64(math.MinInt64) {
+			t.Fatalf("toInt64(%f) should accept integral in-range value", val)
 		}
 	})
+}
+
+// TestToInt64_RejectsNonIntegralAndNonFinite covers the rejection contract
+// directly: fractional values, NaN, infinities, and out-of-range floats.
+func TestToInt64_RejectsNonIntegralAndNonFinite(t *testing.T) {
+	for _, v := range []interface{}{
+		1.5, -1.5, math.NaN(), math.Inf(1), math.Inf(-1),
+		float64(math.MaxInt64), float64(math.MinInt64) - 2048,
+		uint64(math.MaxInt64) + 1, uint64(math.MaxUint64),
+	} {
+		if _, ok := toInt64(v); ok {
+			t.Fatalf("toInt64(%v) should return false", v)
+		}
+	}
+	positive := []struct {
+		v    interface{}
+		want int64
+	}{
+		{0.0, 0},
+		{-0.0, 0},
+		{42.0, 42},
+		{float64(math.MinInt64), math.MinInt64},
+		{float64(1 << 53), 1 << 53},
+		{uint64(math.MaxInt64), math.MaxInt64},
+	}
+	for _, tc := range positive {
+		v, want := tc.v, tc.want
+		got, ok := toInt64(v)
+		if !ok {
+			t.Fatalf("toInt64(%v) should return true", v)
+		}
+		if got != want {
+			t.Fatalf("toInt64(%v) = %d, want %d", v, got, want)
+		}
+	}
 }
 
 // TestToInt64_String verifies non-numeric types return false
@@ -1557,4 +1619,212 @@ func TestParseMessage_NilInput(t *testing.T) {
 	if result.ID != "" {
 		t.Fatalf("parseMessage(nil) ID should be empty, got %q", result.ID)
 	}
+}
+
+// Frame validation tests (issue #47): malformed input must emit a typed
+// ProtocolError, never panic, and must not terminate healthy processing.
+
+func connectedClient(t *testing.T) (*Client, *websocket.Conn) {
+	t.Helper()
+	mockServer := testutil.NewMockServer()
+	mockServer.OnSimple("ping", true)
+	client := NewClient(Options{Endpoint: mockServer.URL(), WriteTimeout: time.Second})
+	if err := client.Connect(); err != nil {
+		mockServer.Close()
+		t.Fatalf("Connect failed: %v", err)
+	}
+	t.Cleanup(func() {
+		client.Close()
+		mockServer.Close()
+	})
+	client.mu.RLock()
+	conn := client.conn
+	client.mu.RUnlock()
+	if conn == nil {
+		t.Fatal("client connection is nil")
+	}
+	return client, conn
+}
+
+func protocolErrors(c *Client) <-chan *ProtocolError {
+	ch := make(chan *ProtocolError, 16)
+	c.On("protocol_error", func(data interface{}) {
+		if err, ok := data.(*ProtocolError); ok {
+			ch <- err
+		}
+	})
+	return ch
+}
+
+func waitProtocolError(t *testing.T, ch <-chan *ProtocolError) *ProtocolError {
+	t.Helper()
+	select {
+	case err := <-ch:
+		return err
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected protocol_error event")
+		return nil
+	}
+}
+
+func TestHandleMessageRejectsMalformedFrames(t *testing.T) {
+	client, conn := connectedClient(t)
+	errs := protocolErrors(client)
+
+	frames := [][]interface{}{
+		{},                               // too short
+		{RpcResponse, int64(1)},          // too short
+		{"nope", int64(1), nil, true},    // non-integer frame type
+		{int64(42), int64(1), nil, true}, // unknown frame type
+	}
+	for _, frame := range frames {
+		data, err := msgpack.Marshal(frame)
+		if err != nil {
+			t.Fatal(err)
+		}
+		client.handleMessage(conn, data)
+		waitProtocolError(t, errs)
+	}
+
+	// A malformed frame must not terminate healthy processing.
+	if _, err := client.Call("ping", []interface{}{}); err != nil {
+		t.Fatalf("ping after malformed frames failed: %v", err)
+	}
+}
+
+func TestHandleResponseValidatesMsgID(t *testing.T) {
+	client, _ := connectedClient(t)
+	errs := protocolErrors(client)
+
+	// Unknown or duplicate msgID: ignored without error.
+	client.handleResponse([]interface{}{RpcResponse, int64(999), nil, true})
+
+	// Register a handler; a valid response consumes it exactly once and a
+	// duplicate response is dropped.
+	called := make(chan interface{}, 2)
+	client.mu.Lock()
+	client.responseHandlers[7] = &ResponseHandler{OnSuccess: func(result interface{}) { called <- result }}
+	client.mu.Unlock()
+	client.handleResponse([]interface{}{RpcResponse, int64(7), nil, "ok"})
+	select {
+	case got := <-called:
+		if got != "ok" {
+			t.Fatalf("handler result = %v", got)
+		}
+	default:
+		t.Fatal("handler was not invoked")
+	}
+	client.handleResponse([]interface{}{RpcResponse, int64(7), nil, "dup"})
+	select {
+	case got := <-called:
+		t.Fatalf("duplicate response invoked handler: %v", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Non-integer and out-of-range msgIDs emit protocol errors.
+	for _, badID := range []interface{}{"x", uint64(math.MaxUint64), 1.5, math.NaN()} {
+		client.handleResponse([]interface{}{RpcResponse, badID, nil, true})
+		waitProtocolError(t, errs)
+	}
+}
+
+func TestHandleNotificationValidatesFrame(t *testing.T) {
+	client, conn := connectedClient(t)
+	errs := protocolErrors(client)
+
+	// Bad msgID and non-string method emit protocol errors.
+	client.handleNotification(conn, []interface{}{RpcRequest, "bad", "m", []interface{}{1}})
+	waitProtocolError(t, errs)
+	client.handleNotification(conn, []interface{}{RpcRequest, int64(1), 42, []interface{}{1}})
+	waitProtocolError(t, errs)
+
+	// A well-formed notification reaches its event handler and is acked
+	// without killing the connection.
+	got := make(chan interface{}, 1)
+	client.On("notify_ok", func(data interface{}) { got <- data })
+	client.handleNotification(conn, []interface{}{
+		RpcRequest, int64(9), "notify_ok", []interface{}{map[string]interface{}{"id": 1}},
+	})
+	select {
+	case <-got:
+	case <-time.After(2 * time.Second):
+		t.Fatal("notification event not emitted")
+	}
+	if _, err := client.Call("ping", []interface{}{}); err != nil {
+		t.Fatalf("ping after notification failed: %v", err)
+	}
+}
+
+// FuzzHandleMessage feeds arbitrary bytes through the frame decoder; the
+// decoder must never panic.
+func FuzzHandleMessage(f *testing.F) {
+	mustFrame := func(v []interface{}) []byte {
+		data, err := msgpack.Marshal(v)
+		if err != nil {
+			f.Fatal(err)
+		}
+		return data
+	}
+	for _, seed := range [][]byte{
+		{},
+		{0x00},
+		mustFrame([]interface{}{RpcResponse, int64(1), nil, true}),
+		mustFrame([]interface{}{RpcRequest, int64(1), "notify", []interface{}{map[string]interface{}{}}}),
+		mustFrame([]interface{}{int64(9), int64(1), nil, nil}),
+		mustFrame([]interface{}{"x"}),
+	} {
+		f.Add(seed)
+	}
+
+	mockServer := testutil.NewMockServer()
+	defer mockServer.Close()
+	mockServer.OnSimple("ping", true)
+	client := NewClient(Options{Endpoint: mockServer.URL(), WriteTimeout: time.Second})
+	if err := client.Connect(); err != nil {
+		f.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close()
+	client.mu.RLock()
+	conn := client.conn
+	client.mu.RUnlock()
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		client.handleMessage(conn, data)
+	})
+}
+
+// FuzzToInt64 feeds arbitrary msgpack-decoded values through the numeric
+// conversion; it must never panic.
+func FuzzToInt64(f *testing.F) {
+	mustValue := func(v interface{}) []byte {
+		data, err := msgpack.Marshal(v)
+		if err != nil {
+			f.Fatal(err)
+		}
+		return data
+	}
+	for _, seed := range [][]byte{
+		{},
+		mustValue(int64(-1)),
+		mustValue(uint64(math.MaxUint64)),
+		mustValue(uint64(math.MaxInt64)),
+		mustValue(float64(1.5)),
+		mustValue(math.NaN()),
+		mustValue(math.Inf(1)),
+		mustValue("abc"),
+		mustValue(nil),
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		dec := msgpack.NewDecoder(bytes.NewReader(data))
+		if err := dec.Skip(); err != nil {
+			return
+		}
+		var v interface{}
+		if err := msgpack.Unmarshal(data, &v); err != nil {
+			return
+		}
+		toInt64(v)
+	})
 }

@@ -5,10 +5,12 @@
 package direct
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -1093,13 +1095,41 @@ func (c *Client) readLoop(conn *websocket.Conn) {
 	}
 }
 
+// ProtocolError reports a malformed or unknown RPC frame received from the
+// server. Malformed input is dropped without panicking and healthy
+// processing continues; listeners can subscribe to the "protocol_error"
+// event to observe these errors.
+type ProtocolError struct {
+	Reason string
+	Frame  interface{}
+}
+
+func (e *ProtocolError) Error() string {
+	return "rpc protocol error: " + e.Reason
+}
+
+func (c *Client) protocolError(reason string, frame interface{}) {
+	c.dlog("[DEBUG] protocol error: %s (frame=%s)", reason, debuglog.SummarizePayload(frame))
+	c.emit("protocol_error", &ProtocolError{Reason: reason, Frame: frame})
+}
+
 // handleMessage processes an incoming WebSocket message.
 func (c *Client) handleMessage(conn *websocket.Conn, data []byte) {
 	if !c.isCurrentConnection(conn) {
 		return
 	}
 
-	// Decode MessagePack
+	// The msgpack decoder eagerly allocates declared array/map sizes, so a
+	// malformed frame can claim billions of elements and exhaust memory.
+	// Skip() walks the payload without allocating; a clean walk bounds every
+	// declared count by the actual byte length before Unmarshal allocates.
+	dec := msgpack.NewDecoder(bytes.NewReader(data))
+	if err := dec.Skip(); err != nil {
+		c.dlog("[DEBUG] msgpack validation error: %s", debuglog.SummarizePayload(err))
+		c.emit("decode_error", map[string]string{"error": err.Error()})
+		return
+	}
+
 	var message []interface{}
 	if err := msgpack.Unmarshal(data, &message); err != nil {
 		c.dlog("[DEBUG] msgpack decode error: %s", debuglog.SummarizePayload(err))
@@ -1109,15 +1139,16 @@ func (c *Client) handleMessage(conn *websocket.Conn, data []byte) {
 
 	c.dlog("[DEBUG] Received message: len=%d type=%T", len(message), message)
 
+	// Validate frame length and element types before indexing.
 	if len(message) < 4 {
-		c.dlog("[DEBUG] Message too short: type=%s len=%d", debuglog.SummarizePayload(message), len(message))
+		c.protocolError(fmt.Sprintf("frame too short (len=%d)", len(message)), message)
 		return
 	}
 
 	// Get message type
 	msgType, ok := toInt64(message[0])
 	if !ok {
-		c.dlog("[DEBUG] Could not get message type: value=%s", debuglog.SummarizePayload(message[0]))
+		c.protocolError("frame type is not an integer", message[0])
 		return
 	}
 
@@ -1131,6 +1162,9 @@ func (c *Client) handleMessage(conn *websocket.Conn, data []byte) {
 	case RpcRequest:
 		// Request from server (notification): [0, msgId, method, params]
 		c.handleNotification(conn, message)
+
+	default:
+		c.protocolError(fmt.Sprintf("unknown frame type %d", msgType), message)
 	}
 }
 
@@ -1138,6 +1172,7 @@ func (c *Client) handleMessage(conn *websocket.Conn, data []byte) {
 func (c *Client) handleResponse(message []interface{}) {
 	msgID, ok := toInt64(message[1])
 	if !ok {
+		c.protocolError("response msgID is not a valid integer", message[1])
 		return
 	}
 
@@ -1147,6 +1182,7 @@ func (c *Client) handleResponse(message []interface{}) {
 	c.mu.Unlock()
 
 	if handler == nil {
+		c.dlog("[DEBUG] ignoring response for unknown or duplicate msgID=%s", debuglog.RedactID(msgID))
 		return
 	}
 
@@ -1171,14 +1207,18 @@ func (c *Client) handleNotification(conn *websocket.Conn, message []interface{})
 	}
 
 	if len(message) < 4 {
-		c.dlog("[DEBUG] Notification too short: type=%s len=%d", debuglog.SummarizePayload(message), len(message))
+		c.protocolError(fmt.Sprintf("notification frame too short (len=%d)", len(message)), message)
 		return
 	}
 
-	msgID, _ := toInt64(message[1])
+	msgID, ok := toInt64(message[1])
+	if !ok {
+		c.protocolError("notification msgID is not a valid integer", message[1])
+		return
+	}
 	method, ok := message[2].(string)
 	if !ok {
-		c.dlog("[DEBUG] Method not a string: type=%s", debuglog.SummarizePayload(message[2]))
+		c.protocolError("notification method is not a string", message[2])
 		return
 	}
 
@@ -1372,7 +1412,9 @@ func getMapKeys(m map[string]interface{}) []string {
 	return keys
 }
 
-// toInt64 converts various numeric types to int64.
+// toInt64 converts various numeric types to int64. Conversion is strict:
+// unsigned values above math.MaxInt64 and non-integral, non-finite, or
+// out-of-range floats are rejected instead of silently truncated or wrapped.
 func toInt64(v interface{}) (int64, bool) {
 	switch n := v.(type) {
 	case int:
@@ -1386,6 +1428,9 @@ func toInt64(v interface{}) (int64, bool) {
 	case int64:
 		return n, true
 	case uint:
+		if uint64(n) > math.MaxInt64 {
+			return 0, false
+		}
 		return int64(n), true
 	case uint8:
 		return int64(n), true
@@ -1394,14 +1439,32 @@ func toInt64(v interface{}) (int64, bool) {
 	case uint32:
 		return int64(n), true
 	case uint64:
+		if n > math.MaxInt64 {
+			return 0, false
+		}
 		return int64(n), true
 	case float32:
-		return int64(n), true
+		return floatToInt64(float64(n))
 	case float64:
-		return int64(n), true
+		return floatToInt64(n)
 	default:
 		return 0, false
 	}
+}
+
+// floatToInt64 converts a float to int64 only when the value is finite,
+// integral, and within int64 range. float64(math.MaxInt64) is 2^63 (one past
+// the maximum), so the upper bound is exclusive.
+func floatToInt64(f float64) (int64, bool) {
+	if math.IsNaN(f) || math.IsInf(f, 0) || math.Trunc(f) != f {
+		return 0, false
+	}
+	// float64(math.MaxInt64) rounds up to exactly 2^63, so the >= bound
+	// correctly rejects values that would overflow int64 conversion.
+	if f >= float64(math.MaxInt64) || f < float64(math.MinInt64) {
+		return 0, false
+	}
+	return int64(f), true
 }
 
 // emit dispatches an event to registered handlers.

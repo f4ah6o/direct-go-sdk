@@ -58,8 +58,11 @@ func (ms *MockServer) URL() string {
 // Close stops the mock server.
 func (ms *MockServer) Close() {
 	ms.server.Close()
-	if ms.conn != nil {
-		ms.conn.Close()
+	ms.connMu.Lock()
+	conn := ms.conn
+	ms.connMu.Unlock()
+	if conn != nil {
+		conn.Close()
 	}
 }
 
