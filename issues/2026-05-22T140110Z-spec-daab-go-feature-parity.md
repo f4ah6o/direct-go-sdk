@@ -19,3 +19,6 @@ Source context: direct-go-sdk porting coverage completion on 2026-05-22.
 - [ ] CLI commands have coverage for expected arguments, generated files, and failure modes.
 - [ ] Bot framework message handling and response helpers are tested against representative events.
 - [ ] Remaining upstream daab incompatibilities are tracked as explicit follow-up issues.
+
+---
+Re-checked against main at 6bafde0 (2026-10-09): still open. No daab-go parity report or checklist exists yet.

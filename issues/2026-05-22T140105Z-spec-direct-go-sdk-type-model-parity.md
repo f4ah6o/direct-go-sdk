@@ -19,3 +19,6 @@ Source context: direct-go-sdk porting coverage completion on 2026-05-22.
 - [ ] Any raw-by-design APIs explain why a typed model is deferred.
 - [ ] Public type changes are covered by mock-server tests.
 - [ ] Compatibility notes are added to direct-go documentation or coverage reporting.
+
+---
+Re-checked against main at 6bafde0 (2026-10-09): still open. COVERAGE.md tracks wrapper counts only; no per-RPC type-model status yet.

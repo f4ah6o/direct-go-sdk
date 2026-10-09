@@ -19,3 +19,6 @@ Source context: direct-go-sdk porting coverage completion on 2026-05-22.
 - [ ] Parsing failures produce actionable errors or preserve raw payloads as documented.
 - [ ] Coverage reporting clearly distinguishes wrapper coverage from parsing completeness.
 - [ ] Any discovered parser defects are fixed or tracked as separate implementation issues.
+
+---
+Re-checked against main at 6bafde0 (2026-10-09): still open. Coverage reporting does not yet distinguish parsing completeness from wrapper coverage; no expanded response fixtures landed.

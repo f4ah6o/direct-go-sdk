@@ -19,3 +19,6 @@ Source context: direct-go-sdk porting coverage completion on 2026-05-22.
 - [ ] RPC error mapping is documented and tested for common server error shapes.
 - [ ] Notification and reconnect behavior has a parity checklist against direct-js.
 - [ ] Any behavioral differences are documented as intentional or tracked for repair.
+
+---
+Re-checked against main at 6bafde0 (2026-10-09): still open. Pagination markers and RPC frame validation are partially covered (e.g. ce4f0ef), but no documented direct-js parity checklist or error-mapping doc yet.

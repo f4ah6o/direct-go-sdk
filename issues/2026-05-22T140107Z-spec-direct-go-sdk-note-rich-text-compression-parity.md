@@ -19,3 +19,6 @@ Source context: direct-go-sdk note-management porting completion on 2026-05-22.
 - [x] `create_note` and `update_note` parity work is scoped separately from raw note read/delete/lock APIs.
 - [x] Tests cover compressed content round trips without requiring live credentials.
 - [x] Public APIs make raw passthrough versus high-level rich-text behavior explicit.
+
+---
+Closure record: resolved on main by 0061631 (PR #24, 2026-05-24) — rich-text gzip note create/update, raw passthrough variants, and decompressed reads landed in direct-go/notes.go with tests. Repo convention keeps completed task files in place with boxes ticked.

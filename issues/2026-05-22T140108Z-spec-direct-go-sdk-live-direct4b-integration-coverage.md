@@ -19,3 +19,6 @@ Source context: direct-go-sdk porting coverage completion on 2026-05-22.
 - [ ] No secret values are printed, committed, or required in test fixtures.
 - [ ] A documented subset of baseline RPCs is validated against live Direct4B.
 - [ ] Unsupported or permission-dependent live cases are listed separately from SDK defects.
+
+---
+Re-checked against main at 6bafde0 (2026-10-09): still open. Only a bench-level live lookup test exists (DIRECT_LOOKUP_LIVE); no documented baseline-RPC live subset yet.
